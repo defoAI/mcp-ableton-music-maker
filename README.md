@@ -49,6 +49,8 @@ docker compose --profile install run --rm install-script
 ABLETON_USER_LIBRARY="/Volumes/Work/Ableton/User Library" docker compose --profile install run --rm install-script
 ```
 
+On a Linux Docker engine (not Docker Desktop) add `ABLETON_INSTALL_USER="$(id -u):$(id -g)"` in front of the command so the container can write to your library.
+
 Then restart Live, open **Settings → Link, Tempo & MIDI**, choose **AbletonMusicMaker** in a **Control Surface** slot, and set its Input and Output to **None**.
 
 **3. Point your MCP client at the container**

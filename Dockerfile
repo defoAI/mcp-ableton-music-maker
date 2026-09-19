@@ -67,7 +67,7 @@ LABEL org.opencontainers.image.title="ableton-music-maker" \
       org.opencontainers.image.source="https://github.com/defoAI/mcp-ableton-music-maker" \
       org.opencontainers.image.licenses="MIT"
 
-COPY --from=builder --chown=nonroot:nonroot /out/ableton-mcp /out/ableton-music-maker-install-script /app/
+COPY --from=builder --chown=nonroot:nonroot /out/ableton-music-maker /out/ableton-music-maker-install-script /app/
 
 # Defaults. Any of these can be overridden with `docker run -e`.
 #   ABLETON_HOST / ABLETON_PORT   where Live is, from inside the container

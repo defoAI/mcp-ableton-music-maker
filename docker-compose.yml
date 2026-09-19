@@ -43,6 +43,10 @@ services:
     image: mcp-ableton-music-maker:local
     entrypoint: ["/app/ableton-music-maker-install-script"]
     command: ["--target", "/user-library/Remote Scripts"]
+    # Docker Desktop maps bind-mount ownership, so the image's non-root user
+    # can write. On a plain Linux engine pass your own ids instead:
+    #   ABLETON_INSTALL_USER="$(id -u):$(id -g)" docker compose --profile install run --rm install-script
+    user: "${ABLETON_INSTALL_USER:-65532:65532}"
     volumes:
       # Live's User Library on the host. Override for a moved library:
       #   ABLETON_USER_LIBRARY="/Volumes/Work/Ableton/User Library" docker compose --profile install run --rm install-script
