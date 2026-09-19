@@ -10,8 +10,11 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  IMAGE_LOCAL: mcp-ableton-music-maker:local
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -54,9 +57,21 @@ jobs:
         run: cargo build --release --locked
         working-directory: app/src-tauri
 
+  # One native runner per architecture: a Rust release build under QEMU
+  # emulation takes hours, a native one minutes.
   image:
-    runs-on: ubuntu-latest
     needs: rust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      IMAGE_LOCAL: mcp-ableton-music-maker:local
     steps:
       - uses: actions/checkout@v4
 
@@ -67,8 +82,8 @@ jobs:
         with:
           context: .
           target: test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
       - name: Build runtime stage
         uses: docker/build-push-action@v6
@@ -77,20 +92,24 @@ jobs:
           target: runtime
           load: true
           tags: ${{ env.IMAGE_LOCAL }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
       - name: Verify runtime image
         run: docker/verify-image.sh ${{ env.IMAGE_LOCAL }}
 
       - name: Scan for critical CVEs
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_LOCAL }}
           format: table
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+
+      - name: Image name for GHCR (must be lowercase)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: echo "IMAGE_GHCR=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -100,15 +119,33 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push to GHCR
+      - name: Push per-architecture image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v6
         with:
           context: .
           target: runtime
           push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
-            ghcr.io/${{ github.repository }}:latest
-          cache-from: type=gha
+          tags: ${{ env.IMAGE_GHCR }}:${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+
+  manifest:
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Image name for GHCR (must be lowercase)
+        run: echo "IMAGE_GHCR=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge into a multi-architecture image
+        run: |
+          docker buildx imagetools create \
+            -t "$IMAGE_GHCR:${{ github.sha }}" \
+            -t "$IMAGE_GHCR:latest" \
+            "$IMAGE_GHCR:${{ github.sha }}-amd64" \
+            "$IMAGE_GHCR:${{ github.sha }}-arm64"
+          docker buildx imagetools inspect "$IMAGE_GHCR:latest"
