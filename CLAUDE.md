@@ -14,7 +14,7 @@ Rust MCP server that lets Claude drive Ableton Live. Two processes:
 ## Commands
 
 ```bash
-cargo test                                   # 9 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, local-only, activity, stdio
+cargo test                                   # 11 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, library, local-only, activity, stdio
 cd app && npm run dev                        # the Mac app against this checkout (Tauri 2)
 cargo clippy --all-targets -- -D warnings    # CI runs this
 cargo fmt --all
@@ -31,7 +31,7 @@ No Rust toolchain on the machine? Build inside `rust:1-slim-bookworm` with the r
 ```
 src/connection.rs      LiveBridge trait, AbletonConnection (TCP), RealBridge (reconnecting), LiveError
 src/handshake.rs       get_script_info handshake, ScriptInfoCache, per-command capability check
-src/tools.rs           Server, ToolSpec, the 55 tool bodies and their #[tool] bindings, run() wrapper
+src/tools.rs           Server, ToolSpec, the 75 tool bodies and their #[tool] bindings, run() wrapper
 src/activity.rs        the local activity log: one JSON line per tool call, payloads off by default
 src/state.rs           state_dir / activity_dir / sessions_dir — the only places the server writes
 src/install.rs         installer logic (Library.cfg discovery, install with .bak)
@@ -39,7 +39,11 @@ src/app.rs             startup handshake, heartbeat, stdio serve, shutdown, --st
 app/                   the Mac companion app (Tauri 2): src-tauri/ links this crate, src/ is the UI
 src/notes.rs           compact note forms (csv, step strings, patterns, tiling) → plain Note objects
 src/audio.rs           WAV/AIFF reader and the capture measurements (peak, RMS per bar, silence, clipping)
-tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
+src/performance.rs     performance state, bar arithmetic, cue resolution (bars → beats, silence check), readout text
+src/context.rs         get_context readout and the MCP instructions every client receives at initialize
+src/library.rs         the server's copy of Live's browser: paged from the script, on disk under state_dir, searched locally
+src/variation.rs       clip variations (fill, ghosts, inversions, thinning, half/double time) and the key of a recording
+tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, library.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
 docker/                verify-image.sh, Claude Desktop example config
 .github/workflows/ci.yml   fmt, clippy, test; image build, verify, trivy, push to GHCR on main
 ```
@@ -54,7 +58,9 @@ docker/                verify-image.sh, Claude Desktop example config
   Supabase in `src/`. Do not add one.
 - **Local data is on by default, payloads off.** The activity log (`src/activity.rs`) writes
   tool names, commands, timings and sizes; `ABLETON_MCP_ACTIVITY_PAYLOADS` adds parameters
-  and results. `tests/activity.rs` pins the defaults. Anything new the server writes goes
+  and results. `tests/activity.rs` pins the defaults. The library index (`src/library.rs`)
+  keeps browser names, paths and URIs on disk; `ABLETON_MCP_LIBRARY_INDEX=false` keeps it in
+  memory; `tests/library.rs` pins that. Anything new the server writes goes
   under `state::state_dir()` and into `TERMS.md`.
 - **Tool bodies are plain functions** `fn(&LiveState, &Params) -> Result<String, String>`; the
   `#[tool]` method only binds a body to its `ToolSpec` and calls `Server::run`, which writes

@@ -76,6 +76,37 @@ script is loaded and up to date. Both are for CI and the Mac app.
   playhead lands, the same two-phase pattern as locators), the server polls until the clip
   has a file, stops the transport (a `Drop` guard stops it on any early exit), and
   `src/audio.rs` reads the WAV or AIFF Live wrote and measures it. Nothing is copied.
+- **Performance** (`start_performance`, `cue`, `get_performance_state`, …) is the one place
+  the script acts on its own clock. Claude plans, Live executes: `cue` resolves bar numbers to
+  beats and names to indices against a fresh `get_performance_state` (`src/performance.rs`,
+  pure logic, unit-tested), refuses a step in the past or a plan that leaves a bar silent, and
+  hands the steps to `schedule_cue`. The script stores them and re-arms `schedule_message`
+  every tick while work remains: launch steps are issued inside the bar before their target so
+  Live's global quantization places them on the bar, sets and ramp steps land within a tick of
+  their beat, and every step fired is queued as an event the next state read reports. A stopped
+  transport or a time-signature change cancels pending cues. While a performance runs
+  (`LiveState::performance`, in memory only) the transport-touching tools refuse with the
+  on-the-bar alternative in the message.
+- **The clock rides on the envelope.** While performance mode is on, the Remote Script
+  attaches `clock` (bar, beat, seconds to the next bar, phrase, next cue) to every response
+  it sends; `AbletonConnection::exchange` keeps it in the per-call trace and `run_blocking`
+  renders it as the last line of every tool result. Zero round trips. Launch commands read
+  the transport *after* they fire and report the bar the launch lands on.
+- **The library index.** `src/library.rs` pages the script's browser walk in the background
+  after the handshake (one-second pages so tool calls interleave on the shared socket),
+  keeps it under `state_dir()/library/` and answers `search_browser` and every internal
+  lookup locally once complete.
+- **Orientation and instructions.** `get_context` is one Remote Script round trip that returns
+  the set, every track, the returns, the scenes and the performance clock; `src/context.rs`
+  renders it and holds the MCP `instructions` string the server sends at `initialize` (the
+  `get_info` override in `tools.rs`), so a client's model knows the workflow before its first
+  call.
+- **A round trip costs about 200 ms, whatever it does.** Measured on Live 12.4.6 over one
+  persistent socket: an unknown command, a tiny read and `get_context` all answer in the same
+  200 ms, with or without the per-command log line and with `TCP_NODELAY` on both ends. The
+  floor is Live scheduling the script's socket thread, not the command. Design consequence:
+  fewer round trips beat smaller payloads; `get_context` is one call where three used to be,
+  and `batch` / `build_song` exist for the same reason.
 - **`require(live, cmd)`** is the capability check: the command must be in the script's
   advertised `SCRIPT_CAPABILITIES`. A missing or outdated script produces one clear "run the
   installer, then restart Live" error instead of a half-working session. A unit test

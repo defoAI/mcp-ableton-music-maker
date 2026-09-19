@@ -27,13 +27,21 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.12.1"
+SCRIPT_VERSION = "1.16.0"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
 # tick. Needed wherever Live applies the first step asynchronously (moving
 # the playhead) and the second step must see the result.
 DEFERRED = object()
+
+# A socket round trip costs about 200 ms on Live 12.4.6 whatever the command
+# does (measured: an unknown command, a tiny read and get_context all take
+# the same 200 ms, with or without this log line, with TCP_NODELAY on both
+# ends). That is Live scheduling the script's socket thread, not this code,
+# which is why the server prefers one-round-trip commands such as
+# get_context. Set this to False to keep routine commands out of Log.txt.
+LOG_EVERY_COMMAND = True
 
 SCRIPT_CAPABILITIES = [
     "get_session_info",
@@ -93,6 +101,24 @@ SCRIPT_CAPABILITIES = [
     "delete_track",
     "back_to_arrangement",
     "set_arrangement_loop",
+    "get_performance_state",
+    "set_launch_quantization",
+    "create_scene",
+    "fire_scene",
+    "stop_all_clips",
+    "set_crossfader",
+    "record_clip",
+    "schedule_cue",
+    "cancel_cue",
+    "set_scale",
+    "set_slot_stop_buttons",
+    "get_context",
+    "set_performance_mode",
+    "set_scene",
+    "start_live_capture",
+    "snapshot_mix",
+    "restore_mix",
+    "get_browser_index",
 ]
 
 def create_instance(c_instance):
@@ -126,6 +152,27 @@ class AbletonMCP(ControlSurface):
         self._passive_track_count = None
         self._passive_track_bindings = []  # (track, [(add_name, callback), ...]) for cleanup
         self._song_passive_callbacks = []
+
+        # The performance clock: pending cues, their events, one pending
+        # Session recording, and whether a tick is armed.
+        self._cues = []
+        self._cue_next_id = 1
+        self._cue_lock = threading.Lock()
+        self._perf_events = []
+        self._perf_tick_armed = False
+        self._pending_record = None
+        # Performance mode: while on, every response carries a clock and the
+        # tick watches which scene row plays (phrases count from there).
+        self._performance_mode = False
+        self._scene_phrase = {}     # scene index -> bars per phrase
+        self._scene_started = {}    # scene index -> bar it last started on
+        self._current_scene = None
+        self._mix_snapshots = {}
+        self._snapshot_next_id = 1
+        self._library_key_cache = None
+        # The browser walk is a generator shared by every client: two clients
+        # paging at once ("generator already executing") must take turns.
+        self._browser_lock = threading.Lock()
         
         # Start the socket server
         self.start_server()
@@ -257,10 +304,16 @@ class AbletonMCP(ControlSurface):
                         command = json.loads(buffer)  # Removed decode('utf-8')
                         buffer = ''  # Clear buffer after successful parse
                         
-                        self.log_message("Received command: " + str(command.get("type", "unknown")))
+                        if LOG_EVERY_COMMAND:
+                            self.log_message("Received command: " + str(command.get("type", "unknown")))
                         
                         # Process the command and get response
                         response = self._process_command(command)
+                        if self._performance_mode:
+                            try:
+                                response["clock"] = self._clock()
+                            except Exception as e:
+                                self.log_message("clock error: " + str(e))
                         
                         # Send the response with explicit encoding
                         try:
@@ -344,6 +397,12 @@ class AbletonMCP(ControlSurface):
                                  "ensure_capture_track", "start_capture", "stop_capture",
                                  "play_from", "delete_track", "back_to_arrangement",
                                  "set_arrangement_loop",
+                                 "set_launch_quantization", "create_scene", "fire_scene",
+                                 "stop_all_clips", "set_crossfader", "record_clip",
+                                 "schedule_cue", "cancel_cue",
+                                 "set_scale", "set_slot_stop_buttons",
+                                 "set_performance_mode", "set_scene", "start_live_capture",
+                                 "snapshot_mix", "restore_mix",
                                  # reads that touch a clip while it records: main thread only
                                  "capture_status", "list_captures"]:
                 # Use a thread-safe approach with a response queue
@@ -418,7 +477,7 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "load_browser_item":
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
-                            result = self._load_browser_item(track_index, item_uri)
+                            result = self._load_browser_item(track_index, item_uri, params.get("kind", "track"))
                         # ── Arrangement view commands ──────────────────────────────
                         elif command_type == "switch_to_arrangement_view":
                             result = self._switch_to_arrangement_view()
@@ -485,6 +544,43 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "set_arrangement_loop":
                             result = self._set_arrangement_loop(
                                 params.get("start"), params.get("length"), params.get("enabled"))
+                        elif command_type == "set_launch_quantization":
+                            result = self._set_launch_quantization(params.get("name", "1_bar"))
+                        elif command_type == "create_scene":
+                            result = self._create_scene(
+                                params.get("index", -1), params.get("name"), params.get("tempo"),
+                                params.get("phrase_bars"))
+                        elif command_type == "set_scene":
+                            result = self._set_scene(
+                                params.get("index", 0), params.get("name"), params.get("tempo"),
+                                params.get("phrase_bars"))
+                        elif command_type == "set_performance_mode":
+                            result = self._set_performance_mode(params.get("on", True))
+                        elif command_type == "start_live_capture":
+                            result = self._start_live_capture(params.get("bars", 1), params.get("name"))
+                        elif command_type == "snapshot_mix":
+                            result = self._snapshot_mix()
+                        elif command_type == "restore_mix":
+                            result = self._restore_mix(params.get("id"))
+                        elif command_type == "fire_scene":
+                            result = self._fire_scene(params.get("scene_index", 0))
+                        elif command_type == "stop_all_clips":
+                            result = self._stop_all_clips()
+                        elif command_type == "set_crossfader":
+                            result = self._set_crossfader(params.get("value"), params.get("assign"))
+                        elif command_type == "record_clip":
+                            result = self._record_clip(
+                                params.get("track_index", 0), params.get("bars", 4), params.get("name"))
+                        elif command_type == "schedule_cue":
+                            result = self._schedule_cue(params.get("cue", params))
+                        elif command_type == "cancel_cue":
+                            result = self._cancel_cue(params.get("id"), params.get("reason", "cancelled"))
+                        elif command_type == "set_scale":
+                            result = self._set_scale(params.get("root_note"), params.get("scale_name"))
+                        elif command_type == "set_slot_stop_buttons":
+                            result = self._set_slot_stop_buttons(
+                                params.get("track_index", 0), params.get("has_stop_button", True),
+                                params.get("slots"))
                         elif command_type == "capture_status":
                             result = self._capture_status(params.get("slot", 0))
                         elif command_type == "list_captures":
@@ -597,6 +693,14 @@ class AbletonMCP(ControlSurface):
                 )
             elif command_type == "drain_passive_events":
                 response["result"] = self._drain_passive_events()
+            elif command_type == "get_performance_state":
+                response["result"] = self._get_performance_state()
+            elif command_type == "get_context":
+                response["result"] = self._get_context(bool(params.get("include_library", False)))
+            elif command_type == "get_browser_index":
+                response["result"] = self._get_browser_index(
+                    params.get("category", "all"), params.get("offset", 0),
+                    params.get("limit", 500), params.get("budget_s", 1.0))
             elif command_type == "set_device_parameter":
                 response_queue = queue.Queue()
 
@@ -652,6 +756,7 @@ class AbletonMCP(ControlSurface):
             "capabilities": list(SCRIPT_CAPABILITIES),
             "snapshot_schema": "ableton_mcp_snapshot_v2",
             "passive_listeners": True,
+            "performance_mode": bool(getattr(self, "_performance_mode", False)),
         }
     
     def _safe_song_property(self, attr, cast, default):
@@ -1023,10 +1128,9 @@ class AbletonMCP(ControlSurface):
                 raise Exception("No clip in slot")
             
             clip_slot.fire()
-            
-            result = {
-                "fired": True
-            }
+
+            result = {"fired": True}
+            result.update(self._landing())
             return result
         except Exception as e:
             self.log_message("Error firing clip: " + str(e))
@@ -1513,6 +1617,26 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error setting clip color: " + str(e))
             raise
 
+    def _find_drum_rack_in(self, device, depth):
+        """The first Drum Rack inside a rack's chains (up to four levels)."""
+        if depth > 4 or not getattr(device, "can_have_chains", False):
+            return None
+        try:
+            chains = list(device.chains)
+        except Exception:
+            return None
+        for chain in chains:
+            try:
+                for d in chain.devices:
+                    if getattr(d, "can_have_drum_pads", False):
+                        return d
+                    inner = self._find_drum_rack_in(d, depth + 1)
+                    if inner is not None:
+                        return inner
+            except Exception:
+                continue
+        return None
+
     def _get_drum_rack_pads(self, track_index, device_index=-1):
         """Which sample sits on which pad of a track's Drum Rack."""
         try:
@@ -1533,7 +1657,15 @@ class AbletonMCP(ControlSurface):
                         chosen = (i, d)
                         break
                 if chosen is None:
-                    raise ValueError("no Drum Rack on track %d (%s); devices: %s" % (
+                    # A kit is often an Instrument Rack wrapping the Drum Rack:
+                    # walk into rack chains, depth first.
+                    for i, d in enumerate(devices):
+                        inner = self._find_drum_rack_in(d, 0)
+                        if inner is not None:
+                            chosen = (i, inner)
+                            break
+                if chosen is None:
+                    raise ValueError("no Drum Rack on track %d (%s), not even inside a rack; devices: %s" % (
                         track_index, track.name, ", ".join(d.name for d in devices) or "none"))
             pads = []
             for pad in chosen[1].drum_pads:
@@ -1666,7 +1798,11 @@ class AbletonMCP(ControlSurface):
 
     def _browser_index(self, wanted, budget_s):
         """Grow the per-category index for up to budget_s seconds; return
-        (items so far, complete?)."""
+        (items so far, complete?). Serialised: the walk is one generator."""
+        with self._browser_lock:
+            return self._browser_index_locked(wanted, budget_s)
+
+    def _browser_index_locked(self, wanted, budget_s):
         if not hasattr(self, "_index"):
             self._index = {}
         state = self._index.get(wanted)
@@ -2522,13 +2658,10 @@ class AbletonMCP(ControlSurface):
         """
         return self._load_browser_item(track_index, uri)
 
-    def _load_browser_item(self, track_index, item_uri):
-        """Load a browser item onto a track by its URI"""
+    def _load_browser_item(self, track_index, item_uri, kind="track"):
+        """Load a browser item onto a track (or a return, or the master) by its URI"""
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            
-            track = self._song.tracks[track_index]
+            track = self._resolve_track(track_index, kind)
             
             # Access the application's browser instance instead of creating a new one
             app = self.application()
@@ -2811,6 +2944,1069 @@ class AbletonMCP(ControlSurface):
                 return "unknown"
         except:
             return "unknown"
+
+    # ── Performance: scenes, quantization, crossfader, recording, cues ──────
+    #
+    # The performance clock. Claude plans, Live executes: a cue is a list of
+    # steps at absolute beats; the script walks them on its own tick
+    # (schedule_message, re-armed while work remains), so a cue runs even if
+    # the server is slow or gone. Launches are issued inside the bar before
+    # their target and Live's quantization lands them on the bar; everything
+    # else lands within one tick of its beat.
+
+    # Song.clip_trigger_quantization: 0 None, 1 8 Bars, 2 4 Bars, 3 2 Bars,
+    # 4 1 Bar, 5 1/2 ... 13 1/32. Not the per-clip table (LAUNCH_QUANTIZATIONS
+    # starts at 0 Global, 1 None).
+    GLOBAL_QUANTIZATIONS = {
+        "none": 0, "8_bars": 1, "4_bars": 2, "2_bars": 3, "1_bar": 4, "bar": 4,
+        "1/2": 5, "1/2t": 6, "1/4": 7, "1/4t": 8, "1/8": 9, "1/8t": 10,
+        "1/16": 11, "1/16t": 12, "1/32": 13,
+    }
+    CROSSFADE_SIDES = {"a": 0, "none": 1, "b": 2}
+    PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+    CUE_ACTIONS = ("fire_scene", "fire_clip", "stop_clip", "stop_all_clips",
+                   "set", "ramp", "stop_playback", "restore_mix")
+    CUE_TARGETS = ("tempo", "crossfader", "volume", "mute", "send", "device")
+    # A launch is issued this many beats before the end of the bar preceding
+    # its target, so a 1-bar quantization lands it exactly on the target bar.
+    LAUNCH_LEAD_MARGIN = 0.5
+    PERF_EVENTS_MAX = 200
+
+    def _beats_per_bar(self):
+        try:
+            return max(1, int(self._song.signature_numerator))
+        except Exception:
+            return 4
+
+    def _bar_position(self):
+        """(bar, beat_in_bar, beat): Live's own 1-based bar numbers."""
+        song = self._song
+        beat = float(song.current_song_time)
+        bpb = self._beats_per_bar()
+        try:
+            bt = song.get_current_beats_song_time()
+            return int(bt.bars), int(bt.beats), beat
+        except Exception:
+            return int(beat // bpb) + 1, int(beat % bpb) + 1, beat
+
+    def _global_quantization_name(self, value):
+        for name, v in self.GLOBAL_QUANTIZATIONS.items():
+            if v == value and name != "bar":
+                return name
+        return str(value)
+
+    def _clip_quantization_name(self, value):
+        for name, v in self.LAUNCH_QUANTIZATIONS.items():
+            if v == value and name != "bar":
+                return name
+        return str(value)
+
+    def _perf_event(self, kind, detail=None):
+        evt = {"type": kind, "ts": time.time(),
+               "beat": self._safe_song_property("current_song_time", float, 0.0)}
+        if detail:
+            evt.update(detail)
+        with self._cue_lock:
+            self._perf_events.append(evt)
+            if len(self._perf_events) > self.PERF_EVENTS_MAX:
+                self._perf_events = self._perf_events[-self.PERF_EVENTS_MAX:]
+
+    def _get_performance_state(self):
+        """Where the set is, what plays, what is queued, the pending cues, and
+        everything the clock did since the last call."""
+        song = self._song
+        bar, beat_in_bar, beat = self._bar_position()
+        tracks = []
+        for i, t in enumerate(song.tracks):
+            playing = self._safe_attr(t, "playing_slot_index", int, -1)
+            fired = self._safe_attr(t, "fired_slot_index", int, -1)
+            entry = {"index": i, "name": str(t.name), "playing_slot_index": playing,
+                     "fired_slot_index": fired, "arm": self._safe_arm(t),
+                     "is_recording": False, "playing_clip_name": None,
+                     "fired_clip_name": None, "slots_with_clips": [], "no_stop_slots": []}
+            try:
+                for si, s in enumerate(t.clip_slots):
+                    if not s.has_clip:
+                        if not bool(self._safe_attr(s, "has_stop_button", bool, True)):
+                            entry["no_stop_slots"].append(si)
+                        continue
+                    entry["slots_with_clips"].append(si)
+                    clip = s.clip
+                    if si == playing:
+                        entry["playing_clip_name"] = str(clip.name)
+                    if si == fired:
+                        entry["fired_clip_name"] = str(clip.name)
+                    if bool(getattr(clip, "is_recording", False)):
+                        entry["is_recording"] = True
+            except Exception:
+                pass
+            tracks.append(entry)
+        scenes = []
+        for i, sc in enumerate(song.scenes):
+            scenes.append({
+                "index": i, "name": str(sc.name),
+                "tempo": self._safe_attr(sc, "tempo", float, None),
+                "is_triggered": bool(self._safe_attr(sc, "is_triggered", bool, False)),
+                "is_playing": any(t["playing_slot_index"] == i for t in tracks),
+                "clip_tracks": [t["index"] for t in tracks if i in t["slots_with_clips"]],
+                "phrase_bars": self._scene_phrase.get(i, 16),
+                "phrase_default": i not in self._scene_phrase,
+                "started_bar": self._scene_started.get(i),
+            })
+        quant = self._safe_song_property("clip_trigger_quantization", int, 4)
+        root = self._safe_attr(song, "root_note", int, None)
+        with self._cue_lock:
+            cues = [self._public_cue(c) for c in self._cues]
+            events = list(self._perf_events)
+            self._perf_events = []
+        pending = None
+        if self._pending_record is not None:
+            pending = dict((k, v) for k, v in self._pending_record.items() if k != "started")
+        return {
+            "is_playing": bool(song.is_playing),
+            "tempo": float(song.tempo),
+            "signature_numerator": int(song.signature_numerator),
+            "signature_denominator": int(song.signature_denominator),
+            "beat": beat, "bar": bar, "beat_in_bar": beat_in_bar,
+            "clip_trigger_quantization": quant,
+            "clip_trigger_quantization_name": self._global_quantization_name(quant),
+            "scale_mode": self._safe_attr(song, "scale_mode", bool, None),
+            "scale_name": self._safe_attr(song, "scale_name", str, None),
+            "root_note": root,
+            "root_note_name": self.PITCH_CLASSES[root % 12] if root is not None else None,
+            "tracks": tracks,
+            "scenes": scenes,
+            "cues": cues,
+            "pending_record": pending,
+            "events": events,
+            "performance_mode": bool(self._performance_mode),
+            "phrase": self._phrase_info(bar),
+            "current_scene": self._current_scene,
+        }
+
+    # ── Performance mode, the clock, phrases ────────────────────────────────
+
+    def _set_performance_mode(self, on=True):
+        self._performance_mode = bool(on)
+        if self._performance_mode:
+            self._arm_perf_tick()
+        return {"performance_mode": self._performance_mode}
+
+    def _landing(self):
+        """The bar a launch issued now lands on, read from the transport after
+        the fire: the next point of the global quantization grid."""
+        song = self._song
+        beat = float(song.current_song_time)
+        bpb = self._beats_per_bar()
+        q = self._safe_song_property("clip_trigger_quantization", int, 4)
+        bar_now = int(beat // bpb) + 1
+        if q == 0 or q >= 5 or not bool(song.is_playing):
+            lands = bar_now
+        else:
+            grid = {1: 8, 2: 4, 3: 2, 4: 1}.get(q, 1)
+            lands = ((bar_now - 1) // grid + 1) * grid + 1
+        return {"lands_on_bar": lands, "issued_at_beat": beat, "issued_at_bar": bar_now,
+                "issued_at_beat_in_bar": int(beat % bpb) + 1}
+
+    def _note_scene_fired(self, index, lands_on_bar):
+        self._current_scene = int(index)
+        self._scene_started[int(index)] = int(lands_on_bar)
+
+    def _watch_scene_rows(self):
+        """A scene the producer fired from Live's own UI: the row most tracks
+        play becomes the current scene, counted from the bar it was seen."""
+        rows = {}
+        try:
+            for t in self._song.tracks:
+                i = self._safe_attr(t, "playing_slot_index", int, -1)
+                if i >= 0:
+                    rows[i] = rows.get(i, 0) + 1
+        except Exception:
+            return
+        if not rows:
+            return
+        row = max(rows.items(), key=lambda kv: kv[1])[0]
+        if row != self._current_scene:
+            bar, _, _ = self._bar_position()
+            self._current_scene = row
+            started = self._scene_started.get(row)
+            if started is None or started > bar or started < bar - 1:
+                self._scene_started[row] = bar
+
+    def _phrase_info(self, bar=None):
+        idx = self._current_scene
+        if idx is None or idx not in self._scene_started:
+            return None
+        bars = int(self._scene_phrase.get(idx, 16))
+        started = int(self._scene_started[idx])
+        if bar is None:
+            bar, _, _ = self._bar_position()
+        k = max(1, (bar - started) // bars + 1)
+        return {"scene_index": idx, "started_bar": started, "bars": bars,
+                "ends_bar": started + k * bars, "default": idx not in self._scene_phrase}
+
+    def _next_cue_step(self):
+        best = None
+        with self._cue_lock:
+            for c in self._cues:
+                for st in c["steps"]:
+                    if st["done"]:
+                        continue
+                    if best is None or st["beat"] < best[1]["beat"]:
+                        best = (c, st)
+        if best is None:
+            return None
+        c, st = best
+        return {"cue_id": c["id"], "bar": st.get("bar"), "beat": st["beat"],
+                "label": st.get("label") or st["action"]}
+
+    def _clock(self):
+        song = self._song
+        bar, bib, beat = self._bar_position()
+        bpb = self._beats_per_bar()
+        tempo = float(song.tempo)
+        return {"beat": beat, "bar": bar, "beat_in_bar": bib, "tempo": tempo,
+                "beats_per_bar": bpb, "is_playing": bool(song.is_playing),
+                "seconds_to_next_bar": max(0.0, (bar * bpb - beat) * 60.0 / max(1.0, tempo)),
+                "phrase": self._phrase_info(bar), "next_cue": self._next_cue_step(),
+                "pending_cues": len(self._cues)}
+
+    def _set_scene(self, index, name=None, tempo=None, phrase_bars=None):
+        try:
+            i, scene = self._resolve_scene(index)
+            if name is not None:
+                scene.name = str(name)
+            if tempo is not None:
+                try:
+                    scene.tempo = float(tempo)
+                except Exception as e:
+                    raise ValueError("a scene tempo needs Live 11 or newer: " + str(e))
+            if phrase_bars is not None:
+                pb = int(phrase_bars)
+                if pb < 1 or pb > 128:
+                    raise ValueError("phrase_bars must be between 1 and 128")
+                self._scene_phrase[i] = pb
+            return {"index": i, "name": str(scene.name),
+                    "tempo": self._safe_attr(scene, "tempo", float, None),
+                    "phrase_bars": self._scene_phrase.get(i, 16),
+                    "phrase_default": i not in self._scene_phrase}
+        except Exception as e:
+            self.log_message("Error setting scene: " + str(e))
+            raise
+
+    # ── Listening without stopping: a fixed-length capture on the bar ───────
+
+    def _start_live_capture(self, bars, name=None):
+        """Record `bars` bars of the master into the Capture track's next free
+        slot, fired on the global quantization while the transport keeps
+        running. The transport is never stopped or moved."""
+        try:
+            index, track = self._find_capture_track()
+            if track is None:
+                self._ensure_capture_track()
+                index, track = self._find_capture_track()
+            rec_index, _ = self._recording_capture(track)
+            if rec_index is not None:
+                raise ValueError("a capture is already recording in slot %d" % rec_index)
+            bars = int(bars)
+            if bars < 1 or bars > 16:
+                raise ValueError("bars must be between 1 and 16 for a live capture")
+            slot_index = None
+            for i, slot in enumerate(track.clip_slots):
+                if not slot.has_clip:
+                    slot_index = i
+                    break
+            if slot_index is None:
+                raise ValueError("every slot of the Capture track holds a capture; delete one first")
+            if Live is None:
+                raise RuntimeError("captures need Live's own Python (Live 11 or newer)")
+            bpb = self._beats_per_bar()
+            record_length = float(bars * bpb)
+            slot = track.clip_slots[slot_index]
+            try:
+                slot.fire(record_length=record_length)
+            except TypeError as e:
+                raise RuntimeError("fixed-length recording needs Live 11 or newer: " + str(e))
+            landing = self._landing()
+            start_beat = float((landing["lands_on_bar"] - 1) * bpb)
+            self._pending_capture = {"slot": slot_index, "name": str(name or "listen"),
+                                     "start": start_beat, "bars": bars}
+            out = {"slot": slot_index, "track_index": index, "record_length": record_length,
+                   "bars": bars, "tempo": float(self._song.tempo), "started_at": start_beat}
+            out.update(landing)
+            return out
+        except Exception as e:
+            self.log_message("Error starting live capture: " + str(e))
+            raise
+
+    # ── Mix snapshots ───────────────────────────────────────────────────────
+
+    def _mix_state_of(self, track, has_sends=True, has_mute=True):
+        st = {"volume": float(track.mixer_device.volume.value),
+              "panning": float(track.mixer_device.panning.value)}
+        if has_sends:
+            try:
+                st["sends"] = [float(x.value) for x in track.mixer_device.sends]
+            except Exception:
+                st["sends"] = []
+        if has_mute:
+            try:
+                st["mute"] = bool(track.mute)
+            except Exception:
+                pass
+        return st
+
+    def _snapshot_mix(self):
+        try:
+            song = self._song
+            snap = {"beat": float(song.current_song_time),
+                    "tracks": [self._mix_state_of(t) for t in song.tracks],
+                    "returns": [self._mix_state_of(t) for t in song.return_tracks],
+                    "master": self._mix_state_of(song.master_track, False, False)}
+            sid = self._snapshot_next_id
+            self._snapshot_next_id += 1
+            self._mix_snapshots[sid] = snap
+            if len(self._mix_snapshots) > 16:
+                oldest = min(self._mix_snapshots.keys())
+                del self._mix_snapshots[oldest]
+            return {"id": sid, "tracks": len(snap["tracks"]), "returns": len(snap["returns"]),
+                    "beat": snap["beat"]}
+        except Exception as e:
+            self.log_message("Error taking mix snapshot: " + str(e))
+            raise
+
+    def _apply_mix_state(self, track, st):
+        track.mixer_device.volume.value = float(st["volume"])
+        track.mixer_device.panning.value = float(st["panning"])
+        for i, v in enumerate(st.get("sends", [])):
+            try:
+                track.mixer_device.sends[i].value = float(v)
+            except Exception:
+                pass
+        if "mute" in st:
+            try:
+                track.mute = bool(st["mute"])
+            except Exception:
+                pass
+
+    def _restore_mix(self, snapshot_id):
+        try:
+            snap = self._mix_snapshots.get(int(snapshot_id if snapshot_id is not None else -1))
+            if snap is None:
+                raise ValueError("no mix snapshot %s (snapshot_mix first)" % snapshot_id)
+            song = self._song
+            n = 0
+            for t, st in zip(list(song.tracks), snap["tracks"]):
+                self._apply_mix_state(t, st)
+                n += 1
+            for t, st in zip(list(song.return_tracks), snap["returns"]):
+                self._apply_mix_state(t, st)
+                n += 1
+            self._apply_mix_state(song.master_track, snap["master"])
+            return {"id": int(snapshot_id), "restored": n + 1}
+        except Exception as e:
+            self.log_message("Error restoring mix snapshot: " + str(e))
+            raise
+
+    # ── The browser index, paged for the server's own copy ──────────────────
+
+    def _library_key(self):
+        if self._library_key_cache is not None:
+            return self._library_key_cache
+        try:
+            app = self.application()
+            version = "%d.%d.%d" % (app.get_major_version(), app.get_minor_version(), app.get_bugfix_version())
+        except Exception:
+            version = "unknown"
+        packs = []
+        try:
+            root = getattr(self.application().browser, "packs", None)
+            if root is not None:
+                packs = sorted(str(getattr(c, "name", "")) for c in root.children)
+        except Exception:
+            pass
+        digest = 0
+        for name in packs:
+            for ch in name:
+                digest = (digest * 31 + ord(ch)) % 4294967291
+        self._library_key_cache = "live-%s-packs-%d-%08x" % (version, len(packs), digest)
+        return self._library_key_cache
+
+    def _get_browser_index(self, category="all", offset=0, limit=500, budget_s=1.0):
+        """A page of the walked browser index; the walk resumes across calls
+        and never holds the socket longer than budget_s."""
+        try:
+            wanted = str(category or "all").lower()
+            budget = max(0.1, min(float(budget_s or 1.0), 8.0))
+            items, complete = self._browser_index(wanted, budget)
+            offset = max(0, int(offset or 0))
+            limit = max(1, min(int(limit or 500), 2000))
+            page = items[offset:offset + limit]
+            return {"category": wanted, "offset": offset, "returned": len(page),
+                    "total_walked": len(items), "index_complete": bool(complete),
+                    "library_key": self._library_key(), "items": page}
+        except Exception as e:
+            self.log_message("Error paging the browser index: " + str(e))
+            raise
+
+    def _public_step(self, s):
+        out = {"index": s["index"], "action": s["action"], "beat": s["beat"],
+               "bar": s.get("bar"), "label": s.get("label"), "done": bool(s["done"])}
+        if s["action"] == "ramp":
+            out["end_beat"] = s.get("end_beat")
+            out["to"] = s.get("to")
+        return out
+
+    def _public_cue(self, c):
+        return {"id": c["id"], "name": c["name"],
+                "steps": [self._public_step(s) for s in c["steps"]],
+                "pending": len([s for s in c["steps"] if not s["done"]])}
+
+    def _set_launch_quantization(self, name):
+        key = str(name or "").lower().strip()
+        if key not in self.GLOBAL_QUANTIZATIONS:
+            raise ValueError("launch quantization must be one of %s" % ", ".join(
+                sorted(k for k in self.GLOBAL_QUANTIZATIONS if k != "bar")))
+        self._song.clip_trigger_quantization = self.GLOBAL_QUANTIZATIONS[key]
+        value = int(self._song.clip_trigger_quantization)
+        return {"clip_trigger_quantization": value,
+                "name": self._global_quantization_name(value)}
+
+    def _resolve_scene(self, scene_index):
+        scenes = list(self._song.scenes)
+        i = int(scene_index)
+        if i < 0 or i >= len(scenes):
+            raise IndexError("scene index %d out of range (0-%d)" % (i, len(scenes) - 1))
+        return i, scenes[i]
+
+    def _create_scene(self, index=-1, name=None, tempo=None, phrase_bars=None):
+        try:
+            song = self._song
+            count = len(song.scenes)
+            index = int(index if index is not None else -1)
+            if index < -1 or index > count:
+                raise IndexError("scene index %d out of range (-1 for the end, else 0-%d)" % (index, count))
+            song.create_scene(index)
+            new_index = count if index == -1 else index
+            scene = song.scenes[new_index]
+            if name:
+                scene.name = str(name)
+            if tempo is not None:
+                try:
+                    scene.tempo = float(tempo)
+                except Exception as e:
+                    raise ValueError("a scene tempo needs Live 11 or newer: " + str(e))
+            if index != -1:
+                # rows after the insertion point moved down by one
+                self._scene_phrase = dict((k + 1 if k >= new_index else k, v) for k, v in self._scene_phrase.items())
+                self._scene_started = dict((k + 1 if k >= new_index else k, v) for k, v in self._scene_started.items())
+            if phrase_bars is not None:
+                self._scene_phrase[new_index] = max(1, min(128, int(phrase_bars)))
+            return {"index": new_index, "name": str(scene.name), "scene_count": len(song.scenes),
+                    "phrase_bars": self._scene_phrase.get(new_index, 16)}
+        except Exception as e:
+            self.log_message("Error creating scene: " + str(e))
+            raise
+
+    def _scene_row(self, scene_index):
+        """What firing a scene does: its clips, the clips whose own launch
+        quantization is finer than a bar, and the armed tracks whose slot is
+        empty (Live records into those when Start Recording on Scene Launch
+        is on)."""
+        clips, off_grid, would_record = [], [], []
+        for ti, t in enumerate(self._song.tracks):
+            try:
+                slots = list(t.clip_slots)
+                if scene_index >= len(slots):
+                    continue
+                s = slots[scene_index]
+                if s.has_clip:
+                    c = s.clip
+                    clips.append({"track_index": ti, "track": str(t.name), "name": str(c.name)})
+                    q = self._safe_attr(c, "launch_quantization", int, 0)
+                    if q == 1 or q >= 6:
+                        off_grid.append({"track": str(t.name), "name": str(c.name),
+                                         "launch_quantization": self._clip_quantization_name(q)})
+                elif self._safe_arm(t):
+                    would_record.append(str(t.name))
+            except Exception:
+                continue
+        return clips, off_grid, would_record
+
+    def _fire_scene(self, scene_index):
+        try:
+            i, scene = self._resolve_scene(scene_index)
+            clips, off_grid, would_record = self._scene_row(i)
+            scene.fire()
+            landing = self._landing()
+            self._note_scene_fired(i, landing["lands_on_bar"])
+            quant = self._safe_song_property("clip_trigger_quantization", int, 4)
+            out = {"fired": True, "scene_index": i, "name": str(scene.name),
+                   "clips": clips, "off_grid_clips": off_grid,
+                   "would_record": would_record,
+                   "clip_trigger_quantization": quant,
+                   "clip_trigger_quantization_name": self._global_quantization_name(quant)}
+            out.update(landing)
+            return out
+        except Exception as e:
+            self.log_message("Error firing scene: " + str(e))
+            raise
+
+    def _stop_all_clips(self):
+        self._song.stop_all_clips()
+        return {"stopped": True}
+
+    def _set_crossfader(self, value=None, assign=None):
+        try:
+            song = self._song
+            out = {}
+            if value is not None:
+                v = float(value)
+                if v < 0.0 or v > 1.0:
+                    raise ValueError("crossfader must be between 0.0 (A) and 1.0 (B)")
+                p = song.master_track.mixer_device.crossfader
+                p.value = float(p.min) + (float(p.max) - float(p.min)) * v
+                out["crossfader"] = v
+            assigned = []
+            for a in (assign or []):
+                t = self._resolve_track(a.get("track_index", 0))
+                side = str(a.get("side", "none")).lower()
+                if side not in self.CROSSFADE_SIDES:
+                    raise ValueError("side must be A, B or none")
+                t.mixer_device.crossfade_assign = self.CROSSFADE_SIDES[side]
+                assigned.append({"track_index": int(a.get("track_index", 0)), "track": str(t.name),
+                                 "side": side.upper() if side != "none" else "none"})
+            if assigned:
+                out["assigned"] = assigned
+            if not out:
+                raise ValueError("give value and/or assign")
+            return out
+        except Exception as e:
+            self.log_message("Error setting crossfader: " + str(e))
+            raise
+
+    def _record_clip(self, track_index, bars, name=None):
+        """Arm the track and fire its first empty slot as a fixed-length
+        recording on the global quantization; the tick names the clip and
+        disarms the track when the recording ends."""
+        try:
+            song = self._song
+            track = self._resolve_track(track_index)
+            if not getattr(track, "can_be_armed", False):
+                raise ValueError("track '%s' cannot be armed (group, return or master)" % track.name)
+            bars = int(bars)
+            if bars < 1 or bars > 64:
+                raise ValueError("bars must be between 1 and 64")
+            for s in track.clip_slots:
+                if s.has_clip and bool(getattr(s.clip, "is_recording", False)):
+                    raise ValueError("track '%s' is already recording" % track.name)
+            pr = self._pending_record
+            if pr is not None and pr.get("track_index") == int(track_index):
+                raise ValueError("a recording is already pending on track '%s'" % track.name)
+            slot_index = None
+            for i, s in enumerate(track.clip_slots):
+                if not s.has_clip:
+                    slot_index = i
+                    break
+            if slot_index is None:
+                raise ValueError("every slot on '%s' holds a clip; create_scene adds a row" % track.name)
+            if Live is None:
+                raise RuntimeError("recording a clip needs Live's own Python (Live 11 or newer)")
+            record_length = float(bars * self._beats_per_bar())
+            track.arm = True
+            slot = track.clip_slots[slot_index]
+            try:
+                slot.fire(record_length=record_length)
+            except TypeError as e:
+                track.arm = False
+                raise RuntimeError("fixed-length recording needs Live 11 or newer: " + str(e))
+            landing = self._landing()
+            self._pending_record = {"track_index": int(track_index), "slot": slot_index,
+                                    "name": str(name or "take"), "record_length": record_length,
+                                    "seen_recording": False, "started": time.time()}
+            self._arm_perf_tick()
+            quant = self._safe_song_property("clip_trigger_quantization", int, 4)
+            out = {"track_index": int(track_index), "track": str(track.name), "slot": slot_index,
+                   "record_length": record_length, "bars": bars,
+                   "clip_trigger_quantization": quant,
+                   "clip_trigger_quantization_name": self._global_quantization_name(quant)}
+            out.update(landing)
+            return out
+        except Exception as e:
+            self.log_message("Error recording clip: " + str(e))
+            raise
+
+    def _set_scale(self, root_note=None, scale_name=None):
+        """Live 12's scale settings (root_note 0-11, scale_name e.g. 'Minor');
+        turns scale mode on. Errors on older Lives, which have no scale."""
+        try:
+            song = self._song
+            if not hasattr(song, "scale_name"):
+                raise ValueError("this Live has no scale setting (Live 12 or newer)")
+            out = {}
+            if root_note is not None:
+                song.root_note = int(root_note) % 12
+                out["root_note"] = int(song.root_note)
+                out["root_note_name"] = self.PITCH_CLASSES[int(song.root_note) % 12]
+            if scale_name is not None:
+                try:
+                    song.scale_name = str(scale_name)
+                except Exception as e:
+                    raise ValueError("Live does not know the scale '%s': %s" % (scale_name, str(e)))
+                out["scale_name"] = str(song.scale_name)
+            try:
+                song.scale_mode = True
+                out["scale_mode"] = True
+            except Exception:
+                pass
+            return out
+        except Exception as e:
+            self.log_message("Error setting scale: " + str(e))
+            raise
+
+    def _set_slot_stop_buttons(self, track_index, has_stop_button=True, slots=None):
+        """Stop buttons on a track's empty slots. Without one, a scene launch
+        leaves the track's playing clip running, so a layer added mid-set
+        survives every section change without copies."""
+        try:
+            track = self._resolve_track(track_index)
+            changed = []
+            for i, slot in enumerate(track.clip_slots):
+                if slots is not None and i not in [int(x) for x in slots]:
+                    continue
+                if slot.has_clip:
+                    continue
+                try:
+                    slot.has_stop_button = bool(has_stop_button)
+                    changed.append(i)
+                except Exception:
+                    continue
+            return {"track_index": int(track_index), "track": str(track.name),
+                    "has_stop_button": bool(has_stop_button), "slots": changed}
+        except Exception as e:
+            self.log_message("Error setting slot stop buttons: " + str(e))
+            raise
+
+    def _get_context(self, include_library=False):
+        """Everything an agent needs to orient, in one round trip: the set,
+        every track with its devices, clips by slot, mixer and play state,
+        the returns, the scenes, the performance clock, and (on request) the
+        library summary. Drains the performance events like
+        get_performance_state does."""
+        try:
+            song = self._song
+            perf = self._get_performance_state()
+            perf_tracks = dict((t["index"], t) for t in perf.get("tracks", []))
+            tracks = []
+            for i, t in enumerate(song.tracks):
+                ps = perf_tracks.get(i, {})
+                devices = []
+                try:
+                    for d in t.devices:
+                        devices.append({"name": str(d.name), "type": self._get_device_type(d)})
+                except Exception:
+                    pass
+                clips = []
+                try:
+                    for si, s in enumerate(t.clip_slots):
+                        if s.has_clip:
+                            c = s.clip
+                            clips.append({
+                                "slot": si, "name": str(c.name), "length": float(c.length),
+                                "is_midi": bool(getattr(c, "is_midi_clip", False)),
+                                "is_playing": bool(c.is_playing),
+                            })
+                except Exception:
+                    pass
+                entry = {
+                    "index": i, "name": str(t.name),
+                    "kind": "audio" if bool(getattr(t, "has_audio_input", False)) else "midi",
+                    "is_group": bool(getattr(t, "is_foldable", False)),
+                    "arm": self._safe_arm(t),
+                    "mute": bool(self._safe_attr(t, "mute", bool, False)),
+                    "solo": bool(self._safe_attr(t, "solo", bool, False)),
+                    "volume": float(t.mixer_device.volume.value),
+                    "panning": float(t.mixer_device.panning.value),
+                    "color_index": self._safe_attr(t, "color_index", int, None),
+                    "devices": devices,
+                    "clips": clips,
+                    "arrangement_clips": len(list(getattr(t, "arrangement_clips", []) or [])),
+                    "playing_slot_index": ps.get("playing_slot_index", -1),
+                    "fired_slot_index": ps.get("fired_slot_index", -1),
+                    "no_stop_slots": ps.get("no_stop_slots", []),
+                    "is_recording": bool(ps.get("is_recording", False)),
+                }
+                tracks.append(entry)
+            letters = "ABCDEFGHIJKL"
+            returns = []
+            for i, r in enumerate(song.return_tracks):
+                returns.append({
+                    "index": i, "letter": letters[i] if i < len(letters) else str(i),
+                    "name": str(r.name),
+                    "devices": [str(d.name) for d in r.devices],
+                    "volume": float(r.mixer_device.volume.value),
+                })
+            scenes = []
+            for sc in perf.get("scenes", []):
+                sc = dict(sc)
+                sc["clip_count"] = len(sc.get("clip_tracks", []))
+                scenes.append(sc)
+            try:
+                app = self.application()
+                live_version = "%d.%d.%d" % (app.get_major_version(), app.get_minor_version(), app.get_bugfix_version())
+            except Exception:
+                live_version = "unknown"
+            out = {
+                "live_version": live_version,
+                "script_version": SCRIPT_VERSION,
+                "session": {
+                    "tempo": float(song.tempo),
+                    "signature_numerator": int(song.signature_numerator),
+                    "signature_denominator": int(song.signature_denominator),
+                    "is_playing": bool(song.is_playing),
+                    "bar": perf.get("bar"), "beat_in_bar": perf.get("beat_in_bar"), "beat": perf.get("beat"),
+                    "clip_trigger_quantization": perf.get("clip_trigger_quantization"),
+                    "clip_trigger_quantization_name": perf.get("clip_trigger_quantization_name"),
+                    "scale_mode": perf.get("scale_mode"), "scale_name": perf.get("scale_name"),
+                    "root_note_name": perf.get("root_note_name"),
+                    "loop": self._safe_song_property("loop", bool, False),
+                    "loop_start": self._safe_song_property("loop_start", float, 0.0),
+                    "loop_length": self._safe_song_property("loop_length", float, 0.0),
+                    "song_length": self._safe_song_property("song_length", float, 0.0),
+                    "master_volume": float(song.master_track.mixer_device.volume.value),
+                },
+                "tracks": tracks,
+                "returns": returns,
+                "scenes": scenes,
+                "cues": perf.get("cues", []),
+                "pending_record": perf.get("pending_record"),
+                "events": perf.get("events", []),
+            }
+            if include_library:
+                try:
+                    out["library"] = self._get_library_status()
+                except Exception as e:
+                    out["library_error"] = str(e)
+            return out
+        except Exception as e:
+            self.log_message("Error building context: " + str(e))
+            raise
+
+    # ── the cue store ────────────────────────────────────────────────────────
+
+    def _validate_cue_step(self, step):
+        action = step["action"]
+        if action == "fire_scene":
+            self._resolve_scene(step.get("scene_index", -1))
+        elif action in ("fire_clip", "stop_clip"):
+            track = self._resolve_track(step.get("track_index", 0))
+            ci = int(step.get("clip_index", 0))
+            if ci < 0 or ci >= len(track.clip_slots):
+                raise IndexError("clip index %d out of range on '%s'" % (ci, track.name))
+            if action == "fire_clip" and not track.clip_slots[ci].has_clip:
+                raise ValueError("slot %d on '%s' holds no clip" % (ci, track.name))
+        elif action == "restore_mix":
+            if int(step.get("snapshot_id", -1)) not in self._mix_snapshots:
+                raise ValueError("no mix snapshot %s" % step.get("snapshot_id"))
+        elif action in ("set", "ramp"):
+            if str(step.get("target") or "") not in self.CUE_TARGETS:
+                raise ValueError("target must be one of %s" % ", ".join(self.CUE_TARGETS))
+            self._perf_param(step)  # raises if the track, device or parameter is missing
+            key = "value" if action == "set" else "to"
+            if step.get(key) is None:
+                raise ValueError("a %s step needs '%s'" % (action, key))
+            if step.get("target") == "tempo":
+                t = float(step.get(key))
+                if t < 20.0 or t > 999.0:
+                    raise ValueError("tempo must be between 20 and 999 BPM")
+
+    def _schedule_cue(self, cue):
+        try:
+            song = self._song
+            if not song.is_playing:
+                raise ValueError("cues need the transport running; start the performance first")
+            steps_in = list((cue or {}).get("steps") or [])
+            if not steps_in:
+                raise ValueError("a cue needs at least one step")
+            if len(steps_in) > 64:
+                raise ValueError("at most 64 steps per cue")
+            now = float(song.current_song_time)
+            bpb = self._beats_per_bar()
+            steps = []
+            for i, st in enumerate(steps_in):
+                action = str(st.get("action") or "")
+                if action not in self.CUE_ACTIONS:
+                    raise ValueError("step %d: unknown action '%s'" % (i + 1, action))
+                if st.get("beat") is None:
+                    raise ValueError("step %d has no beat" % (i + 1))
+                beat = float(st.get("beat"))
+                step = dict(st)
+                step["beat"] = beat
+                step["action"] = action
+                step["index"] = i
+                step["done"] = False
+                step["fired_at"] = None
+                if action == "ramp":
+                    end_beat = float(st.get("end_beat", beat))
+                    if end_beat <= beat:
+                        raise ValueError("step %d: a ramp needs end_beat after beat" % (i + 1))
+                    if end_beat - beat > 64 * bpb:
+                        raise ValueError("step %d: ramps are at most 64 bars" % (i + 1))
+                    step["end_beat"] = end_beat
+                    step["from_value"] = None
+                elif beat <= now:
+                    raise ValueError("step %d is at beat %s but it is beat %.2f" % (
+                        i + 1, self._fmt_beat(beat), now))
+                self._validate_cue_step(step)
+                steps.append(step)
+            with self._cue_lock:
+                cue_id = self._cue_next_id
+                self._cue_next_id += 1
+                entry = {"id": cue_id, "name": str(cue.get("name") or ("cue %d" % cue_id)),
+                         "steps": steps, "beats_per_bar": bpb, "created_beat": now,
+                         "quantization": self._safe_song_property("clip_trigger_quantization", int, 4)}
+                self._cues.append(entry)
+            self._arm_perf_tick()
+            return {"id": cue_id, "name": entry["name"], "beat_now": now,
+                    "steps": [self._public_step(s) for s in steps]}
+        except Exception as e:
+            self.log_message("Error scheduling cue: " + str(e))
+            raise
+
+    def _cancel_cue(self, cue_id=None, reason="cancelled"):
+        with self._cue_lock:
+            if cue_id is None:
+                gone = list(self._cues)
+                self._cues = []
+            else:
+                cue_id = int(cue_id)
+                gone = [c for c in self._cues if c["id"] == cue_id]
+                self._cues = [c for c in self._cues if c["id"] != cue_id]
+        if cue_id is not None and not gone:
+            raise ValueError("no pending cue with id %d" % cue_id)
+        for c in gone:
+            left = [s for s in c["steps"] if not s["done"]]
+            self._perf_event("cue_cancelled", {"cue_id": c["id"], "name": c["name"],
+                                               "steps_left": len(left), "reason": reason})
+        return {"cancelled": [c["id"] for c in gone], "reason": reason}
+
+    # ── the clock ────────────────────────────────────────────────────────────
+
+    def _arm_perf_tick(self):
+        if self._perf_tick_armed:
+            return
+        self._perf_tick_armed = True
+        try:
+            self.schedule_message(1, self._perf_tick)
+        except Exception as e:
+            self._perf_tick_armed = False
+            self.log_message("could not arm the performance clock: " + str(e))
+
+    def _perf_tick(self):
+        self._perf_tick_armed = False
+        more = True
+        try:
+            more = self._perf_step()
+        except Exception as e:
+            self.log_message("performance tick error: " + str(e))
+            self.log_message(traceback.format_exc())
+        if more:
+            self._arm_perf_tick()
+
+    def _launch_lead(self, quantization, bpb):
+        """How many beats before its target a launch step is issued."""
+        if quantization == 0:
+            return 0.0
+        if quantization >= 5:
+            return self.LAUNCH_LEAD_MARGIN
+        return max(0.0, bpb - self.LAUNCH_LEAD_MARGIN)
+
+    def _perf_step(self):
+        """One tick of the performance clock; True while there is work."""
+        song = self._song
+        playing = bool(song.is_playing)
+        now = float(song.current_song_time)
+        bpb = self._beats_per_bar()
+        self._perf_record_step(playing)
+        if self._performance_mode and playing:
+            self._watch_scene_rows()
+        with self._cue_lock:
+            cues = list(self._cues)
+        if cues and not playing:
+            self._cancel_cue(None, "transport stopped at beat %s" % self._fmt_beat(now))
+            return self._pending_record is not None or self._performance_mode
+        quant = self._safe_song_property("clip_trigger_quantization", int, 4)
+        for cue in cues:
+            if cue["beats_per_bar"] != bpb:
+                self._cancel_cue(cue["id"], "time signature changed")
+                continue
+            for step in cue["steps"]:
+                if step["done"]:
+                    continue
+                action = step["action"]
+                if action in ("fire_scene", "fire_clip", "stop_clip", "stop_all_clips"):
+                    if now >= step["beat"] - self._launch_lead(quant, bpb):
+                        self._run_cue_action(cue, step, now)
+                elif action == "ramp":
+                    if now >= step["beat"]:
+                        self._run_cue_ramp(cue, step, now)
+                elif now >= step["beat"]:
+                    self._run_cue_action(cue, step, now)
+            if all(s["done"] for s in cue["steps"]):
+                with self._cue_lock:
+                    self._cues = [c for c in self._cues if c["id"] != cue["id"]]
+                self._perf_event("cue_done", {"cue_id": cue["id"], "name": cue["name"]})
+        with self._cue_lock:
+            pending = len(self._cues) > 0
+        return pending or self._pending_record is not None or self._performance_mode
+
+    def _run_cue_action(self, cue, step, now):
+        action = step["action"]
+        detail = {"cue_id": cue["id"], "cue": cue["name"], "step": step["index"],
+                  "action": action, "label": step.get("label"), "target_beat": step["beat"],
+                  "target_bar": step.get("bar"), "issued_at": now,
+                  "late": bool(now > step["beat"] + 0.25)}
+        try:
+            if action == "fire_scene":
+                i, scene = self._resolve_scene(step.get("scene_index", -1))
+                scene.fire()
+                self._note_scene_fired(i, self._landing()["lands_on_bar"])
+            elif action == "fire_clip":
+                self._fire_clip(int(step.get("track_index", 0)), int(step.get("clip_index", 0)))
+            elif action == "stop_clip":
+                self._stop_clip(int(step.get("track_index", 0)), int(step.get("clip_index", 0)))
+            elif action == "stop_all_clips":
+                self._song.stop_all_clips()
+            elif action == "stop_playback":
+                self._song.stop_playing()
+            elif action == "set":
+                self._perf_write(step, float(step.get("value")))
+            elif action == "restore_mix":
+                self._restore_mix(step.get("snapshot_id"))
+            self._perf_event("cue_step_fired", detail)
+        except Exception as e:
+            detail["error"] = str(e)
+            self._perf_event("cue_step_failed", detail)
+        step["done"] = True
+        step["fired_at"] = now
+
+    def _run_cue_ramp(self, cue, step, now):
+        detail = {"cue_id": cue["id"], "cue": cue["name"], "step": step["index"],
+                  "label": step.get("label"), "target": step.get("target"), "to": step.get("to")}
+        try:
+            if step.get("from_value") is None:
+                step["from_value"] = self._perf_read(step)
+                detail["from"] = step["from_value"]
+                self._perf_event("ramp_started", dict(detail, action="ramp", issued_at=now))
+            span = float(step["end_beat"]) - float(step["beat"])
+            frac = (now - float(step["beat"])) / span if span > 0 else 1.0
+            if frac >= 1.0:
+                self._perf_write(step, float(step["to"]))
+                step["done"] = True
+                step["fired_at"] = now
+                self._perf_event("ramp_done", dict(detail, action="ramp", issued_at=now))
+            else:
+                frac = max(0.0, frac)
+                v = float(step["from_value"]) + (float(step["to"]) - float(step["from_value"])) * frac
+                self._perf_write(step, v)
+        except Exception as e:
+            detail["error"] = str(e)
+            self._perf_event("cue_step_failed", dict(detail, action="ramp"))
+            step["done"] = True
+            step["fired_at"] = now
+
+    def _perf_param(self, step):
+        """The Live object a set or ramp step writes, as (kind, object)."""
+        target = str(step.get("target") or "")
+        song = self._song
+        if target == "tempo":
+            return "tempo", song
+        if target == "crossfader":
+            return "unit", song.master_track.mixer_device.crossfader
+        kind = str(step.get("kind") or "track")
+        if target == "volume":
+            return "param", self._resolve_track(step.get("track_index", 0), kind).mixer_device.volume
+        if target == "mute":
+            return "mute", self._resolve_track(step.get("track_index", 0), kind)
+        if target == "send":
+            track = self._resolve_track(step.get("track_index", 0), kind)
+            sends = list(track.mixer_device.sends)
+            si = int(step.get("send_index", 0))
+            if si < 0 or si >= len(sends):
+                raise IndexError("send index %d out of range" % si)
+            return "param", sends[si]
+        if target == "device":
+            track = self._resolve_track(step.get("track_index", 0), kind)
+            devices = list(track.devices)
+            di = int(step.get("device_index", 0))
+            if di < 0 or di >= len(devices):
+                raise IndexError("device index %d out of range on '%s'" % (di, track.name))
+            params = list(devices[di].parameters)
+            pi = int(step.get("parameter_index", 0))
+            if pi < 0 or pi >= len(params):
+                raise IndexError("parameter index %d out of range on '%s'" % (pi, devices[di].name))
+            return "param", params[pi]
+        raise ValueError("unknown target '%s'" % target)
+
+    def _perf_read(self, step):
+        kind, obj = self._perf_param(step)
+        if kind == "tempo":
+            return float(obj.tempo)
+        if kind == "unit":
+            span = float(obj.max) - float(obj.min)
+            return (float(obj.value) - float(obj.min)) / span if span else 0.0
+        if kind == "mute":
+            return 1.0 if obj.mute else 0.0
+        return float(obj.value)
+
+    def _perf_write(self, step, value):
+        kind, obj = self._perf_param(step)
+        value = float(value)
+        if kind == "tempo":
+            obj.tempo = max(20.0, min(999.0, value))
+        elif kind == "unit":
+            v = max(0.0, min(1.0, value))
+            obj.value = float(obj.min) + (float(obj.max) - float(obj.min)) * v
+        elif kind == "mute":
+            obj.mute = bool(value >= 0.5)
+        else:
+            obj.value = max(float(obj.min), min(float(obj.max), value))
+
+    def _perf_record_step(self, playing):
+        pr = self._pending_record
+        if pr is None:
+            return
+        try:
+            track = list(self._song.tracks)[pr["track_index"]]
+            slot = track.clip_slots[pr["slot"]]
+            if slot.has_clip:
+                clip = slot.clip
+                if str(clip.name) != pr["name"]:
+                    try:
+                        clip.name = pr["name"]
+                    except Exception:
+                        pass
+                if bool(getattr(clip, "is_recording", False)):
+                    pr["seen_recording"] = True
+                    return
+                if pr["seen_recording"]:
+                    track.arm = False
+                    self._perf_event("recording_done", {
+                        "track_index": pr["track_index"], "track": str(track.name),
+                        "slot": pr["slot"], "name": pr["name"],
+                        "length": float(clip.length)})
+                    self._pending_record = None
+                    return
+            if (pr["seen_recording"] and not playing) or time.time() - pr["started"] > 180:
+                track.arm = False
+                self._perf_event("recording_abandoned", {
+                    "track_index": pr["track_index"], "track": str(track.name),
+                    "slot": pr["slot"], "name": pr["name"],
+                    "reason": "transport stopped" if not playing else "nothing recorded"})
+                self._pending_record = None
+        except Exception as e:
+            self.log_message("recording watch error: " + str(e))
+            self._pending_record = None
 
     # ── Passive human-UI listeners ──────────────────────────────────────────────
 

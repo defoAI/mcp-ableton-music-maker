@@ -30,6 +30,7 @@ fn accent() -> i64 {
 
 /// A note that repeats: hi-hats every beat, an off-beat bass, a 16th ride.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct Pattern {
     /// MIDI pitch 0-127, or a note name like "C1" or "F#2"
     pub pitch: serde_json::Value,
@@ -52,6 +53,7 @@ pub struct Pattern {
 /// Everything a tool accepts as note input. Flattened into the tool's
 /// parameters, so each field is a top-level argument.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct NotesInput {
     /// Full note objects: pitch, start_time, duration, velocity; mute is
     /// optional and defaults to false. Prefer notes_csv, steps or patterns —

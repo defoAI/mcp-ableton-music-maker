@@ -507,3 +507,146 @@ mod tests {
         assert!(read_file(&junk).unwrap_err().contains("not a WAV or AIFF"));
     }
 }
+
+/// Energy share of three bands over the whole recording: low (< 200 Hz),
+/// mid, high (> 4 kHz), each 0–1 and summing to 1. A plain radix-2 FFT on
+/// 4096-sample windows of the mono mix; no dependency.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct Bands {
+    pub low: f64,
+    pub mid: f64,
+    pub high: f64,
+}
+
+pub fn band_balance(audio: &Audio) -> Bands {
+    const N: usize = 4096;
+    let frames = audio.frames();
+    let chans = audio.channels.len().max(1) as f32;
+    let mut low = 0.0f64;
+    let mut mid = 0.0f64;
+    let mut high = 0.0f64;
+    let bin_hz = audio.sample_rate as f64 / N as f64;
+    let mut re = vec![0.0f64; N];
+    let mut im = vec![0.0f64; N];
+    let mut start = 0;
+    while start + N <= frames.max(N) && start < frames {
+        for i in 0..N {
+            let mut s = 0.0f32;
+            for ch in &audio.channels {
+                s += ch.get(start + i).copied().unwrap_or(0.0);
+            }
+            // Hann window
+            let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / N as f64).cos();
+            re[i] = (s / chans) as f64 * w;
+            im[i] = 0.0;
+        }
+        fft(&mut re, &mut im);
+        for k in 1..N / 2 {
+            let e = re[k] * re[k] + im[k] * im[k];
+            let hz = k as f64 * bin_hz;
+            if hz < 200.0 {
+                low += e;
+            } else if hz > 4000.0 {
+                high += e;
+            } else {
+                mid += e;
+            }
+        }
+        start += N;
+    }
+    let total = low + mid + high;
+    if total <= 0.0 {
+        return Bands {
+            low: 0.0,
+            mid: 0.0,
+            high: 0.0,
+        };
+    }
+    Bands {
+        low: low / total,
+        mid: mid / total,
+        high: high / total,
+    }
+}
+
+fn fft(re: &mut [f64], im: &mut [f64]) {
+    let n = re.len();
+    let mut j = 0;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j |= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    let mut len = 2;
+    while len <= n {
+        let ang = -2.0 * std::f64::consts::PI / len as f64;
+        let (wr, wi) = (ang.cos(), ang.sin());
+        let mut i = 0;
+        while i < n {
+            let (mut cr, mut ci) = (1.0, 0.0);
+            for k in 0..len / 2 {
+                let (ur, ui) = (re[i + k], im[i + k]);
+                let (vr, vi) = (
+                    re[i + k + len / 2] * cr - im[i + k + len / 2] * ci,
+                    re[i + k + len / 2] * ci + im[i + k + len / 2] * cr,
+                );
+                re[i + k] = ur + vr;
+                im[i + k] = ui + vi;
+                re[i + k + len / 2] = ur - vr;
+                im[i + k + len / 2] = ui - vi;
+                let ncr = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr;
+                cr = ncr;
+            }
+            i += len;
+        }
+        len <<= 1;
+    }
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::*;
+
+    fn tone(hz: f64) -> Audio {
+        let rate = 44100u32;
+        let samples: Vec<f32> = (0..rate as usize)
+            .map(|i| {
+                (0.5 * (2.0 * std::f64::consts::PI * hz * i as f64 / rate as f64).sin()) as f32
+            })
+            .collect();
+        Audio {
+            sample_rate: rate,
+            channels: vec![samples],
+        }
+    }
+
+    #[test]
+    fn bands_follow_the_tone() {
+        let b = band_balance(&tone(60.0));
+        assert!(b.low > 0.9, "{b:?}");
+        let b = band_balance(&tone(1000.0));
+        assert!(b.mid > 0.9, "{b:?}");
+        let b = band_balance(&tone(8000.0));
+        assert!(b.high > 0.9, "{b:?}");
+        let silent = Audio {
+            sample_rate: 44100,
+            channels: vec![vec![0.0; 44100]],
+        };
+        assert_eq!(
+            band_balance(&silent),
+            Bands {
+                low: 0.0,
+                mid: 0.0,
+                high: 0.0
+            }
+        );
+    }
+}

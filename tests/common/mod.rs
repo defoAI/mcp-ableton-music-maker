@@ -19,6 +19,9 @@ pub struct FakeBridge {
     /// Per-command response sequences; the last one repeats. Commands not
     /// scripted get `response`.
     pub scripted: Mutex<HashMap<String, VecDeque<Value>>>,
+    /// A clock to attach to every response, as the Remote Script does while
+    /// a performance runs.
+    pub clock: Mutex<Option<Value>>,
 }
 
 impl FakeBridge {
@@ -28,7 +31,13 @@ impl FakeBridge {
             sent: Mutex::new(Vec::new()),
             fail_from: Mutex::new(None),
             scripted: Mutex::new(HashMap::new()),
+            clock: Mutex::new(None),
         })
+    }
+
+    /// Attach this clock to every response from now on (None to stop).
+    pub fn set_clock(&self, clock: Option<Value>) {
+        *self.clock.lock().unwrap() = clock;
     }
 
     /// Answer `command` with these responses in order; the last one repeats.
@@ -45,6 +54,7 @@ impl FakeBridge {
             sent: Mutex::new(Vec::new()),
             fail_from: Mutex::new(None),
             scripted: Mutex::new(HashMap::new()),
+            clock: Mutex::new(None),
         })
     }
 
@@ -75,6 +85,9 @@ impl LiveBridge for FakeBridge {
             ));
             sent.len() - 1
         };
+        mcp_ableton_music_maker::connection::note_exchange_clock(
+            self.clock.lock().unwrap().clone(),
+        );
         if let Some((from, err)) = self.fail_from.lock().unwrap().as_ref() {
             if n >= *from {
                 return Err(err.clone());

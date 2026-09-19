@@ -16,6 +16,10 @@
 //! - [`tools`]        the MCP server and all tools
 //! - [`notes`]        compact note forms (csv, step strings, patterns, tiling)
 //! - [`audio`]        reads the WAV/AIFF Live recorded for a capture and measures it
+//! - [`performance`]  live performance: state, bar arithmetic, cue resolution, the readout text
+//! - [`context`]      get_context's readout and the server instructions clients receive at initialize
+//! - [`library`]      the server's copy of Live's browser: paged from the script, on disk, searched locally
+//! - [`variation`]    clip variations and the key of a recording (pure)
 //! - [`activity`]     the local activity log (one JSON line per tool call)
 //! - [`state`]        where the server writes on this machine
 //! - [`install`]      the Remote Script installer
@@ -29,11 +33,15 @@ pub mod activity;
 pub mod app;
 pub mod audio;
 pub mod connection;
+pub mod context;
 pub mod handshake;
 pub mod install;
+pub mod library;
 pub mod notes;
+pub mod performance;
 pub mod state;
 pub mod tools;
+pub mod variation;
 
 /// Package version, reported to MCP clients and in `--status`.
 pub const MCP_VERSION: &str = env!("CARGO_PKG_VERSION");
