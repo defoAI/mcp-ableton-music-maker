@@ -1113,3 +1113,335 @@ async fn every_section_tool_is_listed_and_a_set_without_suffixes_behaves_as_befo
         text_of(&r)
     );
 }
+
+#[tokio::test]
+async fn a_transition_composes_tempo_retime_and_crossfade_into_the_jump() {
+    let b = bridge();
+    b.script(
+        "schedule_cue",
+        vec![json!({"id": 4, "name": "song", "steps": []})],
+    );
+    // Bar 38.2 in Groove+Pad (from 33): the phrase ends at 41, the next bar is 39.
+    b.script(
+        "get_performance_state",
+        vec![state(38, 2, Some((2, 33)), true)],
+    );
+    b.script(
+        "get_clip_info",
+        vec![json!({"name": "Groove+Pad/Kick", "length": 4.0})],
+    );
+    b.script("get_clip_notes", vec![json!({"notes": (0..4).map(|i| json!({"pitch": 36, "start_time": i as f64, "duration": 0.25, "velocity": 100, "mute": false})).collect::<Vec<_>>()})]);
+    b.script("get_context", vec![json!({"tracks": [{"index": 3, "name": "Pad", "volume": 0.8}, {"index": 4, "name": "Lead", "volume": 0.7}]})]);
+    let server = server_with(b.clone());
+    running_song(&server, 2, "Groove+Pad", Some(2), vec![]);
+    let r = server
+        .run(
+            &tools::JUMP_TO,
+            JumpToParams {
+                section: "Break".into(), repeats: None, at: None, force: true,
+                transition: Some(json!({"tempo": 122, "retime": {"tracks": ["Kick"], "to": "half_time"}, "crossfade": {"out": ["Pad"], "in": ["Lead"], "bars": 8}})),
+            },
+            mcp_ableton_music_maker::sections::jump_to_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    assert_eq!(
+        b.commands(),
+        vec![
+            "get_performance_state",
+            "get_clip_info",
+            "get_clip_notes",
+            "create_clip",
+            "set_clip_name",
+            "add_notes_to_clip",
+            "get_context",
+            "schedule_cue"
+        ],
+        "the retimed copy is written now; the faders are read once"
+    );
+    let sent = b.sent();
+    // Kick has no clip in Break's row: a half-time copy of what it plays goes there.
+    assert_eq!(
+        sent[3].1,
+        json!({"track_index": 0, "clip_index": 3, "length": 4.0})
+    );
+    assert_eq!(sent[4].1["name"], "Groove+Pad/Kick (half_time)");
+    assert_eq!(
+        sent[5].1["notes"].as_array().unwrap().len(),
+        2,
+        "four quarter notes become two half notes"
+    );
+    let steps = sent[7].1["cue"]["steps"].as_array().unwrap().clone();
+    let describe = |s: &Value| {
+        format!(
+            "{} {} {}→{}",
+            s["action"],
+            s["target"].as_str().unwrap_or("-"),
+            s["bar"],
+            s["end_beat"]
+        )
+    };
+    assert_eq!(
+        steps.len(),
+        5,
+        "{:?}",
+        steps.iter().map(describe).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        (
+            steps[0]["action"].as_str(),
+            steps[0]["target"].as_str(),
+            steps[0]["bar"].as_f64(),
+            steps[0]["end_beat"].as_f64(),
+            steps[0]["to"].as_f64()
+        ),
+        (
+            Some("ramp"),
+            Some("tempo"),
+            Some(39.0),
+            Some(160.0),
+            Some(122.0)
+        ),
+        "tempo ramps under the outgoing phrase and ends at the boundary"
+    );
+    assert_eq!(
+        (
+            steps[1]["action"].as_str(),
+            steps[1]["target"].as_str(),
+            steps[1]["track_index"].as_i64(),
+            steps[1]["bar"].as_f64(),
+            steps[1]["to"].as_f64()
+        ),
+        (Some("ramp"), Some("volume"), Some(3), Some(41.0), Some(0.0)),
+        "Pad fades out from the boundary"
+    );
+    assert_eq!(
+        (
+            steps[2]["action"].as_str(),
+            steps[2]["target"].as_str(),
+            steps[2]["track_index"].as_i64(),
+            steps[2]["bar"].as_f64(),
+            steps[2]["value"].as_f64()
+        ),
+        (Some("set"), Some("volume"), Some(4), Some(39.0), Some(0.0)),
+        "Lead's fader is at 0 before the boundary"
+    );
+    assert_eq!(
+        (
+            steps[3]["action"].as_str(),
+            steps[3]["track_index"].as_i64(),
+            steps[3]["bar"].as_f64(),
+            steps[3]["end_beat"].as_f64(),
+            steps[3]["to"].as_f64()
+        ),
+        (Some("ramp"), Some(4), Some(41.0), Some(192.0), Some(0.7)),
+        "Lead fades up to its own level over 8 bars"
+    );
+    assert_eq!(
+        (
+            steps[4]["action"].as_str(),
+            steps[4]["scene_index"].as_i64(),
+            steps[4]["bar"].as_f64()
+        ),
+        (Some("fire_scene"), Some(3), Some(41.0))
+    );
+    let t = text_of(&r);
+    assert!(t.starts_with("Jumping to 'Break' at bar 41 (end of this phrase); it loops until go. Cue 4 replaces cue 2.\n"), "{t}");
+    assert!(
+        t.contains("bars 39–41   ramp tempo 126 → 122 under the outgoing phrase"),
+        "{t}"
+    );
+    assert!(t.contains("bar 41       Kick retimed to half time in Break's row (clips 'Groove+Pad/Kick (half_time)' written now, seed 1"), "{t}");
+    assert!(
+        t.contains(
+            "bars 41–49   crossfade: Pad → 0 · Lead (to 0.70) from 0 up to their current level"
+        ),
+        "{t}"
+    );
+    assert_eq!(
+        t.matches("ramp tempo").count(),
+        1,
+        "the transition's line, not the generic one too: {t}"
+    );
+    assert!(t.contains("fire scene 'Break · 16'"), "{t}");
+
+    // An unknown key never touches the set.
+    let before = b.commands().len();
+    let r = server
+        .run(
+            &tools::JUMP_TO,
+            JumpToParams {
+                section: "Break".into(),
+                repeats: None,
+                at: None,
+                force: true,
+                transition: Some(json!({"morph": 1})),
+            },
+            mcp_ableton_music_maker::sections::jump_to_body,
+        )
+        .await;
+    assert!(is_error(&r) && text_of(&r).contains("transition: unknown key 'morph'; one of tempo, retime, crossfade, fill, drop, sweep"), "{}", text_of(&r));
+    assert_eq!(b.commands().len(), before + 1, "only the state read");
+}
+
+#[tokio::test]
+async fn fill_drop_and_sweep_transitions_and_the_standalone_retime() {
+    let b = bridge();
+    b.script(
+        "schedule_cue",
+        vec![json!({"id": 5, "name": "song", "steps": []})],
+    );
+    b.script(
+        "get_performance_state",
+        vec![state(38, 2, Some((2, 33)), true)],
+    );
+    b.script(
+        "get_clip_info",
+        vec![json!({"name": "Groove+Pad/Hats+Perc", "length": 4.0})],
+    );
+    b.script("get_clip_notes", vec![json!({"notes": (0..8).map(|i| json!({"pitch": 42, "start_time": i as f64 * 0.5, "duration": 0.25, "velocity": 100, "mute": false})).collect::<Vec<_>>()})]);
+    let server = server_with(b.clone());
+    running_song(&server, 2, "Groove+Pad", Some(2), vec![]);
+    let r = server
+        .run(
+            &tools::JUMP_TO,
+            JumpToParams {
+                section: "Break".into(), repeats: None, at: Some("45".into()), force: true,
+                transition: Some(json!({"fill": {"track": "Hats+Perc"}, "drop": {"bars": 2, "keep": ["Kick"]}, "sweep": {"track": "Pad", "device_index": 0, "parameter_index": 3, "from": 0.2, "to": 1.0}})),
+            },
+            mcp_ableton_music_maker::sections::jump_to_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    assert_eq!(
+        b.commands(),
+        vec![
+            "get_performance_state",
+            "get_clip_info",
+            "get_clip_notes",
+            "create_clip",
+            "set_clip_name",
+            "add_notes_to_clip",
+            "schedule_cue"
+        ]
+    );
+    let sent = b.sent();
+    assert_eq!(
+        sent[3].1,
+        json!({"track_index": 1, "clip_index": 6, "length": 4.0}),
+        "the fill clip goes into the first free slot that is not the target row"
+    );
+    assert_eq!(sent[4].1["name"], "Groove+Pad/Hats+Perc fill");
+    assert_eq!(
+        sent[5].1["notes"].as_array().unwrap().len(),
+        16,
+        "a bar of 16ths"
+    );
+    let steps = sent[6].1["cue"]["steps"].as_array().unwrap().clone();
+    let of = |action: &str| -> Vec<Value> {
+        steps
+            .iter()
+            .filter(|s| s["action"] == action)
+            .cloned()
+            .collect()
+    };
+    let fires = of("fire_clip");
+    assert_eq!(fires.len(), 1);
+    assert_eq!(
+        (
+            fires[0]["track_index"].as_i64(),
+            fires[0]["clip_index"].as_i64(),
+            fires[0]["bar"].as_f64()
+        ),
+        (Some(1), Some(6), Some(44.0)),
+        "the fill fires one bar before the jump"
+    );
+    let stops = of("stop_clip");
+    assert_eq!(stops.len(), 4, "the fill stops at the jump (no Hats+Perc clip in Break); the drop stops Hats+Perc, Bass and Pad at 43");
+    assert!(
+        stops
+            .iter()
+            .any(|s| s["clip_index"] == 6 && s["bar"] == 45.0),
+        "{stops:?}"
+    );
+    assert_eq!(
+        stops.iter().filter(|s| s["bar"] == 43.0).count(),
+        3,
+        "{stops:?}"
+    );
+    assert!(!stops.iter().any(|s| s["track_index"] == 0), "Kick is kept");
+    let ramps = of("ramp");
+    assert_eq!(ramps.len(), 1);
+    assert_eq!(
+        (
+            ramps[0]["target"].as_str(),
+            ramps[0]["bar"].as_f64(),
+            ramps[0]["end_beat"].as_f64(),
+            ramps[0]["to"].as_f64()
+        ),
+        (Some("device"), Some(39.0), Some(176.0), Some(1.0)),
+        "the sweep runs from the next bar to the jump"
+    );
+    assert_eq!(of("fire_scene")[0]["bar"], 45.0);
+    let t = text_of(&r);
+    assert!(t.contains("bar 44       fill: 'Groove+Pad/Hats+Perc fill' (slot 6, 1 bar, seed 1) on Hats+Perc until the jump; stopped at bar 45 (Hats+Perc has no clip in Break's row)"), "{t}");
+    assert!(t.contains("bar 43       drop: Hats+Perc, Bass, Pad out, Kick stays for the last 2 bars before the jump"), "{t}");
+    assert!(
+        t.contains("bars 39–45   sweep Pad device 0 parameter 3 → 1 under the outgoing phrase"),
+        "{t}"
+    );
+
+    // retime_clip on its own is vary_clip's half_time with one undo.
+    b.script(
+        "get_performance_state",
+        vec![state(38, 2, Some((2, 33)), true)],
+    );
+    let before = b.commands().len();
+    let r = server
+        .run(
+            &tools::RETIME_CLIP,
+            tools::RetimeClipParams {
+                track: json!("Kick"),
+                clip: 2,
+                to: "half time".into(),
+                seed: 1,
+                to_slot: None,
+            },
+            tools::retime_clip_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    assert_eq!(
+        b.commands()[before..],
+        [
+            "get_performance_state",
+            "get_clip_notes",
+            "get_clip_info",
+            "clear_notes_from_clip",
+            "add_notes_to_clip"
+        ]
+    );
+    assert!(
+        text_of(&r).starts_with("Varied 'Kick' slot 2 in place (half_time, seed 1)"),
+        "{}",
+        text_of(&r)
+    );
+    let r = server
+        .run(
+            &tools::RETIME_CLIP,
+            tools::RetimeClipParams {
+                track: json!("Kick"),
+                clip: 2,
+                to: "reverse".into(),
+                seed: 1,
+                to_slot: None,
+            },
+            tools::retime_clip_body,
+        )
+        .await;
+    assert!(
+        is_error(&r) && text_of(&r).contains("to must be half_time or double_time"),
+        "{}",
+        text_of(&r)
+    );
+}

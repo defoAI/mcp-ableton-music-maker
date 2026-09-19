@@ -805,6 +805,7 @@ pub const FOLLOW_KEY: ToolSpec = ToolSpec::new("follow_key");
 pub const SNAPSHOT_MIX: ToolSpec = ToolSpec::new("snapshot_mix");
 pub const RESTORE_MIX: ToolSpec = ToolSpec::new("restore_mix");
 pub const PANIC: ToolSpec = ToolSpec::new("panic");
+pub const RETIME_CLIP: ToolSpec = ToolSpec::new("retime_clip");
 pub const MAKE_SECTION: ToolSpec = ToolSpec::new("make_section");
 pub const SET_SONG: ToolSpec = ToolSpec::new("set_song");
 pub const ADD_TO_SONG: ToolSpec = ToolSpec::new("add_to_song");
@@ -3030,6 +3031,18 @@ params!(VaryClipParams {
     /// Write the variation into this slot instead of in place (a new clip)
     to_slot: Option<i64>,
 });
+params!(RetimeClipParams {
+    /// Track name or index
+    track: Value,
+    /// Session slot of the clip
+    clip: i64,
+    /// "half_time" or "double_time"
+    to: String,
+    /// Seed (default 1)
+    seed: u64 = "one_u64",
+    /// Write the retimed clip into this slot instead of in place
+    to_slot: Option<i64>,
+});
 params!(UndoVaryParams {
     /// Track name or index
     track: Value,
@@ -3501,6 +3514,28 @@ pub fn vary_clip_body(live: &LiveState, p: &VaryClipParams) -> ToolResult {
             ))
         }
     }
+}
+
+/// `retime_clip`: the half- or double-time rewrite a transition writes,
+/// on its own.
+pub fn retime_clip_body(live: &LiveState, p: &RetimeClipParams) -> ToolResult {
+    let to = p.to.trim().to_lowercase().replace([' ', '-'], "_");
+    if to != "half_time" && to != "double_time" {
+        return Err(format!(
+            "to must be half_time or double_time, not '{}'",
+            p.to
+        ));
+    }
+    vary_clip_body(
+        live,
+        &VaryClipParams {
+            track: p.track.clone(),
+            clip: p.clip,
+            variation: to,
+            seed: p.seed,
+            to_slot: p.to_slot,
+        },
+    )
 }
 
 pub fn undo_vary_body(live: &LiveState, p: &UndoVaryParams) -> ToolResult {
@@ -4430,6 +4465,7 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "snapshot_mix" => (Empty, snapshot_mix_body),
         "restore_mix" => (RestoreMixParams, restore_mix_body),
         "panic" => (PanicParams, panic_body),
+        "retime_clip" => (RetimeClipParams, retime_clip_body),
         "make_section" => (crate::sections::MakeSectionParams, crate::sections::make_section_body),
         "set_song" => (crate::sections::SetSongParams, crate::sections::set_song_body),
         "add_to_song" => (crate::sections::AddToSongParams, crate::sections::add_to_song_body),
@@ -5853,6 +5889,13 @@ impl Server {
         self.run(&BACK, p, crate::sections::back_body).await
     }
 
+    /// Half- or double-time a clip's notes (the rewrite a jump's `retime`
+    /// transition makes), in place with one undo_vary, or into a free slot.
+    #[tool(name = "retime_clip")]
+    async fn retime_clip(&self, Parameters(p): Parameters<RetimeClipParams>) -> CallToolResult {
+        self.run(&RETIME_CLIP, p, retime_clip_body).await
+    }
+
     /// Go to any section by name at the end of this phrase (default) or on
     /// the next bar, optionally for a number of passes, after which the song
     /// continues from the entry after it. `transition` composes tempo ramps,
@@ -5949,7 +5992,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 86);
+        assert_eq!(tools.len(), 87);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();

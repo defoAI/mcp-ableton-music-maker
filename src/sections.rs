@@ -886,7 +886,15 @@ fn replan_running(
         None => started,
     };
     let plan = song::plan(secs, entries, &sec, repeats, position, start_bar)?;
-    let (cue_id, _, _) = schedule_plan(live, state, &plan, false, old.plan_cue_id, Vec::new())?;
+    let (cue_id, _, _) = schedule_plan(
+        live,
+        state,
+        &plan,
+        false,
+        old.plan_cue_id,
+        Vec::new(),
+        false,
+    )?;
     if cue_id.is_none() {
         if let Some(id) = old.plan_cue_id {
             let _ = live.send_command(
@@ -939,6 +947,7 @@ pub(crate) fn schedule_plan(
     include_first: bool,
     replaces: Option<i64>,
     extra: Vec<CueStep>,
+    allow_silence: bool,
 ) -> Result<Scheduled, String> {
     let mut steps = extra;
     for (i, s) in plan.steps.iter().enumerate() {
@@ -958,7 +967,7 @@ pub(crate) fn schedule_plan(
     let params = CueParams {
         name: Some("song".into()),
         steps,
-        allow_silence: false,
+        allow_silence,
     };
     let resolved = perf::resolve_cue(state, &params)?;
     let sent = live
@@ -1049,7 +1058,8 @@ pub fn play_song_body(live: &LiveState, p: &PlaySongParams) -> ToolResult {
         Some(from_pos),
         started_bar,
     )?;
-    let (cue_id, lines, warnings) = schedule_plan(live, &state, &plan, false, None, Vec::new())?;
+    let (cue_id, lines, warnings) =
+        schedule_plan(live, &state, &plan, false, None, Vec::new(), false)?;
     store_song(
         live,
         Song {
@@ -1300,14 +1310,27 @@ fn steer(live: &LiveState, m: Move) -> ToolResult {
         position,
         landing.bar,
     )?;
-    let (extra, transition_lines) = match m.transition {
-        Some(t) => crate::transition::expand(live, &state, &secs, &target, landing.bar, t)?,
-        None => (Vec::new(), Vec::new()),
+    let mut state = state;
+    let transition = match m.transition {
+        Some(t) => crate::transition::expand(live, &mut state, &secs, &target, landing.bar, t)?,
+        None => crate::transition::Transition::default(),
     };
-    let (cue_id, lines, cue_warnings) =
-        schedule_plan(live, &state, &plan, true, song.plan_cue_id, extra)?;
+    let transition_lines = transition.lines;
+    let (cue_id, mut lines, cue_warnings) = schedule_plan(
+        live,
+        &state,
+        &plan,
+        true,
+        song.plan_cue_id,
+        transition.steps,
+        transition.allow_silence,
+    )?;
     let cue_id = cue_id.ok_or_else(|| "the jump produced no cue".to_string())?;
     warnings.extend(cue_warnings);
+    if !transition_lines.is_empty() {
+        // The transition's own lines say more than the generic ramp/set lines.
+        lines.retain(|l| l.contains("fire scene"));
+    }
     let mut history = song.jump_history.clone();
     match m.target {
         Target::Back => {
