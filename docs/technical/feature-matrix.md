@@ -23,6 +23,9 @@ table is a copy for orientation.
 | Tracks | `get_track_info` | `get_track_info` | |
 | | `create_midi_track`, `create_audio_track` | same names | result names the new track's index |
 | | `set_track_name` | `set_track_name` | |
+| | `set_track_mixer` | `set_track_mixer` | volume (0.85 = 0 dB), pan, mute, solo, arm; tracks, returns, master |
+| | `set_send`, `get_returns` | `set_send`, `get_returns` | sends by return name, letter or index |
+| | `set_color` | `set_track_color` / `set_clip_color` | Live palette index 0-69 |
 | Clips | `create_clip` | `create_clip` (+ `set_clip_name`, `add_notes_to_clip` when `name` / notes are given) | Session slot; names and fills the clip in one call |
 | | `create_audio_clip` | `create_audio_clip` | 65 s socket budget — large imports hold Live's main thread |
 | | `get_clip_notes`, `add_notes_to_clip`, `clear_notes_from_clip` | same names | MIDI in, MIDI out. `add_notes_to_clip` takes compact forms — `steps` strings per pitch, `patterns`, `notes_csv`, `loop_every`/`until` tiling, note names — expanded server-side (`src/notes.rs`); `clear: true` replaces instead of appending. `tests/clip_notes.rs`, `tests/arrangement.rs` |
@@ -31,12 +34,15 @@ table is a copy for orientation.
 | Devices | `get_device_parameters`, `set_device_parameter` | same names | racks and nested chains readable |
 | | `load_instrument_or_effect` | `load_browser_item` | by browser URI |
 | | `load_drum_kit` | `get_browser_items_at_path` + `load_browser_item` | |
+| | `get_drum_rack_pads` | `get_drum_rack_pads` | pitch, Live note name (C1 = 36), pad name per pad with a sound |
 | Browser | `get_browser_tree`, `get_browser_items_at_path` | same names | |
 | Arrangement | `switch_to_arrangement_view` | `switch_to_arrangement_view` | |
 | | `set_arrangement_time` | `set_current_song_time` | |
 | | `get_arrangement_clips` | `get_arrangement_clips` | **Live 11+** |
 | | `duplicate_to_arrangement` | `duplicate_session_clip_to_arrangement` (once per placement) | **Live 11+**; one time, a list, or `start`/`end`/`step`; stops at the first failure and says how far it got |
 | | `set_arrangement_clip_name`, `create_locator` | same names | |
+| | `delete_arrangement_clip`, `delete_locator` | same names | **Live 11+**; the undo the Arrangement lacked |
+| | `set_arrangement_time` | `set_current_song_time` | reports the requested position and where the playhead was |
 | Bridge | `get_remote_script_info` | `get_script_info` | loaded vs expected version, capabilities |
 
 Count the tools before quoting a total; the snapshot in

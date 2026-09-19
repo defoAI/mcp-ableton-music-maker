@@ -9,7 +9,8 @@
 //! - `patterns`: `{pitch, every, offset, count, velocity, duration}`
 //! - `loop_every` + `until`: tile everything above across a longer clip
 //!
-//! Pitches may be numbers or note names (`C1`, `F#2`, `Bb3`; `C4` = 60).
+//! Pitches may be numbers or note names in Live's own convention (`C3` = 60,
+//! so the kick pad `C1` = 36 and the closed hat `F#1` = 42).
 
 use crate::tools::Note;
 use schemars::JsonSchema;
@@ -117,7 +118,8 @@ impl NotesInput {
     }
 }
 
-/// Parse a pitch given as a number or a note name. `C4` is 60; `C-1` is 0.
+/// Parse a pitch given as a number or a note name in Live's convention:
+/// `C3` is 60, `C1` is 36, `C-2` is 0.
 pub fn parse_pitch(v: &serde_json::Value) -> Result<i64, String> {
     match v {
         serde_json::Value::Number(n) => n
@@ -179,7 +181,7 @@ pub fn parse_note_name(s: &str) -> Result<i64, String> {
         .trim()
         .parse()
         .map_err(|_| format!("`{s}` is not a pitch (use 0-127 or a name like C1, F#2, Bb3)"))?;
-    check_pitch((octave + 1) * 12 + base + accidental)
+    check_pitch((octave + 2) * 12 + base + accidental)
 }
 
 fn check_pitch(p: i64) -> Result<i64, String> {
@@ -372,11 +374,12 @@ mod tests {
 
     #[test]
     fn note_names() {
-        assert_eq!(parse_note_name("C4").unwrap(), 60);
-        assert_eq!(parse_note_name("c1").unwrap(), 24);
-        assert_eq!(parse_note_name("F#2").unwrap(), 42);
-        assert_eq!(parse_note_name("Bb3").unwrap(), 58);
-        assert_eq!(parse_note_name("C-1").unwrap(), 0);
+        // Live's names: middle C (60) is C3, the Drum Rack's first pad is C1.
+        assert_eq!(parse_note_name("C3").unwrap(), 60);
+        assert_eq!(parse_note_name("c1").unwrap(), 36);
+        assert_eq!(parse_note_name("F#1").unwrap(), 42);
+        assert_eq!(parse_note_name("Bb2").unwrap(), 58);
+        assert_eq!(parse_note_name("C-2").unwrap(), 0);
         assert_eq!(parse_note_name("36").unwrap(), 36);
         assert!(parse_note_name("H2").is_err());
         assert!(parse_note_name("200").is_err());
@@ -386,7 +389,7 @@ mod tests {
     fn steps_make_a_bar_of_drums() {
         let mut steps = BTreeMap::new();
         steps.insert("36".to_string(), "x...x...x...x...".to_string());
-        steps.insert("F#2".to_string(), "..X. ..x. | ..X. ..x.".to_string());
+        steps.insert("F#1".to_string(), "..X. ..x. | ..X. ..x.".to_string());
         let input = NotesInput {
             steps,
             ..Default::default()
@@ -451,7 +454,7 @@ mod tests {
     #[test]
     fn patterns_count_or_until() {
         let p = Pattern {
-            pitch: serde_json::json!("F#2"),
+            pitch: serde_json::json!("F#1"),
             every: 0.5,
             offset: 0.25,
             count: 0,

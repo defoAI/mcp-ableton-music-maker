@@ -21,7 +21,7 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.8.0"
+SCRIPT_VERSION = "1.9.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -57,6 +57,14 @@ SCRIPT_CAPABILITIES = [
     "get_arrangement_clips",
     "duplicate_session_clip_to_arrangement",
     "create_locator",
+    "set_track_mixer",
+    "set_send",
+    "get_returns",
+    "set_track_color",
+    "set_clip_color",
+    "get_drum_rack_pads",
+    "delete_arrangement_clip",
+    "delete_locator",
 ]
 
 def create_instance(c_instance):
@@ -304,7 +312,9 @@ class AbletonMCP(ControlSurface):
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement",
                                  "map_rack_magnitude", "inspect_rack",
-                                 "create_locator"]:
+                                 "create_locator",
+                                 "set_track_mixer", "set_send", "set_track_color", "set_clip_color",
+                                 "delete_arrangement_clip", "delete_locator"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -404,6 +414,30 @@ class AbletonMCP(ControlSurface):
                             name = params.get("name", "")
                             time_val = params.get("time", 0.0)
                             result = self._create_locator(name, time_val)
+                        elif command_type == "set_track_mixer":
+                            result = self._set_track_mixer(
+                                params.get("track_index", 0), params.get("kind", "track"),
+                                params.get("volume"), params.get("pan"),
+                                params.get("mute"), params.get("solo"), params.get("arm"))
+                        elif command_type == "set_send":
+                            result = self._set_send(
+                                params.get("track_index", 0), params.get("kind", "track"),
+                                params.get("send_index"), params.get("send_name"),
+                                params.get("value", 0.0))
+                        elif command_type == "set_track_color":
+                            result = self._set_track_color(
+                                params.get("track_index", 0), params.get("kind", "track"),
+                                params.get("color_index", 0))
+                        elif command_type == "set_clip_color":
+                            result = self._set_clip_color(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("arrangement", False), params.get("color_index", 0))
+                        elif command_type == "delete_arrangement_clip":
+                            result = self._delete_arrangement_clip(
+                                params.get("track_index", 0), params.get("clip_index", 0))
+                        elif command_type == "delete_locator":
+                            result = self._delete_locator(
+                                params.get("name"), params.get("time"))
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -455,6 +489,11 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_arrangement_clips":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_arrangement_clips(track_index)
+            elif command_type == "get_returns":
+                response["result"] = self._get_returns()
+            elif command_type == "get_drum_rack_pads":
+                response["result"] = self._get_drum_rack_pads(
+                    params.get("track_index", 0), params.get("device_index", -1))
             # Dataset / state-snapshot reads
             elif command_type == "get_clip_notes":
                 track_index = params.get("track_index", 0)
@@ -995,8 +1034,13 @@ class AbletonMCP(ControlSurface):
     def _set_current_song_time(self, time_val):
         """Move the arrangement playhead to a position in beats"""
         try:
+            # Live applies the move on its own tick, so reading the position
+            # straight back returns where the playhead *was*. Report what was
+            # requested as the new position and the old one beside it.
+            previous = float(self._song.current_song_time)
             self._song.current_song_time = float(time_val)
-            return {"current_song_time": self._song.current_song_time}
+            return {"current_song_time": float(time_val),
+                    "previous_song_time": previous}
         except Exception as e:
             self.log_message("Error setting current song time: " + str(e))
             raise
@@ -1192,6 +1236,266 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error creating locator: " + str(e))
+            raise
+
+    # ── Mixer, colours, drum pads, arrangement deletion ──────────────────────
+
+    NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+    def _live_note_name(self, pitch):
+        """Live's own naming: C3 is MIDI 60, so the kick pad C1 is 36."""
+        pitch = int(pitch)
+        return "%s%d" % (self.NOTE_NAMES[pitch % 12], pitch // 12 - 2)
+
+    def _resolve_track(self, track_index, kind="track"):
+        """A track by index among the song's tracks, its return tracks, or the master."""
+        kind = str(kind or "track").lower()
+        if kind == "master":
+            return self._song.master_track
+        if kind == "return":
+            tracks = list(self._song.return_tracks)
+        else:
+            kind = "track"
+            tracks = list(self._song.tracks)
+        track_index = int(track_index)
+        if track_index < 0 or track_index >= len(tracks):
+            raise IndexError("%s index %d out of range (0-%d)" % (kind, track_index, len(tracks) - 1))
+        return tracks[track_index]
+
+    def _mixer_state(self, track):
+        state = {
+            "name": track.name,
+            "volume": float(track.mixer_device.volume.value),
+            "panning": float(track.mixer_device.panning.value),
+            "sends": self._serialize_sends(track),
+        }
+        try:
+            state["mute"] = bool(track.mute)
+            state["solo"] = bool(track.solo)
+        except Exception:
+            pass
+        state["arm"] = self._safe_arm(track)
+        try:
+            state["color_index"] = int(track.color_index)
+        except Exception:
+            pass
+        return state
+
+    def _set_track_mixer(self, track_index, kind, volume, pan, mute, solo, arm):
+        """Volume, pan, mute, solo and arm in one call; unspecified values stay."""
+        try:
+            track = self._resolve_track(track_index, kind)
+            is_master = str(kind or "track").lower() == "master"
+            if volume is not None:
+                v = float(volume)
+                if v < 0.0 or v > 1.0:
+                    raise ValueError("volume must be between 0.0 and 1.0 (Live's mixer parameter; 0.85 is 0 dB)")
+                track.mixer_device.volume.value = v
+            if pan is not None:
+                p = float(pan)
+                if p < -1.0 or p > 1.0:
+                    raise ValueError("pan must be between -1.0 (left) and 1.0 (right)")
+                track.mixer_device.panning.value = p
+            if mute is not None:
+                if is_master:
+                    raise ValueError("the master track has no mute")
+                track.mute = bool(mute)
+            if solo is not None:
+                if is_master:
+                    raise ValueError("the master track has no solo")
+                track.solo = bool(solo)
+            if arm is not None:
+                if not getattr(track, "can_be_armed", False):
+                    raise ValueError("this track cannot be armed (group, return or master)")
+                track.arm = bool(arm)
+            return self._mixer_state(track)
+        except Exception as e:
+            self.log_message("Error setting track mixer: " + str(e))
+            raise
+
+    def _get_returns(self):
+        """The return tracks, so sends can be addressed by name."""
+        try:
+            letters = "ABCDEFGHIJKL"
+            returns = []
+            for i, track in enumerate(self._song.return_tracks):
+                returns.append({
+                    "index": i,
+                    "letter": letters[i] if i < len(letters) else str(i),
+                    "name": track.name,
+                    "volume": float(track.mixer_device.volume.value),
+                    "mute": bool(track.mute),
+                    "devices": [d.name for d in track.devices],
+                })
+            return {"count": len(returns), "returns": returns}
+        except Exception as e:
+            self.log_message("Error listing returns: " + str(e))
+            raise
+
+    def _set_send(self, track_index, kind, send_index, send_name, value):
+        """Set one send of a track, by return-track name, letter or index."""
+        try:
+            track = self._resolve_track(track_index, kind)
+            sends = list(track.mixer_device.sends)
+            returns = list(self._song.return_tracks)
+            idx = None
+            if send_name:
+                wanted = str(send_name).strip().lower()
+                for i, r in enumerate(returns):
+                    if r.name.lower() == wanted:
+                        idx = i
+                        break
+                if idx is None:
+                    letters = "abcdefghijkl"
+                    if len(wanted) == 1 and wanted in letters and letters.index(wanted) < len(sends):
+                        idx = letters.index(wanted)
+                if idx is None:
+                    raise ValueError("no return track named '%s'; returns are: %s" % (
+                        send_name, ", ".join("%s (%s)" % (r.name, "ABCDEFGHIJKL"[i]) for i, r in enumerate(returns))))
+            elif send_index is not None:
+                idx = int(send_index)
+            else:
+                raise ValueError("give send_name or send_index")
+            if idx < 0 or idx >= len(sends):
+                raise IndexError("send index %d out of range; this track has %d sends" % (idx, len(sends)))
+            v = float(value)
+            if v < 0.0 or v > 1.0:
+                raise ValueError("send value must be between 0.0 and 1.0")
+            sends[idx].value = v
+            return {
+                "track": track.name,
+                "send_index": idx,
+                "return_name": returns[idx].name if idx < len(returns) else None,
+                "value": float(sends[idx].value),
+            }
+        except Exception as e:
+            self.log_message("Error setting send: " + str(e))
+            raise
+
+    def _set_track_color(self, track_index, kind, color_index):
+        try:
+            track = self._resolve_track(track_index, kind)
+            track.color_index = int(color_index)
+            return {"name": track.name, "color_index": int(track.color_index), "color": int(track.color)}
+        except Exception as e:
+            self.log_message("Error setting track color: " + str(e))
+            raise
+
+    def _set_clip_color(self, track_index, clip_index, arrangement, color_index):
+        try:
+            track = self._resolve_track(track_index)
+            if arrangement:
+                clips = list(track.arrangement_clips)
+                if clip_index < 0 or clip_index >= len(clips):
+                    raise IndexError("Arrangement clip index out of range")
+                clip = clips[clip_index]
+            else:
+                if clip_index < 0 or clip_index >= len(track.clip_slots):
+                    raise IndexError("Clip index out of range")
+                slot = track.clip_slots[clip_index]
+                if not slot.has_clip:
+                    raise ValueError("No clip in slot %d" % clip_index)
+                clip = slot.clip
+            clip.color_index = int(color_index)
+            return {"name": clip.name, "color_index": int(clip.color_index), "color": int(clip.color)}
+        except Exception as e:
+            self.log_message("Error setting clip color: " + str(e))
+            raise
+
+    def _get_drum_rack_pads(self, track_index, device_index=-1):
+        """Which sample sits on which pad of a track's Drum Rack."""
+        try:
+            track = self._resolve_track(track_index)
+            devices = list(track.devices)
+            device_index = int(device_index if device_index is not None else -1)
+            if device_index >= 0:
+                if device_index >= len(devices):
+                    raise IndexError("Device index out of range")
+                device = devices[device_index]
+                if not getattr(device, "can_have_drum_pads", False):
+                    raise ValueError("device %d (%s) is not a Drum Rack" % (device_index, device.name))
+                chosen = (device_index, device)
+            else:
+                chosen = None
+                for i, d in enumerate(devices):
+                    if getattr(d, "can_have_drum_pads", False):
+                        chosen = (i, d)
+                        break
+                if chosen is None:
+                    raise ValueError("no Drum Rack on track %d (%s); devices: %s" % (
+                        track_index, track.name, ", ".join(d.name for d in devices) or "none"))
+            pads = []
+            for pad in chosen[1].drum_pads:
+                chains = list(getattr(pad, "chains", []))
+                if not chains:
+                    continue
+                pads.append({
+                    "pitch": int(pad.note),
+                    "note_name": self._live_note_name(pad.note),
+                    "pad_name": str(pad.name),
+                    "chains": [str(c.name) for c in chains],
+                    "mute": bool(pad.mute),
+                    "solo": bool(pad.solo),
+                })
+            return {
+                "track_index": int(track_index),
+                "track_name": track.name,
+                "device_index": chosen[0],
+                "device_name": chosen[1].name,
+                "pad_count": len(pads),
+                "pads": pads,
+            }
+        except Exception as e:
+            self.log_message("Error reading drum rack pads: " + str(e))
+            raise
+
+    def _delete_arrangement_clip(self, track_index, clip_index):
+        """Remove one clip from the Arrangement; clip_index as in get_arrangement_clips."""
+        try:
+            track = self._resolve_track(track_index)
+            clips = list(track.arrangement_clips)
+            if clip_index < 0 or clip_index >= len(clips):
+                raise IndexError("Arrangement clip index %d out of range; track has %d" % (clip_index, len(clips)))
+            clip = clips[clip_index]
+            info = {
+                "name": clip.name,
+                "start_time": float(clip.start_time),
+                "end_time": float(clip.end_time),
+            }
+            track.delete_clip(clip)
+            info["remaining"] = len(list(track.arrangement_clips))
+            return info
+        except Exception as e:
+            self.log_message("Error deleting arrangement clip: " + str(e))
+            raise
+
+    def _delete_locator(self, name=None, time_val=None):
+        """Remove a locator by name or by beat position (same toggle as create)."""
+        try:
+            song = self._song
+            target = None
+            for cue in song.cue_points:
+                if name and str(cue.name) == str(name):
+                    target = cue
+                    break
+                if time_val is not None and abs(float(cue.time) - float(time_val)) < 1e-3:
+                    target = cue
+                    break
+            if target is None:
+                existing = ", ".join("'%s' @ %s" % (c.name, c.time) for c in song.cue_points) or "none"
+                raise ValueError("no locator matches (name=%s, time=%s); locators: %s" % (name, time_val, existing))
+            info = {"deleted": str(target.name), "time": float(target.time)}
+            original_time = song.current_song_time
+            song.current_song_time = target.time
+            song.set_or_delete_cue()
+            try:
+                song.current_song_time = original_time
+            except Exception:
+                pass
+            info["remaining"] = len(list(song.cue_points))
+            return info
+        except Exception as e:
+            self.log_message("Error deleting locator: " + str(e))
             raise
 
     # ── Browser implementations ───────────────────────────────────────────────

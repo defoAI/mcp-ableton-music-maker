@@ -52,6 +52,14 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "get_arrangement_clips",
     "duplicate_session_clip_to_arrangement",
     "create_locator",
+    "set_track_mixer",
+    "set_send",
+    "get_returns",
+    "set_track_color",
+    "set_clip_color",
+    "get_drum_rack_pads",
+    "delete_arrangement_clip",
+    "delete_locator",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -80,6 +88,15 @@ fn display(v: &Value) -> String {
     }
 }
 
+/// A beat position without a pointless ".0".
+fn beat(v: Option<&Value>) -> String {
+    match v.and_then(Value::as_f64) {
+        Some(f) if f.fract() == 0.0 => format!("{}", f as i64),
+        Some(f) => format!("{f}"),
+        None => "?".to_string(),
+    }
+}
+
 fn get_display(v: &Value, key: &str, default: &str) -> String {
     v.get(key)
         .map(display)
@@ -99,6 +116,9 @@ fn minus_one() -> i64 {
 }
 fn four() -> f64 {
     4.0
+}
+fn track_kind() -> String {
+    "track".to_string()
 }
 fn yes() -> bool {
     true
@@ -282,6 +302,65 @@ params!(DuplicateToArrangementParams {
     /// Beats between placements in the range (usually the clip length)
     step: Option<f64>,
 });
+params!(SetTrackMixerParams {
+    /// Index of the track (among the song's tracks, or among the return
+    /// tracks when kind is "return"; ignored for "master")
+    track_index: i64,
+    /// "track" (default), "return" or "master"
+    kind: String = "track_kind",
+    /// Fader level as Live's mixer parameter, 0.0-1.0; 0.85 is 0 dB
+    volume: Option<f64>,
+    /// Pan, -1.0 (left) to 1.0 (right)
+    pan: Option<f64>,
+    mute: Option<bool>,
+    solo: Option<bool>,
+    /// Record arm (MIDI and audio tracks only)
+    arm: Option<bool>,
+});
+params!(SetSendParams {
+    /// Index of the track whose send changes
+    track_index: i64,
+    /// "track" (default) or "return"
+    kind: String = "track_kind",
+    /// The return track's name ("Reverb") or letter ("A"); see get_returns
+    send_name: String = "String::new",
+    /// The send's index, if you would rather not name it
+    send_index: Option<i64>,
+    /// Send level 0.0-1.0
+    value: f64,
+});
+params!(SetColorParams {
+    /// Index of the track (or of the clip's track)
+    track_index: i64,
+    /// Live colour index, 0-69 (the palette in the colour chooser, left to right, top to bottom)
+    color_index: i64,
+    /// Colour a clip instead of the track: its slot index (Session) or
+    /// position in the Arrangement when `arrangement` is true
+    clip_index: Option<i64>,
+    /// With clip_index: the clip is an Arrangement clip
+    arrangement: bool = "bool::default",
+    /// "track" (default), "return" or "master" — for track colours only
+    kind: String = "track_kind",
+});
+params!(DrumRackPadsParams {
+    /// Track that holds the Drum Rack
+    track_index: i64,
+    /// Which device, if the track has more than one Drum Rack (default: the first)
+    device_index: Option<i64>,
+});
+params!(DeleteArrangementClipParams {
+    /// Track that owns the Arrangement clip
+    track_index: i64,
+    /// Position in the track's Arrangement clips, ordered by start time —
+    /// the index get_arrangement_clips lists
+    clip_index: i64,
+});
+params!(DeleteLocatorParams {
+    /// The locator's exact name
+    name: String = "String::new",
+    /// Or its beat position
+    time: Option<f64>,
+});
 params!(CreateLocatorParams {
     /// The locator label (e.g. "Chorus", "Verse 1", "Drop")
     name: String,
@@ -322,6 +401,13 @@ pub const SET_ARRANGEMENT_TIME: ToolSpec = ToolSpec::new("set_arrangement_time")
 pub const GET_ARRANGEMENT_CLIPS: ToolSpec = ToolSpec::new("get_arrangement_clips");
 pub const DUPLICATE_TO_ARRANGEMENT: ToolSpec = ToolSpec::new("duplicate_to_arrangement");
 pub const CREATE_LOCATOR: ToolSpec = ToolSpec::new("create_locator");
+pub const SET_TRACK_MIXER: ToolSpec = ToolSpec::new("set_track_mixer");
+pub const SET_SEND: ToolSpec = ToolSpec::new("set_send");
+pub const GET_RETURNS: ToolSpec = ToolSpec::new("get_returns");
+pub const SET_COLOR: ToolSpec = ToolSpec::new("set_color");
+pub const GET_DRUM_RACK_PADS: ToolSpec = ToolSpec::new("get_drum_rack_pads");
+pub const DELETE_ARRANGEMENT_CLIP: ToolSpec = ToolSpec::new("delete_arrangement_clip");
+pub const DELETE_LOCATOR: ToolSpec = ToolSpec::new("delete_locator");
 
 // ── Tool bodies ─────────────────────────────────────────────────────────────
 
@@ -884,8 +970,12 @@ pub fn set_arrangement_time_body(live: &LiveState, p: &ArrangementTimeParams) ->
     let r = live
         .send_command("set_current_song_time", Some(json!({"time": p.time})))
         .map_err(|e| live_err("set arrangement time", e))?;
+    let was = r
+        .get("previous_song_time")
+        .map(|v| format!(" (was at beat {})", display(v)))
+        .unwrap_or_default();
     Ok(format!(
-        "Playhead moved to beat {}",
+        "Playhead moved to beat {}{was}",
         r.get("current_song_time")
             .map(display)
             .unwrap_or_else(|| p.time.to_string())
@@ -1022,6 +1112,232 @@ pub fn create_locator_body(live: &LiveState, p: &CreateLocatorParams) -> ToolRes
         r.get("time")
             .map(display)
             .unwrap_or_else(|| p.time.to_string())
+    ))
+}
+
+// ── Mixer, colours, drum pads, deletion ─────────────────────────────────────
+
+fn mixer_summary(r: &Value) -> String {
+    let mut parts = vec![
+        format!("volume {}", get_display(r, "volume", "?")),
+        format!("pan {}", get_display(r, "panning", "?")),
+    ];
+    if let Some(m) = r.get("mute").and_then(Value::as_bool) {
+        parts.push(if m { "muted".into() } else { "unmuted".into() });
+    }
+    if let Some(s) = r.get("solo").and_then(Value::as_bool) {
+        if s {
+            parts.push("solo".into());
+        }
+    }
+    if let Some(a) = r.get("arm").and_then(Value::as_bool) {
+        if a {
+            parts.push("armed".into());
+        }
+    }
+    if let Some(sends) = r.get("sends").and_then(Value::as_array) {
+        let s: Vec<String> = sends
+            .iter()
+            .map(|x| {
+                format!(
+                    "{}={}",
+                    get_display(x, "name", "send"),
+                    get_display(x, "value", "?")
+                )
+            })
+            .collect();
+        if !s.is_empty() {
+            parts.push(format!("sends {}", s.join(" ")));
+        }
+    }
+    parts.join(", ")
+}
+
+pub fn set_track_mixer_body(live: &LiveState, p: &SetTrackMixerParams) -> ToolResult {
+    require(live, "set_track_mixer")?;
+    if p.volume.is_none()
+        && p.pan.is_none()
+        && p.mute.is_none()
+        && p.solo.is_none()
+        && p.arm.is_none()
+    {
+        return Err("Nothing to set: give volume, pan, mute, solo or arm.".into());
+    }
+    let r = live
+        .send_command(
+            "set_track_mixer",
+            Some(json!({
+                "track_index": p.track_index, "kind": p.kind,
+                "volume": p.volume, "pan": p.pan, "mute": p.mute, "solo": p.solo, "arm": p.arm,
+            })),
+        )
+        .map_err(|e| live_err("set the track mixer", e))?;
+    Ok(format!(
+        "'{}' now: {}",
+        get_display(&r, "name", &format!("track {}", p.track_index)),
+        mixer_summary(&r)
+    ))
+}
+
+pub fn set_send_body(live: &LiveState, p: &SetSendParams) -> ToolResult {
+    require(live, "set_send")?;
+    if p.send_name.is_empty() && p.send_index.is_none() {
+        return Err("Say which send: send_name (the return track's name or letter) or send_index. get_returns lists them.".into());
+    }
+    let r = live
+        .send_command(
+            "set_send",
+            Some(json!({
+                "track_index": p.track_index, "kind": p.kind,
+                "send_name": if p.send_name.is_empty() { Value::Null } else { json!(p.send_name) },
+                "send_index": p.send_index, "value": p.value,
+            })),
+        )
+        .map_err(|e| live_err("set the send", e))?;
+    Ok(format!(
+        "'{}' send {} ({}) set to {}",
+        get_display(&r, "track", &format!("track {}", p.track_index)),
+        get_display(&r, "send_index", "?"),
+        get_display(&r, "return_name", "return"),
+        get_display(&r, "value", &p.value.to_string())
+    ))
+}
+
+pub fn get_returns_body(live: &LiveState, _p: &Empty) -> ToolResult {
+    require(live, "get_returns")?;
+    live.send_command("get_returns", None)
+        .map(|r| pretty(&r))
+        .map_err(|e| live_err("list the return tracks", e))
+}
+
+pub fn set_color_body(live: &LiveState, p: &SetColorParams) -> ToolResult {
+    if !(0..=69).contains(&p.color_index) {
+        return Err(format!(
+            "color_index {} is outside Live's palette (0-69)",
+            p.color_index
+        ));
+    }
+    match p.clip_index {
+        Some(clip_index) => {
+            require(live, "set_clip_color")?;
+            let r = live
+                .send_command(
+                    "set_clip_color",
+                    Some(json!({
+                        "track_index": p.track_index, "clip_index": clip_index,
+                        "arrangement": p.arrangement, "color_index": p.color_index,
+                    })),
+                )
+                .map_err(|e| live_err("set the clip colour", e))?;
+            Ok(format!(
+                "Clip '{}' coloured {} (index {})",
+                get_display(&r, "name", "clip"),
+                if p.arrangement {
+                    "in the Arrangement"
+                } else {
+                    "in the Session"
+                },
+                get_display(&r, "color_index", &p.color_index.to_string())
+            ))
+        }
+        None => {
+            require(live, "set_track_color")?;
+            let r = live
+                .send_command(
+                    "set_track_color",
+                    Some(json!({"track_index": p.track_index, "kind": p.kind, "color_index": p.color_index})),
+                )
+                .map_err(|e| live_err("set the track colour", e))?;
+            Ok(format!(
+                "Track '{}' coloured (index {})",
+                get_display(&r, "name", &format!("track {}", p.track_index)),
+                get_display(&r, "color_index", &p.color_index.to_string())
+            ))
+        }
+    }
+}
+
+pub fn get_drum_rack_pads_body(live: &LiveState, p: &DrumRackPadsParams) -> ToolResult {
+    require(live, "get_drum_rack_pads")?;
+    let r = live
+        .send_command(
+            "get_drum_rack_pads",
+            Some(
+                json!({"track_index": p.track_index, "device_index": p.device_index.unwrap_or(-1)}),
+            ),
+        )
+        .map_err(|e| live_err("read the drum rack pads", e))?;
+    let mut out = format!(
+        "{} on track {} ('{}'), device {} — {} pads with a sound:\n",
+        get_display(&r, "device_name", "Drum Rack"),
+        p.track_index,
+        get_display(&r, "track_name", "track"),
+        get_display(&r, "device_index", "?"),
+        get_display(&r, "pad_count", "0")
+    );
+    if let Some(pads) = r.get("pads").and_then(Value::as_array) {
+        for pad in pads {
+            let flags = match (
+                pad.get("mute").and_then(Value::as_bool).unwrap_or(false),
+                pad.get("solo").and_then(Value::as_bool).unwrap_or(false),
+            ) {
+                (true, _) => " [muted]",
+                (_, true) => " [solo]",
+                _ => "",
+            };
+            out.push_str(&format!(
+                "  {} ({}): {}{}\n",
+                get_display(pad, "pitch", "?"),
+                get_display(pad, "note_name", "?"),
+                get_display(pad, "pad_name", "?"),
+                flags
+            ));
+        }
+    }
+    out.push_str("Use the pitch numbers in steps, patterns or notes. Names follow Live (C1 = 36).");
+    Ok(out)
+}
+
+pub fn delete_arrangement_clip_body(
+    live: &LiveState,
+    p: &DeleteArrangementClipParams,
+) -> ToolResult {
+    require(live, "delete_arrangement_clip")?;
+    let r = live
+        .send_command(
+            "delete_arrangement_clip",
+            Some(json!({"track_index": p.track_index, "clip_index": p.clip_index})),
+        )
+        .map_err(|e| live_err("delete the arrangement clip", e))?;
+    Ok(format!(
+        "Removed '{}' (beats {}–{}) from the Arrangement on track {}; {} clips remain there. Indices of later clips shifted down by one.",
+        get_display(&r, "name", "clip"),
+        beat(r.get("start_time")),
+        beat(r.get("end_time")),
+        p.track_index,
+        get_display(&r, "remaining", "?")
+    ))
+}
+
+pub fn delete_locator_body(live: &LiveState, p: &DeleteLocatorParams) -> ToolResult {
+    require(live, "delete_locator")?;
+    if p.name.is_empty() && p.time.is_none() {
+        return Err("Say which locator: its name or its beat position.".into());
+    }
+    let r = live
+        .send_command(
+            "delete_locator",
+            Some(json!({
+                "name": if p.name.is_empty() { Value::Null } else { json!(p.name) },
+                "time": p.time,
+            })),
+        )
+        .map_err(|e| live_err("delete the locator", e))?;
+    Ok(format!(
+        "Deleted locator '{}' at beat {}; {} remain",
+        get_display(&r, "deleted", &p.name),
+        get_display(&r, "time", "?"),
+        get_display(&r, "remaining", "?")
     ))
 }
 
@@ -1391,6 +1707,74 @@ impl Server {
     ) -> CallToolResult {
         self.run(&CREATE_LOCATOR, p, create_locator_body).await
     }
+
+    /// Set a track's volume, pan, mute, solo or arm — any mix, in one call.
+    /// Volume is Live's mixer parameter 0.0-1.0 where 0.85 is 0 dB. Works
+    /// on return tracks (kind "return") and the master (kind "master",
+    /// volume and pan only). The result reports the track's state after.
+    #[tool(name = "set_track_mixer")]
+    async fn set_track_mixer(
+        &self,
+        Parameters(p): Parameters<SetTrackMixerParams>,
+    ) -> CallToolResult {
+        self.run(&SET_TRACK_MIXER, p, set_track_mixer_body).await
+    }
+
+    /// Route a track to a return track: set one send level (0.0-1.0) by
+    /// the return's name ("Reverb"), its letter ("A") or its index. Call
+    /// get_returns first to see what returns exist.
+    #[tool(name = "set_send")]
+    async fn set_send(&self, Parameters(p): Parameters<SetSendParams>) -> CallToolResult {
+        self.run(&SET_SEND, p, set_send_body).await
+    }
+
+    /// List the return tracks (index, letter, name, level, devices) so sends
+    /// can be addressed by name.
+    #[tool(name = "get_returns")]
+    async fn get_returns(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+        self.run(&GET_RETURNS, p, get_returns_body).await
+    }
+
+    /// Colour a track, or a clip when clip_index is given (Session slot, or
+    /// Arrangement position with arrangement: true). color_index is Live's
+    /// palette index 0-69.
+    #[tool(name = "set_color")]
+    async fn set_color(&self, Parameters(p): Parameters<SetColorParams>) -> CallToolResult {
+        self.run(&SET_COLOR, p, set_color_body).await
+    }
+
+    /// Which sound sits on which pad of a track's Drum Rack: pitch, Live's
+    /// note name (C1 = 36) and the pad's sample or chain name. Call this
+    /// before writing drums so the pattern hits the intended sounds.
+    #[tool(name = "get_drum_rack_pads")]
+    async fn get_drum_rack_pads(
+        &self,
+        Parameters(p): Parameters<DrumRackPadsParams>,
+    ) -> CallToolResult {
+        self.run(&GET_DRUM_RACK_PADS, p, get_drum_rack_pads_body)
+            .await
+    }
+
+    /// Remove a clip from the Arrangement timeline. clip_index is the
+    /// position get_arrangement_clips lists (ordered by start time); later
+    /// clips shift down by one. Live 11 or newer.
+    #[tool(name = "delete_arrangement_clip")]
+    async fn delete_arrangement_clip(
+        &self,
+        Parameters(p): Parameters<DeleteArrangementClipParams>,
+    ) -> CallToolResult {
+        self.run(&DELETE_ARRANGEMENT_CLIP, p, delete_arrangement_clip_body)
+            .await
+    }
+
+    /// Delete a locator (cue point) by its exact name or its beat position.
+    #[tool(name = "delete_locator")]
+    async fn delete_locator(
+        &self,
+        Parameters(p): Parameters<DeleteLocatorParams>,
+    ) -> CallToolResult {
+        self.run(&DELETE_LOCATOR, p, delete_locator_body).await
+    }
 }
 
 #[tool_handler(router = self.tool_router, name = "AbletonMusicMaker")]
@@ -1442,7 +1826,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 31);
+        assert_eq!(tools.len(), 38);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();

@@ -141,6 +141,12 @@ const MODIFYING_COMMANDS: &[&str] = &[
     "set_current_song_time",
     "duplicate_session_clip_to_arrangement",
     "create_locator",
+    "set_track_mixer",
+    "set_send",
+    "set_track_color",
+    "set_clip_color",
+    "delete_arrangement_clip",
+    "delete_locator",
 ];
 
 /// Socket budget per command. Importing a large audio file can keep Live's
