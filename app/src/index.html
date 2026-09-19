@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ableton Music Maker</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="drag" data-tauri-drag-region></div>
+    <nav class="nav" aria-label="Sections">
+      <button data-go="overview" aria-current="page"><span class="glyph">◉</span>Overview</button>
+      <button data-go="activity"><span class="glyph">≡</span>Activity <span class="badge num" id="actbadge" hidden></span></button>
+      <button data-go="setup"><span class="glyph">⇩</span>Setup <span class="badge" id="setupbadge" hidden>needs you</span></button>
+      <button data-go="settings"><span class="glyph">⚙</span>Settings</button>
+    </nav>
+    <div class="side-foot" id="sidefoot">
+      <span>Loading…</span>
+    </div>
+  </aside>
+
+  <main class="content">
+    <!-- OVERVIEW -->
+    <section class="screen" id="s-overview">
+      <div class="head"><h2>Overview</h2><span class="sub" id="ovsub"></span></div>
+      <div>
+        <div class="eyebrow">The chain</div>
+        <div class="chain" id="chain"></div>
+      </div>
+      <div>
+        <div class="eyebrow" id="tiles-title">This session</div>
+        <div class="tiles" id="tiles"></div>
+      </div>
+      <div>
+        <div class="eyebrow">Recent calls</div>
+        <div class="tablewrap"><div class="tscroll"><table>
+          <thead><tr><th>Time</th><th>Tool</th><th>What it did</th><th class="r">Live</th><th>Result</th><th class="r">Tokens (est.)</th></tr></thead>
+          <tbody id="recent"></tbody>
+        </table></div></div>
+      </div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section class="screen" id="s-activity" hidden>
+      <div class="head"><h2>Activity</h2><span class="sub">Every tool call the server handled, kept on this Mac</span></div>
+      <div class="toolbar">
+        <button class="chip" data-filter="all" aria-pressed="true">All</button>
+        <button class="chip" data-filter="write" aria-pressed="false">Changes to the set</button>
+        <button class="chip" data-filter="read" aria-pressed="false">Reads</button>
+        <button class="chip" data-filter="error" aria-pressed="false">Errors</button>
+        <span class="spacer"></span>
+        <select id="session"></select>
+        <button class="btn small" id="clearlog">Clear log</button>
+      </div>
+      <div class="tablewrap"><div class="tscroll"><table>
+        <thead><tr><th>Time</th><th>Tool</th><th>What it did</th><th class="r">Live</th><th>Result</th><th class="r">Tokens (est.)</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table></div></div>
+      <div class="detail" id="detail" hidden></div>
+      <p class="note">Tokens are estimated from the size of what the tool received and returned, about four characters per token. The model's own context is not visible to the server, so this is the cost each call adds, not a bill.</p>
+    </section>
+
+    <!-- SETUP -->
+    <section class="screen" id="s-setup" hidden>
+      <div class="head"><h2>Setup</h2><span class="sub">Four steps. The app checks each one for you.</span></div>
+      <div class="steps" id="steps"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="screen" id="s-settings" hidden>
+      <div class="head"><h2>Settings</h2></div>
+      <div class="group">
+        <h3>Live</h3>
+        <div class="srow"><label class="l" for="host">Host</label><input type="text" id="host"><span class="h">Where Live is running. Leave as is unless the server runs on another machine.</span></div>
+        <div class="srow"><label class="l" for="port">Port</label><input type="text" id="port"><span class="h">Must match the Remote Script.</span></div>
+      </div>
+      <div class="group">
+        <h3>Activity log</h3>
+        <div class="srow"><span class="l">Keep a log of tool calls</span><button class="switch" id="sw-log" role="switch" aria-checked="true"></button><span class="h">Tool names, timings, sizes and results. Stored in <span class="path" id="activity-path"></span> on this Mac. Never uploaded.</span></div>
+        <div class="srow"><span class="l">Keep the payloads too</span><button class="switch" id="sw-payload" role="switch" aria-checked="false"></button><span class="h">Parameters and results include your MIDI notes and track names. Off by default. When off, Activity shows sizes only.</span></div>
+        <div class="srow"><label class="l" for="retention">Delete entries after</label><span><input type="text" id="retention" style="width:60px"> days</span><span class="h">Applied when the app starts.</span></div>
+        <div class="srow"><span class="l"></span><span></span><span class="h" id="settings-note">These switches reach the server through your client's config, so a change applies to the next session your client starts.</span></div>
+      </div>
+      <div class="group">
+        <h3>Your data</h3>
+        <div class="srow"><span class="l">Activity log</span><span class="mono" id="data-activity">—</span><span class="h"><span class="path" id="data-activity-path"></span> — tool names, timings, sizes, results. Payloads only if you turned them on above.</span></div>
+        <div class="srow"><span class="l">Running servers</span><span class="mono" id="data-sessions">—</span><span class="h"><span class="path" id="data-sessions-path"></span> — which client started a server, and when. Removed when it exits.</span></div>
+        <div class="srow"><span class="l">Remote Script</span><span class="mono" id="data-script">—</span><span class="h"><span class="path" id="data-script-path"></span> — left alone by the button below.</span></div>
+        <div class="srow"><span class="l">Nothing is uploaded</span><span class="pill off">No upload path exists</span><span class="h">The server and this app have no network code except the connection to Live. <a href="#" data-open="https://github.com/defoAI/mcp-ableton-music-maker/blob/main/TERMS.md">Terms &amp; data use</a></span></div>
+        <div class="srow"><span class="l">Delete all local data</span><button class="btn small" id="deletedata">Delete…</button><span class="h">Removes the activity log and heartbeats. Keeps the Remote Script and your client config.</span></div>
+      </div>
+      <div class="group">
+        <h3>General</h3>
+        <div class="srow"><span class="l">Check for updates</span><button class="btn small" data-open="https://github.com/defoAI/mcp-ableton-music-maker/releases">Open releases</button><span class="h" id="about">…</span></div>
+        <div class="srow"><span class="l">About</span><span></span><span class="h">Third-party integration, not made by Ableton. Derived from AbletonMCP by Siddharth Ahuja (MIT). Maintained by DefoAI UG.</span></div>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
