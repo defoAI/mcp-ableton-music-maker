@@ -52,11 +52,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+      # shared-key instead of the automatic per-job one, so the tag build in
+      # release.yml reuses what this job compiled rather than starting cold.
+      # Only main writes it: a 600 MB cache per branch would push the
+      # repository past its 10 GB of Actions cache and evict the useful ones.
+      # Branches and pull requests still read main's.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             . -> target
             app/src-tauri -> target
+          shared-key: mac-dmg
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22

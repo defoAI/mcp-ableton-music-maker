@@ -244,6 +244,14 @@ Silicon runner: `tauri build --target aarch64-apple-darwin`, then `app/scripts/v
 on what it produced, then the `.dmg` as a build artifact — unsigned, so it opens only on a
 machine it was not downloaded to.
 
+Caching: `Swatinem/rust-cache` keeps each job's dependency artifacts (the ubuntu one under
+its own key, the macOS one under `shared-key: mac-dmg`, which the tag build reads so a
+release does not start cold), `setup-node` keeps the npm download cache, and the image job
+keeps its layers in the GitHub Actions cache. Only `main` writes the macOS cache — the
+repository has 10 GB for all of it, and a 600 MB cache per branch would evict what matters.
+Workspace crates are deliberately not cached: they change with every commit, so the two
+crates always recompile and that is the floor on the `mac-app` job.
+
 `.github/workflows/release.yml` is the same build on a `v*` tag, with Tauri signing against
 the Developer ID certificate and notarising from six repository secrets, verified with
 `EXPECT_SIGNED=1` (Developer ID authority, stapled ticket, Gatekeeper accepts) and attached

@@ -50,11 +50,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+      # The same key the mac-app job fills on main, so a tag starts warm.
+      # It never writes: a cache saved under a tag's ref is readable from
+      # that tag alone, which is quota spent on nobody.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             . -> target
             app/src-tauri -> target
+          shared-key: mac-dmg
+          save-if: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
