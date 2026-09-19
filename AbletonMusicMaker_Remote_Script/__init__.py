@@ -21,7 +21,7 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.0"
+SCRIPT_VERSION = "1.10.1"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -72,6 +72,7 @@ SCRIPT_CAPABILITIES = [
     "get_track_meters",
     "set_clip_automation",
     "get_clip_automation",
+    "get_library_status",
 ]
 
 def create_instance(c_instance):
@@ -522,6 +523,8 @@ class AbletonMCP(ControlSurface):
                     params.get("arrangement", False))
             elif command_type == "get_track_meters":
                 response["result"] = self._get_track_meters()
+            elif command_type == "get_library_status":
+                response["result"] = self._get_library_status()
             elif command_type == "get_clip_automation":
                 response["result"] = self._get_clip_automation(
                     params.get("track_index", 0), params.get("clip_index", 0),
@@ -1558,11 +1561,23 @@ class AbletonMCP(ControlSurface):
                 raise ValueError("unknown category '%s'; use one of: all, %s" % (category, ", ".join(self.BROWSER_CATEGORIES)))
             limit = max(1, min(int(limit or 30), 200))
             hits = []
-            state = {"visited": 0, "total": 0}
-            max_visits = 20000
+            # Every `.children` read crosses into Live and costs real time, and
+            # the browser is tens of thousands of items. So: a time budget
+            # (the server waits 25 s for this command), folders whose own name
+            # matches a query word are walked first, and depth is capped.
+            budget_s = 12.0
+            started = time.time()
+            state = {"visited": 0, "total": 0, "out_of_time": False}
+
+            def matches_any(name):
+                low = name.lower()
+                return any(w in low for w in words)
 
             def walk(item, path, cat, depth):
-                if state["visited"] >= max_visits or depth > 7:
+                if state["out_of_time"] or depth > 6:
+                    return
+                if time.time() - started > budget_s:
+                    state["out_of_time"] = True
                     return
                 state["visited"] += 1
                 name = item.name if hasattr(item, "name") else ""
@@ -1584,7 +1599,13 @@ class AbletonMCP(ControlSurface):
                     kids = list(item.children) if hasattr(item, "children") else []
                 except Exception:
                     kids = []
-                for kid in kids:
+                if not kids:
+                    return
+                first = [k for k in kids if matches_any(getattr(k, "name", "") or "")]
+                rest = [k for k in kids if k not in first]
+                for kid in first + rest:
+                    if len(hits) >= limit and state["total"] >= limit * 4:
+                        return
                     walk(kid, here, cat, depth + 1)
 
             for cat, root in categories:
@@ -1594,11 +1615,62 @@ class AbletonMCP(ControlSurface):
                 "category": wanted,
                 "total_matches": state["total"],
                 "returned": len(hits),
-                "truncated_walk": state["visited"] >= max_visits,
+                "truncated_walk": state["out_of_time"],
+                "seconds": round(time.time() - started, 2),
+                "visited": state["visited"],
                 "items": hits,
             }
         except Exception as e:
             self.log_message("Error searching browser: " + str(e))
+            raise
+
+    def _get_library_status(self):
+        """What this Live has: version, top-level browser contents, installed packs."""
+        try:
+            app = self.application()
+            try:
+                version = "%d.%d.%d" % (app.get_major_version(), app.get_minor_version(), app.get_bugfix_version())
+            except Exception:
+                version = "unknown"
+            browser = app.browser
+
+            def top_level(root_name):
+                root = getattr(browser, root_name, None)
+                out = []
+                if root is None:
+                    return out
+                try:
+                    kids = list(root.children)
+                except Exception:
+                    return out
+                for k in kids[:300]:
+                    entry = {"name": getattr(k, "name", "?")}
+                    try:
+                        entry["is_folder"] = bool(list(k.children))
+                    except Exception:
+                        entry["is_folder"] = False
+                    entry["is_loadable"] = bool(getattr(k, "is_loadable", False))
+                    out.append(entry)
+                return out
+
+            result = {
+                "live_version": version,
+                "instruments": top_level("instruments"),
+                "audio_effects": top_level("audio_effects"),
+                "midi_effects": top_level("midi_effects"),
+                "packs": top_level("packs"),
+                "drums": top_level("drums"),
+                "sounds": top_level("sounds"),
+                "has_user_library": getattr(browser, "user_library", None) is not None,
+            }
+            names = [i["name"] for i in result["instruments"]]
+            if "Wavetable" in names and "Operator" in names:
+                result["edition_hint"] = "Suite-level instrument set"
+            elif "Wavetable" not in names and "Operator" not in names:
+                result["edition_hint"] = "Standard or Intro-level instrument set"
+            return result
+        except Exception as e:
+            self.log_message("Error reading library status: " + str(e))
             raise
 
     def _clip_at(self, track_index, clip_index, arrangement=False):

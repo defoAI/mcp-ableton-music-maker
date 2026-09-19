@@ -35,7 +35,8 @@ table is a copy for orientation.
 | | `load_instrument_or_effect` | `load_browser_item` | by browser URI |
 | | `load_drum_kit` | `get_browser_items_at_path` + `load_browser_item` | |
 | | `get_drum_rack_pads` | `get_drum_rack_pads` | pitch, Live note name (C1 = 36), pad name per pad with a sound |
-| Browser | `search_browser` | `search_browser` | words matched against name and folder path; URIs ready to load |
+| Browser | `search_browser` | `search_browser` | words matched against name and folder path; folder names matching a word are walked first; 12 s budget in the script, 25 s socket |
+| | `get_library_status` | `get_library_status` | Live version, instruments/effects present, Suite instruments missing, packs installed; undownloaded packs are invisible to the API and the result says so |
 | | `get_browser_tree`, `get_browser_items_at_path` | same names | the tree now recurses two folder levels |
 | | `load_instrument_or_effect` result | `load_browser_item` | reports the loaded device's name and index |
 | Clips | `get_clip_info`, `set_clip_loop`, `set_clip_launch` | same names | loop points, markers, launch mode/quantization, legato |
