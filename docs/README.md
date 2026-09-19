@@ -64,6 +64,7 @@ docs/
 │   ├── stories/                     Feature-level user stories (pruned once shipped)
 │   ├── prototypes/                  Throwaway transcripts and mock-ups reviewed before code
 │   └── templates/                   user_story.md · implementation_plan.md
+├── reference/ableton/               Local copies of the Live manual chapters and the Live Object Model, each stamped with source and fetch date
 └── decisions/                       Dated decision log, ADR-style, never renumbered
 templates/                           plan.md · decision.md
 scripts/check-docs-facts.sh          The drift check CI runs

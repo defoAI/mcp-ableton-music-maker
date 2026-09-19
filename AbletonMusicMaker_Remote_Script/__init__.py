@@ -27,7 +27,7 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.12.0"
+SCRIPT_VERSION = "1.12.1"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
@@ -116,8 +116,8 @@ class AbletonMCP(ControlSurface):
         self.server_thread = None
         self.running = False
         
-        # Cache the song reference for easier access
-        self._song = self.song()
+        # The Song handle is not cached: it goes stale when a set is reloaded
+        # (see the _song property below).
 
         # Passive human-UI event queue (drained by MCP → Supabase)
         self._passive_events = []
@@ -130,12 +130,9 @@ class AbletonMCP(ControlSurface):
         # Start the socket server
         self.start_server()
 
-        # Register LOM listeners for passive capture (after song is ready)
-        try:
-            self._setup_passive_listeners()
-        except Exception as e:
-            self.log_message("Passive listener setup failed: " + str(e))
-            self.log_message(traceback.format_exc())
+        # Passive LOM listeners (a dataset-tier leftover) are no longer
+        # registered: attaching listeners to a clip while it records, from
+        # inside a Live notification, deadlocked Live during the first capture.
         
         self.log_message("AbletonMCP initialized")
         
@@ -346,7 +343,9 @@ class AbletonMCP(ControlSurface):
                                  "set_clip_loop", "set_clip_launch", "set_clip_automation",
                                  "ensure_capture_track", "start_capture", "stop_capture",
                                  "play_from", "delete_track", "back_to_arrangement",
-                                 "set_arrangement_loop"]:
+                                 "set_arrangement_loop",
+                                 # reads that touch a clip while it records: main thread only
+                                 "capture_status", "list_captures"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -486,6 +485,10 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "set_arrangement_loop":
                             result = self._set_arrangement_loop(
                                 params.get("start"), params.get("length"), params.get("enabled"))
+                        elif command_type == "capture_status":
+                            result = self._capture_status(params.get("slot", 0))
+                        elif command_type == "list_captures":
+                            result = self._list_captures()
                         elif command_type == "ensure_capture_track":
                             result = self._ensure_capture_track()
                         elif command_type == "start_capture":
@@ -568,10 +571,6 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_track_meters()
             elif command_type == "get_library_status":
                 response["result"] = self._get_library_status()
-            elif command_type == "capture_status":
-                response["result"] = self._capture_status(params.get("slot", 0))
-            elif command_type == "list_captures":
-                response["result"] = self._list_captures()
             elif command_type == "get_clip_automation":
                 response["result"] = self._get_clip_automation(
                     params.get("track_index", 0), params.get("clip_index", 0),
@@ -1939,6 +1938,11 @@ class AbletonMCP(ControlSurface):
     # ── Capture: record the master through a Resampling track ────────────────
 
     CAPTURE_TRACK_NAME = "Capture"
+
+    @property
+    def _song(self):
+        """Always the current set: a cached handle went stale on set reload."""
+        return self.song()
 
     def _find_capture_track(self):
         for i, t in enumerate(self._song.tracks):
