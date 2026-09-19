@@ -19,3 +19,4 @@ Delete the prototype when its story is pruned.
 | Prototype | Story | Review link |
 |---|---|---|
 | [mac-app-installs-runs-and-watches-the-server.html](mac-app-installs-runs-and-watches-the-server.html) | [mac-app-installs-runs-and-watches-the-server](../stories/mac-app-installs-runs-and-watches-the-server.md) | https://claude.ai/artifact/D2fY7k4dPf8DqEHtYc6QGh |
+| [capture-the-mix-through-resampling.md](capture-the-mix-through-resampling.md) | [capture-the-mix-through-resampling](../stories/capture-the-mix-through-resampling.md) | transcript, in the repo |
