@@ -52,7 +52,10 @@ table is a copy for orientation.
 | | `get_arrangement_clips` | `get_arrangement_clips` | **Live 11+** |
 | | `duplicate_to_arrangement` | `duplicate_session_clip_to_arrangement` (once per placement) | **Live 11+**; one time, a list, or `start`/`end`/`step`; stops at the first failure and says how far it got |
 | | `set_arrangement_clip_name`, `create_locator` | same names | |
-| | `delete_arrangement_clip`, `delete_locator` | same names | **Live 11+**; the undo the Arrangement lacked |
+| | `delete_arrangement_clip`, `delete_locator` | same names | **Live 11+**; one, several or `all`; the undo the Arrangement lacked |
+| | `delete_track`, `back_to_arrangement`, `set_arrangement_loop` | same names | orphan tracks, the Back to Arrangement button, the loop brace for auditioning a section |
+| | `play_and_measure`, `capture_mix` positioning | `play_from` | plays from the asked position (`continue_playing`); `start_playing` jumps to the start marker |
+| | `add_notes_to_clip` `propagate_to_arrangement` | `get_clip_info` + `get_arrangement_clips` + delete/duplicate | refreshes Arrangement copies of an edited Session clip |
 | | `set_arrangement_time` | `set_current_song_time` | reports the requested position and where the playhead was |
 | Bridge | `get_remote_script_info` | `get_script_info` | loaded vs expected version, capabilities |
 

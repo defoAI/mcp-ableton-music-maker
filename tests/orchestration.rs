@@ -128,8 +128,11 @@ async fn play_and_measure_reports_peaks_and_silence() {
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
     let cmds = bridge.commands();
-    assert_eq!(cmds[0], "set_current_song_time");
-    assert_eq!(cmds[1], "start_playback");
+    assert_eq!(
+        cmds[0], "play_from",
+        "plays from the position, not the start marker"
+    );
+    assert_eq!(bridge.sent()[0].1["time"], 32.0);
     assert_eq!(cmds.last().unwrap(), "stop_playback");
     assert!(cmds.iter().filter(|c| *c == "get_track_meters").count() >= 3);
     let t = text_of(&r);
@@ -372,6 +375,7 @@ async fn build_song_executes_in_order() {
         "create_clip",
         "set_clip_name",
         "add_notes_to_clip",
+        "get_arrangement_clips",
         "duplicate_session_clip_to_arrangement",
         "duplicate_session_clip_to_arrangement",
         "duplicate_session_clip_to_arrangement",
@@ -420,5 +424,122 @@ async fn library_status_names_what_is_missing() {
     assert!(
         t.contains("Packs installed (1): Core Library") && t.contains("Packs tab"),
         "{t}"
+    );
+}
+
+#[tokio::test]
+async fn batch_returns_whole_multi_line_results() {
+    let bridge = FakeBridge::responding(
+        json!({"count": 1, "returns": [{"index": 0, "letter": "A", "name": "Reverb", "volume": 0.85, "mute": false, "devices": ["Reverb"]}]}),
+    );
+    let server = server_with(bridge.clone());
+    let p = BatchParams {
+        steps: vec![BatchStep {
+            tool: "get_returns".into(),
+            args: json!({}),
+        }],
+        stop_on_error: true,
+    };
+    let r = server.run(&tools::BATCH, p, tools::batch_body).await;
+    assert!(!is_error(&r));
+    let t = text_of(&r);
+    assert!(
+        t.contains("\"letter\": \"A\"") && t.contains("\"devices\""),
+        "full JSON kept: {t}"
+    );
+}
+
+#[tokio::test]
+async fn delete_arrangement_clips_all_and_by_indices() {
+    let bridge = FakeBridge::responding(
+        json!({"name": "x", "start_time": 0.0, "end_time": 4.0, "remaining": 0}),
+    );
+    bridge.script(
+        "get_arrangement_clips",
+        vec![json!({"clip_count": 3, "clips": []})],
+    );
+    let server = server_with(bridge.clone());
+    let p = tools::DeleteArrangementClipParams {
+        track_index: 2,
+        clip_index: -1,
+        clip_indices: vec![],
+        all: true,
+    };
+    let r = server
+        .run(
+            &tools::DELETE_ARRANGEMENT_CLIP,
+            p,
+            tools::delete_arrangement_clip_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let deletes: Vec<i64> = bridge
+        .sent()
+        .iter()
+        .filter(|(c, _)| c == "delete_arrangement_clip")
+        .map(|(_, a)| a["clip_index"].as_i64().unwrap())
+        .collect();
+    assert_eq!(deletes, vec![2, 1, 0], "highest index first");
+    assert!(text_of(&r).contains("Removed 3 Arrangement clip(s)"));
+    let none = tools::DeleteArrangementClipParams {
+        track_index: 2,
+        clip_index: -1,
+        clip_indices: vec![],
+        all: false,
+    };
+    let r = server
+        .run(
+            &tools::DELETE_ARRANGEMENT_CLIP,
+            none,
+            tools::delete_arrangement_clip_body,
+        )
+        .await;
+    assert!(is_error(&r));
+}
+
+#[tokio::test]
+async fn add_notes_can_refresh_arrangement_copies() {
+    let bridge = FakeBridge::responding(json!({"clip_name": "bass", "track_name": "Bass"}));
+    bridge.script("get_clip_info", vec![json!({"name": "bass"})]);
+    bridge.script("get_arrangement_clips", vec![json!({"clip_count": 3, "clips": [
+        {"name": "bass", "start_time": 0.0, "end_time": 4.0}, {"name": "other", "start_time": 4.0, "end_time": 8.0}, {"name": "bass", "start_time": 8.0, "end_time": 12.0}]})]);
+    let server = server_with(bridge.clone());
+    let p = tools::AddNotesParams {
+        track_index: 1,
+        clip_index: 0,
+        clear: true,
+        propagate_to_arrangement: true,
+        input: NotesInput {
+            notes_csv: "36,0,1,100".into(),
+            ..Default::default()
+        },
+    };
+    let r = server
+        .run(&tools::ADD_NOTES_TO_CLIP, p, tools::add_notes_to_clip_body)
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let cmds = bridge.commands();
+    let expected = vec![
+        "clear_notes_from_clip",
+        "add_notes_to_clip",
+        "get_clip_info",
+        "get_arrangement_clips",
+        "delete_arrangement_clip",
+        "delete_arrangement_clip",
+        "duplicate_session_clip_to_arrangement",
+        "duplicate_session_clip_to_arrangement",
+    ];
+    assert_eq!(cmds, expected);
+    let deletes: Vec<i64> = bridge
+        .sent()
+        .iter()
+        .filter(|(c, _)| c == "delete_arrangement_clip")
+        .map(|(_, a)| a["clip_index"].as_i64().unwrap())
+        .collect();
+    assert_eq!(deletes, vec![2, 0]);
+    assert!(
+        text_of(&r).contains("Refreshed 2 Arrangement copies of 'bass' at beat(s) 0, 8"),
+        "{}",
+        text_of(&r)
     );
 }

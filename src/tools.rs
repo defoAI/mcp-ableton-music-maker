@@ -74,6 +74,10 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "capture_status",
     "stop_capture",
     "list_captures",
+    "play_from",
+    "delete_track",
+    "back_to_arrangement",
+    "set_arrangement_loop",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -314,6 +318,9 @@ params!(AddNotesParams {
     /// Remove the clip's existing notes first, so this call replaces
     /// instead of appending (default false)
     clear: bool = "bool::default",
+    /// Also refresh the Arrangement copies of this clip (same name, same
+    /// track): they are deleted and placed again at their start times
+    propagate_to_arrangement: bool = "bool::default",
     /// The notes, in any mix of: notes (objects), notes_csv, steps, patterns;
     /// plus loop_every/until to tile them
     #[serde(flatten)]
@@ -423,11 +430,16 @@ params!(DrumRackPadsParams {
     device_index: Option<i64>,
 });
 params!(DeleteArrangementClipParams {
-    /// Track that owns the Arrangement clip
+    /// Track that owns the Arrangement clip(s)
     track_index: i64,
     /// Position in the track's Arrangement clips, ordered by start time —
-    /// the index get_arrangement_clips lists
-    clip_index: i64,
+    /// the index get_arrangement_clips lists (ignored with `all` or `clip_indices`)
+    clip_index: i64 = "minus_one",
+    /// Several positions at once
+    #[serde(default)]
+    clip_indices: Vec<i64>,
+    /// Remove every Arrangement clip on the track
+    all: bool = "bool::default",
 });
 params!(DeleteLocatorParams {
     /// The locator's exact name
@@ -633,6 +645,14 @@ params!(BuildSongParams {
     /// Validate and describe the plan without touching Live (default false)
     dry_run: bool = "bool::default",
 });
+params!(SetArrangementLoopParams {
+    /// Loop start in beats
+    start: Option<f64>,
+    /// Loop length in beats
+    length: Option<f64>,
+    /// Loop on or off
+    enabled: Option<bool>,
+});
 params!(CaptureMixParams {
     /// Beat to start capturing from (a bar boundary, e.g. 128 for bar 33 in 4/4)
     start: f64,
@@ -706,6 +726,9 @@ pub const GET_LIBRARY_STATUS: ToolSpec = ToolSpec::new("get_library_status");
 pub const CAPTURE_MIX: ToolSpec = ToolSpec::new("capture_mix");
 pub const LIST_CAPTURES: ToolSpec = ToolSpec::new("list_captures");
 pub const MEASURE_CAPTURE: ToolSpec = ToolSpec::new("measure_capture");
+pub const DELETE_TRACK: ToolSpec = ToolSpec::new("delete_track");
+pub const BACK_TO_ARRANGEMENT: ToolSpec = ToolSpec::new("back_to_arrangement");
+pub const SET_ARRANGEMENT_LOOP: ToolSpec = ToolSpec::new("set_arrangement_loop");
 
 // ── Tool bodies ─────────────────────────────────────────────────────────────
 
@@ -991,13 +1014,91 @@ pub fn add_notes_to_clip_body(live: &LiveState, p: &AddNotesParams) -> ToolResul
         .iter()
         .map(|n| n.start_time + n.duration)
         .fold(0.0_f64, f64::max);
-    Ok(format!(
+    let mut text = format!(
         "Added {} notes to clip at track {}, slot {}{} — last note ends at beat {}",
         notes.len(),
         p.track_index,
         p.clip_index,
         cleared,
         last
+    );
+    if p.propagate_to_arrangement {
+        text.push_str(&propagate_to_arrangement(
+            live,
+            p.track_index,
+            p.clip_index,
+        )?);
+    }
+    Ok(text)
+}
+
+/// Arrangement copies of a Session clip do not follow edits to it (Live's
+/// rule). Find the copies by name, remove them, and place the clip again at
+/// the same beats.
+fn propagate_to_arrangement(
+    live: &LiveState,
+    track_index: i64,
+    clip_index: i64,
+) -> Result<String, String> {
+    for cmd in [
+        "get_clip_info",
+        "get_arrangement_clips",
+        "delete_arrangement_clip",
+        "duplicate_session_clip_to_arrangement",
+    ] {
+        require(live, cmd)?;
+    }
+    let info = live
+        .send_command(
+            "get_clip_info",
+            Some(
+                json!({"track_index": track_index, "clip_index": clip_index, "arrangement": false}),
+            ),
+        )
+        .map_err(|e| live_err("read the clip", e))?;
+    let name = get_display(&info, "name", "");
+    let clips = live
+        .send_command(
+            "get_arrangement_clips",
+            Some(json!({"track_index": track_index})),
+        )
+        .map_err(|e| live_err("list the arrangement clips", e))?;
+    let copies: Vec<(usize, f64)> = clips
+        .get("clips")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .enumerate()
+                .filter(|(_, c)| get_display(c, "name", "") == name)
+                .filter_map(|(i, c)| Some((i, c.get("start_time")?.as_f64()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    if copies.is_empty() {
+        return Ok(format!(
+            ". No Arrangement copies named '{name}' on this track to refresh"
+        ));
+    }
+    for (i, _) in copies.iter().rev() {
+        live.send_command(
+            "delete_arrangement_clip",
+            Some(json!({"track_index": track_index, "clip_index": i})),
+        )
+        .map_err(|e| live_err("remove an arrangement copy", e))?;
+    }
+    for (_, t) in &copies {
+        live.send_command(
+            "duplicate_session_clip_to_arrangement",
+            Some(json!({"track_index": track_index, "clip_index": clip_index, "destination_time": t})),
+        )
+        .map_err(|e| live_err("place the refreshed clip", e))?;
+    }
+    let times: Vec<f64> = copies.iter().map(|(_, t)| *t).collect();
+    Ok(format!(
+        ". Refreshed {} Arrangement cop{} of '{name}' at beat(s) {}",
+        copies.len(),
+        if copies.len() == 1 { "y" } else { "ies" },
+        list_beats(&times)
     ))
 }
 
@@ -1356,6 +1457,24 @@ pub fn duplicate_to_arrangement_body(
 ) -> ToolResult {
     require(live, "duplicate_session_clip_to_arrangement")?;
     let times = placement_times(p)?;
+    // Existing clips on the track, to warn when a placement lands inside one
+    // (Live trims or splits the earlier clip).
+    let existing: Vec<(f64, f64)> = live
+        .send_command(
+            "get_arrangement_clips",
+            Some(json!({"track_index": p.track_index})),
+        )
+        .ok()
+        .and_then(|r| r.get("clips").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|c| Some((c.get("start_time")?.as_f64()?, c.get("end_time")?.as_f64()?)))
+        .collect();
+    let overlaps: Vec<f64> = times
+        .iter()
+        .copied()
+        .filter(|t| existing.iter().any(|(s, e)| *t > s - 1e-6 && *t < e - 1e-6))
+        .collect();
     let mut placed: Vec<f64> = Vec::new();
     let mut clip_name = String::from("clip");
     let mut track_name = format!("track {}", p.track_index);
@@ -1385,14 +1504,22 @@ pub fn duplicate_to_arrangement_body(
         track_name = get_display(&r, "track_name", &track_name);
         placed.push(*t);
     }
+    let warn = if overlaps.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ". Note: the placement(s) at beat(s) {} start inside clips that were already there; Live trims the earlier clip",
+            list_beats(&overlaps)
+        )
+    };
     if placed.len() == 1 {
         Ok(format!(
-            "Duplicated '{clip_name}' from Session slot {} on '{track_name}' to arrangement at beat {}",
+            "Duplicated '{clip_name}' from Session slot {} on '{track_name}' to arrangement at beat {}{warn}",
             p.clip_index, placed[0]
         ))
     } else {
         Ok(format!(
-            "Placed '{clip_name}' from Session slot {} on '{track_name}' {} times in the arrangement, at beats {}",
+            "Placed '{clip_name}' from Session slot {} on '{track_name}' {} times in the arrangement, at beats {}{warn}",
             p.clip_index,
             placed.len(),
             list_beats(&placed)
@@ -1624,6 +1751,56 @@ pub fn delete_arrangement_clip_body(
     p: &DeleteArrangementClipParams,
 ) -> ToolResult {
     require(live, "delete_arrangement_clip")?;
+    if p.all || !p.clip_indices.is_empty() {
+        let mut indices: Vec<i64> = if p.all {
+            require(live, "get_arrangement_clips")?;
+            let r = live
+                .send_command(
+                    "get_arrangement_clips",
+                    Some(json!({"track_index": p.track_index})),
+                )
+                .map_err(|e| live_err("list the arrangement clips", e))?;
+            let n = r.get("clip_count").and_then(Value::as_i64).unwrap_or(0);
+            (0..n).collect()
+        } else {
+            p.clip_indices.clone()
+        };
+        if indices.is_empty() {
+            return Ok(format!("Track {} has no Arrangement clips.", p.track_index));
+        }
+        // Highest first, so earlier indices stay valid as clips disappear.
+        indices.sort_unstable();
+        indices.dedup();
+        let mut removed = Vec::new();
+        for i in indices.iter().rev() {
+            let r = live
+                .send_command(
+                    "delete_arrangement_clip",
+                    Some(json!({"track_index": p.track_index, "clip_index": i})),
+                )
+                .map_err(|e| {
+                    format!(
+                        "Removed {} clip(s), then could not remove index {i}: {e}",
+                        removed.len()
+                    )
+                })?;
+            removed.push(format!(
+                "'{}' ({}–{})",
+                get_display(&r, "name", "clip"),
+                beat(r.get("start_time")),
+                beat(r.get("end_time"))
+            ));
+        }
+        return Ok(format!(
+            "Removed {} Arrangement clip(s) from track {}: {}",
+            removed.len(),
+            p.track_index,
+            removed.join(", ")
+        ));
+    }
+    if p.clip_index < 0 {
+        return Err("Give clip_index, clip_indices, or all: true.".into());
+    }
     let r = live
         .send_command(
             "delete_arrangement_clip",
@@ -1962,13 +2139,25 @@ pub fn play_and_measure_body(live: &LiveState, p: &PlayAndMeasureParams) -> Tool
     require(live, "stop_playback")?;
     let seconds = p.seconds.clamp(0.5, 10.0);
     let interval = std::time::Duration::from_millis(p.interval_ms.clamp(50, 1000) as u64);
-    if let Some(t) = p.start_time {
-        require(live, "set_current_song_time")?;
-        live.send_command("set_current_song_time", Some(json!({"time": t})))
-            .map_err(|e| live_err("move the playhead", e))?;
+    // start_playing would jump to the start marker; play_from continues from
+    // the position, so the section asked for is the section measured.
+    match p.start_time {
+        Some(t) if live.script.has_capability("play_from") => {
+            live.send_command("play_from", Some(json!({"time": t})))
+                .map_err(|e| live_err("play from the position", e))?;
+        }
+        Some(t) => {
+            require(live, "set_current_song_time")?;
+            live.send_command("set_current_song_time", Some(json!({"time": t})))
+                .map_err(|e| live_err("move the playhead", e))?;
+            live.send_command("start_playback", None)
+                .map_err(|e| live_err("start playback", e))?;
+        }
+        None => {
+            live.send_command("start_playback", None)
+                .map_err(|e| live_err("start playback", e))?;
+        }
     }
-    live.send_command("start_playback", None)
-        .map_err(|e| live_err("start playback", e))?;
     let deadline = Instant::now() + std::time::Duration::from_secs_f64(seconds);
     let mut peaks: std::collections::BTreeMap<String, (String, f64)> =
         std::collections::BTreeMap::new();
@@ -2009,7 +2198,11 @@ pub fn play_and_measure_body(live: &LiveState, p: &PlayAndMeasureParams) -> Tool
     }
     let mut out = format!(
         "Played {seconds:.1} s{} and took {readings} readings. Peak per track (0.0 silent, 1.0 clipping):\n",
-        p.start_time.map(|t| format!(" from beat {t}")).unwrap_or_default()
+        match p.start_time {
+            Some(t) if live.script.has_capability("play_from") => format!(" from beat {t}"),
+            Some(t) => format!(" from the start marker (this Remote Script cannot play from beat {t}; reinstall it)"),
+            None => " from the start marker".to_string(),
+        }
     );
     let mut silent = Vec::new();
     for (id, (name, peak)) in &peaks {
@@ -2329,6 +2522,54 @@ pub fn measure_capture_body(live: &LiveState, p: &MeasureCaptureParams) -> ToolR
     ))
 }
 
+// ── Tracks and transport ────────────────────────────────────────────────────
+
+pub fn delete_track_body(live: &LiveState, p: &TrackParams) -> ToolResult {
+    require(live, "delete_track")?;
+    let r = live
+        .send_command("delete_track", Some(json!({"track_index": p.track_index})))
+        .map_err(|e| live_err("delete the track", e))?;
+    Ok(format!(
+        "Deleted track {} ('{}'); {} tracks remain and later indices moved down by one.",
+        p.track_index,
+        get_display(&r, "deleted", "track"),
+        get_display(&r, "track_count", "?")
+    ))
+}
+
+pub fn back_to_arrangement_body(live: &LiveState, _p: &Empty) -> ToolResult {
+    require(live, "back_to_arrangement")?;
+    live.send_command("back_to_arrangement", None)
+        .map_err(|e| live_err("return to the arrangement", e))?;
+    Ok("Back to Arrangement: every track follows the timeline again.".into())
+}
+
+pub fn set_arrangement_loop_body(live: &LiveState, p: &SetArrangementLoopParams) -> ToolResult {
+    require(live, "set_arrangement_loop")?;
+    if p.start.is_none() && p.length.is_none() && p.enabled.is_none() {
+        return Err("Give start, length or enabled.".into());
+    }
+    let r = live
+        .send_command(
+            "set_arrangement_loop",
+            Some(json!({"start": p.start, "length": p.length, "enabled": p.enabled})),
+        )
+        .map_err(|e| live_err("set the arrangement loop", e))?;
+    let start = r.get("loop_start").and_then(Value::as_f64).unwrap_or(0.0);
+    let length = r.get("loop_length").and_then(Value::as_f64).unwrap_or(0.0);
+    Ok(format!(
+        "Arrangement loop {}: beats {} to {} ({} beats)",
+        if r.get("loop").and_then(Value::as_bool) == Some(true) {
+            "on"
+        } else {
+            "off"
+        },
+        beat(Some(&json!(start))),
+        beat(Some(&json!(start + length))),
+        beat(Some(&json!(length)))
+    ))
+}
+
 // ── Batch and build_song ─────────────────────────────────────────────────────
 
 macro_rules! named_tools {
@@ -2399,6 +2640,9 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "capture_mix" => (CaptureMixParams, capture_mix_body),
         "list_captures" => (Empty, list_captures_body),
         "measure_capture" => (MeasureCaptureParams, measure_capture_body),
+        "delete_track" => (TrackParams, delete_track_body),
+        "back_to_arrangement" => (Empty, back_to_arrangement_body),
+        "set_arrangement_loop" => (SetArrangementLoopParams, set_arrangement_loop_body),
     )
 }
 
@@ -2462,12 +2706,12 @@ pub fn batch_body(live: &LiveState, p: &BatchParams) -> ToolResult {
                 if let Some(idx) = track_index_from_text(&text) {
                     last_track = Some(idx);
                 }
-                out.push_str(&format!(
-                    "{}. {} ✓ {}\n",
-                    i + 1,
-                    step.tool,
-                    text.lines().next().unwrap_or("")
-                ));
+                let body = if text.contains('\n') {
+                    format!("\n   {}", text.replace('\n', "\n   "))
+                } else {
+                    text.clone()
+                };
+                out.push_str(&format!("{}. {} ✓ {}\n", i + 1, step.tool, body));
             }
             Err(e) => {
                 failed += 1;
@@ -2547,9 +2791,10 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     }
     let mut placements: Vec<(usize, Vec<f64>)> = Vec::new();
     for (i, pl) in p.placements.iter().enumerate() {
-        if !defined_clips.contains(&(pl.track.clone(), pl.slot)) {
+        let existing_track = pl.track.trim().parse::<i64>().is_ok();
+        if !defined_clips.contains(&(pl.track.clone(), pl.slot)) && !existing_track {
             return Err(format!(
-                "placement {}: no clip is defined for track '{}' slot {}",
+                "placement {}: no clip is defined for track '{}' slot {} — define it in `clips`, or give an existing track's index (\"3\") to place a clip that is already in the set",
                 i + 1,
                 pl.track,
                 pl.slot
@@ -2993,7 +3238,11 @@ impl Server {
         self.run(&SET_TEMPO, p, set_tempo_body).await
     }
 
-    /// Load an instrument or effect onto a track using its browser URI.
+    /// Load a browser item onto a track by URI (from search_browser or
+    /// get_browser_items_at_path). An instrument replaces the track's
+    /// instrument; an audio or MIDI effect is added at the end of the
+    /// track's device chain, so "put an Echo on the pad" is one call. The
+    /// result names the device that was added and its index.
     #[tool(name = "load_instrument_or_effect")]
     async fn load_instrument_or_effect(
         &self,
@@ -3172,8 +3421,9 @@ impl Server {
             .await
     }
 
-    /// Remove a clip from the Arrangement timeline. clip_index is the
-    /// position get_arrangement_clips lists (ordered by start time); later
+    /// Remove clips from the Arrangement timeline: one `clip_index`, several
+    /// `clip_indices`, or `all: true` for the whole track. Indices are the
+    /// positions get_arrangement_clips lists (ordered by start time); later
     /// clips shift down by one. Live 11 or newer.
     #[tool(name = "delete_arrangement_clip")]
     async fn delete_arrangement_clip(
@@ -3322,6 +3572,32 @@ impl Server {
         self.run(&MEASURE_CAPTURE, p, measure_capture_body).await
     }
 
+    /// Delete a track by index (a wrong instrument choice no longer leaves an
+    /// orphan). Later tracks move down by one.
+    #[tool(name = "delete_track")]
+    async fn delete_track(&self, Parameters(p): Parameters<TrackParams>) -> CallToolResult {
+        self.run(&DELETE_TRACK, p, delete_track_body).await
+    }
+
+    /// After launching Session clips, make every track follow the
+    /// Arrangement timeline again (Live's "Back to Arrangement" button).
+    #[tool(name = "back_to_arrangement")]
+    async fn back_to_arrangement(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+        self.run(&BACK_TO_ARRANGEMENT, p, back_to_arrangement_body)
+            .await
+    }
+
+    /// Set the Arrangement loop brace (start and length in beats) and switch
+    /// it on or off — the way to audition one section repeatedly.
+    #[tool(name = "set_arrangement_loop")]
+    async fn set_arrangement_loop(
+        &self,
+        Parameters(p): Parameters<SetArrangementLoopParams>,
+    ) -> CallToolResult {
+        self.run(&SET_ARRANGEMENT_LOOP, p, set_arrangement_loop_body)
+            .await
+    }
+
     #[tool(name = "batch")]
     async fn batch(&self, Parameters(p): Parameters<BatchParams>) -> CallToolResult {
         self.run(&BATCH, p, batch_body).await
@@ -3388,7 +3664,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 52);
+        assert_eq!(tools.len(), 55);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();

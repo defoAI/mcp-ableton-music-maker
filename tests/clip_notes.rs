@@ -60,6 +60,7 @@ async fn add(
         track_index: track,
         clip_index: slot,
         clear: false,
+        propagate_to_arrangement: false,
         input: mcp_ableton_music_maker::notes::NotesInput {
             notes,
             ..Default::default()

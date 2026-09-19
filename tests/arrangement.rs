@@ -79,6 +79,7 @@ async fn add_notes_clear_flag_replaces_instead_of_appending() {
         track_index: 1,
         clip_index: 0,
         clear: true,
+        propagate_to_arrangement: false,
         input: NotesInput {
             notes_csv: "C1,0,0.5,110\nC1,2,0.5,100".into(),
             loop_every: 4.0,
@@ -108,6 +109,7 @@ async fn add_notes_without_any_form_is_an_error_before_live() {
         track_index: 1,
         clip_index: 0,
         clear: false,
+        propagate_to_arrangement: false,
         input: NotesInput::default(),
     };
     let r = server
@@ -138,10 +140,20 @@ async fn duplicate_places_a_range_in_one_call() {
         )
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
-    let sent = bridge.sent();
+    let sent: Vec<Value> = bridge
+        .sent()
+        .into_iter()
+        .filter(|(c, _)| c == "duplicate_session_clip_to_arrangement")
+        .map(|(_, a)| a)
+        .collect();
     assert_eq!(sent.len(), 16);
-    assert_eq!(sent[0].1["destination_time"], 32.0);
-    assert_eq!(sent[15].1["destination_time"], 92.0);
+    assert_eq!(sent[0]["destination_time"], 32.0);
+    assert_eq!(sent[15]["destination_time"], 92.0);
+    assert_eq!(
+        bridge.commands()[0],
+        "get_arrangement_clips",
+        "overlap check first"
+    );
     assert!(text_of(&r).contains("16 times"), "{}", text_of(&r));
 }
 
@@ -169,6 +181,7 @@ async fn duplicate_single_and_list_forms_still_work() {
     let times: Vec<Value> = bridge
         .sent()
         .iter()
+        .filter(|(c, _)| c == "duplicate_session_clip_to_arrangement")
         .map(|(_, a)| a["destination_time"].clone())
         .collect();
     assert_eq!(times, vec![json!(0.0), json!(8.0), json!(16.0)]);
@@ -208,8 +221,9 @@ async fn duplicate_reports_how_far_it_got_on_failure() {
         end: None,
         step: None,
     };
+    // Call 0 is the overlap read; placements are calls 1, 2, 3.
     bridge.fail_from(
-        2,
+        3,
         mcp_ableton_music_maker::connection::LiveError::Ableton("Track is frozen".into()),
     );
     let r = server
@@ -223,7 +237,7 @@ async fn duplicate_reports_how_far_it_got_on_failure() {
     let t = text_of(&r);
     assert!(t.contains("Placed 2 of 3 (at beats 0, 4)"), "{t}");
     assert!(t.contains("beat 8") && t.contains("Track is frozen"), "{t}");
-    assert_eq!(bridge.sent().len(), 3, "stops at the first failure");
+    assert_eq!(bridge.sent().len(), 4, "stops at the first failure");
 }
 
 #[tokio::test]
