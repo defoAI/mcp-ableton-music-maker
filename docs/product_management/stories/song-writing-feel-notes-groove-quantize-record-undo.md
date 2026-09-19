@@ -315,7 +315,13 @@ restore a clip's notes by content after vary_clip, undo_vary is the other way.
       at the end bar and leaves playback running; the stop command returns the new
       Arrangement clips per track (`arrangement_clips` diff against the start snapshot).
       Refused during a performance, during `capture_mix`, and for tracks with
-      `can_be_armed` false.
+      `can_be_armed` false. **`start_arrangement_record` / `stop_arrangement_record` are
+      shared with
+      [performance-records-itself-as-an-arrangement-take](performance-records-itself-as-an-arrangement-take.md),
+      which arms the same switch for the performance the server drives. One script command,
+      one signature: whichever story lands first defines it, and the other conforms. The
+      difference is who chooses the bar — here the producer passes `from_beat`, there the
+      producer is asked what to do with what is already in the Arrangement.**
 - [ ] **AC10 — `overdub_clip`.** Script command `session_overdub(track, clip, bars,
       quantize?)`: arms the track, fires the clip if not playing, sets `session_record =
       True` on the next bar line and back to False after `bars` bars (tick), disarms, and
@@ -533,6 +539,9 @@ With Live 12 open, the Remote Script reinstalled and Live restarted, the activit
 | Issue for tracking | to file | one issue, three checkboxes; closes #30 |
 
 ## Related Stories
+- `performance-records-itself-as-an-arrangement-take` — records the *performance*; this story
+  records the *producer*. They share `start_arrangement_record` / `stop_arrangement_record`
+  (AC9) and must not specify them differently.
 - `notes-by-bar-and-key-sections-that-add-replies-carry-cost-and-fix` — the note grammar
   this story's per-note fields extend (`bars`, `bar_steps`, degrees, chords); land that
   first so `NotesInput` has one shape.
