@@ -8,7 +8,7 @@
 ## Details
 | Field | Value |
 |-------|-------|
-| Status | `In Progress` — phases 1 and 2 built; awaiting the real-Live pass |
+| Status | `Done` — verified against Live 12.4.6 on 2026-09-19 (8 bars at 88 BPM from beat 64, 12.7 s end to end); phase 3 is its own story |
 | Priority | P1 — the artist's session ended with "I never heard the track"; `play_and_measure` reports levels, not sound |
 | Size | L — three phases below; the Live-side capture ships first and is useful alone |
 | Tracker | [#26](https://github.com/defoAI/mcp-ableton-music-maker/issues/26) |
@@ -301,3 +301,4 @@ Manual, on Live 12 with a saved set: the verification steps below.
 |------|--------|
 | 2026-09-19 | Created from the "I never heard the track" feedback and the resampling route |
 | 2026-09-19 | Phases 1 and 2 implemented (Remote Script 1.11.0, `src/audio.rs`, `tests/capture.rs`, app Captures section); real-Live verification pending |
+| 2026-09-19 | First real capture deadlocked Live: dataset-era passive listeners attached to the recording clip while the socket thread read it. Fixed in 1.12.1 (listeners removed, capture reads on the main thread, live Song handle). Second capture verified: Capture track created once, clip named with its peak, file in `Samples/Recorded`, per-bar RMS reads "bars 5–8 are 5.3 dB louder" |
