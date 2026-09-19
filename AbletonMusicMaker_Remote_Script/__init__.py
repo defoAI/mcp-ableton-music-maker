@@ -21,8 +21,13 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.1"
+SCRIPT_VERSION = "1.10.2"
 PROTOCOL_VERSION = 1
+
+# A handler returns this when it will answer the socket itself, from a later
+# tick. Needed wherever Live applies the first step asynchronously (moving
+# the playhead) and the second step must see the result.
+DEFERRED = object()
 
 SCRIPT_CAPABILITIES = [
     "get_session_info",
@@ -422,7 +427,7 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "create_locator":
                             name = params.get("name", "")
                             time_val = params.get("time", 0.0)
-                            result = self._create_locator(name, time_val)
+                            result = self._create_locator(name, time_val, response_queue)
                         elif command_type == "set_track_mixer":
                             result = self._set_track_mixer(
                                 params.get("track_index", 0), params.get("kind", "track"),
@@ -446,7 +451,7 @@ class AbletonMCP(ControlSurface):
                                 params.get("track_index", 0), params.get("clip_index", 0))
                         elif command_type == "delete_locator":
                             result = self._delete_locator(
-                                params.get("name"), params.get("time"))
+                                params.get("name"), params.get("time"), response_queue)
                         elif command_type == "set_clip_loop":
                             result = self._set_clip_loop(
                                 params.get("track_index", 0), params.get("clip_index", 0),
@@ -461,7 +466,10 @@ class AbletonMCP(ControlSurface):
                                 params.get("points", []), params.get("mode", "linear"),
                                 params.get("resolution", 0.25), params.get("clear", True))
 
-                        # Put the result in the queue
+                        # Put the result in the queue, unless the handler
+                        # answers from a later tick itself.
+                        if result is DEFERRED:
+                            return
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
                         self.log_message("Error in main thread task: " + str(e))
@@ -1223,56 +1231,82 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error duplicating clip to arrangement: " + str(e))
             raise
 
-    def _create_locator(self, name, time_val):
+    def _create_locator(self, name, time_val, response_queue=None):
         """Create (or rename) a named locator at the given beat position.
 
-        Uses Live's Song.set_or_delete_cue(), which toggles a cue at the
-        current_song_time. We temporarily move the playhead, toggle, then
-        restore. If a cue already exists at that time we just rename it
-        instead of toggling (which would delete it).
+        Live's Song.set_or_delete_cue() toggles a cue at the current song
+        time, and a playhead move is applied on Live's own tick, not when the
+        property is assigned. So the toggle runs two ticks later, and the
+        socket is answered from there. A cue already at that time is renamed
+        instead of toggled (toggling would delete it).
         """
         try:
             song = self._song
             target_time = float(time_val)
             tolerance = 1e-3
 
-            # See if a cue already exists at (or near) the target time
-            existing = None
-            for cue in song.cue_points:
-                if abs(cue.time - target_time) < tolerance:
-                    existing = cue
-                    break
-
-            original_time = song.current_song_time
-
-            if existing is None:
-                # Move playhead, toggle to create, then locate the new cue
-                song.current_song_time = target_time
-                song.set_or_delete_cue()
+            def cue_at(t):
                 for cue in song.cue_points:
-                    if abs(cue.time - target_time) < tolerance:
-                        existing = cue
-                        break
-                # Restore playhead
-                try:
-                    song.current_song_time = original_time
-                except Exception:
-                    pass
+                    if abs(cue.time - t) < tolerance:
+                        return cue
+                return None
 
-            if existing is None:
-                raise Exception("Failed to create cue at time " + str(target_time))
+            def describe(cue):
+                if name:
+                    try:
+                        cue.name = str(name)
+                    except Exception as e:
+                        self.log_message("Could not rename locator: " + str(e))
+                return {"success": True, "time": float(cue.time), "name": str(cue.name)}
 
-            if name:
+            existing = cue_at(target_time)
+            if existing is not None:
+                return describe(existing)
+
+            original_time = float(song.current_song_time)
+            song.current_song_time = target_time
+
+            def finish():
                 try:
-                    existing.name = str(name)
+                    if abs(float(song.current_song_time) - target_time) > tolerance:
+                        # Still not there: give it one more tick.
+                        song.current_song_time = target_time
+                        self.schedule_message(2, finish_or_fail)
+                        return
+                    song.set_or_delete_cue()
+                    cue = cue_at(target_time)
+                    if cue is None:
+                        raise Exception("Live did not create a cue at beat %s (playhead at %s)" % (
+                            target_time, song.current_song_time))
+                    result = describe(cue)
+                    try:
+                        song.current_song_time = original_time
+                    except Exception:
+                        pass
+                    if response_queue is not None:
+                        response_queue.put({"status": "success", "result": result})
                 except Exception as e:
-                    self.log_message("Could not rename locator: " + str(e))
+                    self.log_message("Error creating locator: " + str(e))
+                    if response_queue is not None:
+                        response_queue.put({"status": "error", "message": str(e)})
 
-            return {
-                "success": True,
-                "time": existing.time,
-                "name": existing.name,
-            }
+            def finish_or_fail():
+                if abs(float(song.current_song_time) - target_time) > tolerance:
+                    msg = "Could not move the playhead to beat %s to place the locator (it is at %s)" % (
+                        target_time, song.current_song_time)
+                    self.log_message(msg)
+                    if response_queue is not None:
+                        response_queue.put({"status": "error", "message": msg})
+                    return
+                finish()
+
+            if response_queue is None:
+                # No socket to answer (direct call): do it now and hope the
+                # move has landed, as the old code did.
+                finish()
+                return {"success": True, "time": target_time, "name": name}
+            self.schedule_message(2, finish)
+            return DEFERRED
         except Exception as e:
             self.log_message("Error creating locator: " + str(e))
             raise
@@ -1508,8 +1542,12 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error deleting arrangement clip: " + str(e))
             raise
 
-    def _delete_locator(self, name=None, time_val=None):
-        """Remove a locator by name or by beat position (same toggle as create)."""
+    def _delete_locator(self, name=None, time_val=None, response_queue=None):
+        """Remove a locator by name or by beat position.
+
+        Same two-tick dance as _create_locator: move the playhead, let Live
+        apply it, then toggle the cue away and answer the socket.
+        """
         try:
             song = self._song
             target = None
@@ -1524,15 +1562,38 @@ class AbletonMCP(ControlSurface):
                 existing = ", ".join("'%s' @ %s" % (c.name, c.time) for c in song.cue_points) or "none"
                 raise ValueError("no locator matches (name=%s, time=%s); locators: %s" % (name, time_val, existing))
             info = {"deleted": str(target.name), "time": float(target.time)}
-            original_time = song.current_song_time
-            song.current_song_time = target.time
-            song.set_or_delete_cue()
-            try:
-                song.current_song_time = original_time
-            except Exception:
-                pass
-            info["remaining"] = len(list(song.cue_points))
-            return info
+            cue_time = float(target.time)
+            original_time = float(song.current_song_time)
+            song.current_song_time = cue_time
+
+            def finish():
+                try:
+                    if abs(float(song.current_song_time) - cue_time) > 1e-3:
+                        msg = "Could not move the playhead to beat %s to remove the locator" % cue_time
+                        if response_queue is not None:
+                            response_queue.put({"status": "error", "message": msg})
+                        return
+                    song.set_or_delete_cue()
+                    still_there = any(abs(float(c.time) - cue_time) < 1e-3 for c in song.cue_points)
+                    if still_there:
+                        raise Exception("Live did not remove the cue at beat %s" % cue_time)
+                    try:
+                        song.current_song_time = original_time
+                    except Exception:
+                        pass
+                    info["remaining"] = len(list(song.cue_points))
+                    if response_queue is not None:
+                        response_queue.put({"status": "success", "result": info})
+                except Exception as e:
+                    self.log_message("Error deleting locator: " + str(e))
+                    if response_queue is not None:
+                        response_queue.put({"status": "error", "message": str(e)})
+
+            if response_queue is None:
+                finish()
+                return info
+            self.schedule_message(2, finish)
+            return DEFERRED
         except Exception as e:
             self.log_message("Error deleting locator: " + str(e))
             raise
