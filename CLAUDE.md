@@ -14,7 +14,7 @@ Rust MCP server that lets Claude drive Ableton Live. Two processes:
 ## Commands
 
 ```bash
-cargo test                                   # 6 suites: unit, clip-notes, arrangement, local-only, activity, stdio end-to-end
+cargo test                                   # 8 suites: unit, clip-notes, arrangement, mixer, orchestration, local-only, activity, stdio
 cd app && npm run dev                        # the Mac app against this checkout (Tauri 2)
 cargo clippy --all-targets -- -D warnings    # CI runs this
 cargo fmt --all
@@ -31,14 +31,14 @@ No Rust toolchain on the machine? Build inside `rust:1-slim-bookworm` with the r
 ```
 src/connection.rs      LiveBridge trait, AbletonConnection (TCP), RealBridge (reconnecting), LiveError
 src/handshake.rs       get_script_info handshake, ScriptInfoCache, per-command capability check
-src/tools.rs           Server, ToolSpec, the 31 tool bodies and their #[tool] bindings, run() wrapper
+src/tools.rs           Server, ToolSpec, the 48 tool bodies and their #[tool] bindings, run() wrapper
 src/activity.rs        the local activity log: one JSON line per tool call, payloads off by default
 src/state.rs           state_dir / activity_dir / sessions_dir — the only places the server writes
 src/install.rs         installer logic (Library.cfg discovery, install with .bak)
 src/app.rs             startup handshake, heartbeat, stdio serve, shutdown, --status, --check
 app/                   the Mac companion app (Tauri 2): src-tauri/ links this crate, src/ is the UI
 src/notes.rs           compact note forms (csv, step strings, patterns, tiling) → plain Note objects
-tests/                 clip_notes.rs, arrangement.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
+tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
 docker/                verify-image.sh, Claude Desktop example config
 .github/workflows/ci.yml   fmt, clippy, test; image build, verify, trivy, push to GHCR on main
 ```

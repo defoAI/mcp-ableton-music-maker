@@ -88,6 +88,11 @@ fn configure_client(app: AppHandle, kind: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn remove_legacy_client(app: AppHandle) -> Result<Value, String> {
+    clients::remove_legacy(&app)
+}
+
+#[tauri::command]
 fn activity_sessions(app: AppHandle) -> Result<Value, String> {
     Ok(activity::sessions(&app))
 }
@@ -149,6 +154,7 @@ pub fn run() {
             pick_library,
             client_config,
             configure_client,
+            remove_legacy_client,
             activity_sessions,
             activity_lines,
             clear_session,
