@@ -1,0 +1,698 @@
+<title>Ableton Music Maker for Mac</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground: #E4E2DD;
+    --win: #FFFFFF;
+    --side: #F2F1EE;
+    --side-edge: #DCDAD4;
+    --panel: #F7F6F3;
+    --line: #E3E1DB;
+    --line-strong: #CFCCC4;
+    --ink: #1D1C1A;
+    --ink-2: #5C5A55;
+    --ink-3: #8C8983;
+    --accent: #0A7AFF;
+    --accent-ink: #FFFFFF;
+    --live: #E39B21;
+    --live-soft: #FBEFD8;
+    --good: #2FB344;
+    --good-soft: #E3F5E6;
+    --warn: #F08A00;
+    --warn-soft: #FDEEDC;
+    --bad: #E5372B;
+    --bad-soft: #FBE3E1;
+    --led-off: #C9C6BF;
+    --sel: #E7EFFB;
+    --shadow: 0 18px 50px rgba(30, 25, 10, .18), 0 1px 0 rgba(0,0,0,.05);
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #141311;
+      --win: #1B1A18;
+      --side: #262523;
+      --side-edge: #34322E;
+      --panel: #232220;
+      --line: #34322E;
+      --line-strong: #4A4740;
+      --ink: #EDEBE6;
+      --ink-2: #B3B0A8;
+      --ink-3: #7E7B74;
+      --accent: #3D96FF;
+      --accent-ink: #0B1420;
+      --live: #EBA83A;
+      --live-soft: #3A2E17;
+      --good: #4CC95F;
+      --good-soft: #1E3322;
+      --warn: #F5A030;
+      --warn-soft: #3B2C14;
+      --bad: #F25A4F;
+      --bad-soft: #3D1F1C;
+      --led-off: #4A4740;
+      --sel: #253549;
+      --shadow: 0 18px 50px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #141311;
+    --win: #1B1A18;
+    --side: #262523;
+    --side-edge: #34322E;
+    --panel: #232220;
+    --line: #34322E;
+    --line-strong: #4A4740;
+    --ink: #EDEBE6;
+    --ink-2: #B3B0A8;
+    --ink-3: #7E7B74;
+    --accent: #3D96FF;
+    --accent-ink: #0B1420;
+    --live: #EBA83A;
+    --live-soft: #3A2E17;
+    --good: #4CC95F;
+    --good-soft: #1E3322;
+    --warn: #F5A030;
+    --warn-soft: #3B2C14;
+    --bad: #F25A4F;
+    --bad-soft: #3D1F1C;
+    --led-off: #4A4740;
+    --sel: #253549;
+    --shadow: 0 18px 50px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font: 13px/1.45 var(--ui);
+    padding-block: 28px 48px;
+    padding-inline: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, h4 { margin: 0; font-weight: 600; text-wrap: balance; }
+  p { margin: 0; }
+  button { font: inherit; color: inherit; }
+  code, .mono { font-family: var(--mono); font-size: 12px; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* Review chrome around the window */
+  .stage { max-width: 1040px; margin: 0 auto; display: grid; gap: 18px; }
+  .stagebar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; color: var(--ink-2); }
+  .stagebar .name { font-weight: 600; color: var(--ink); }
+  .stagebar label { display: inline-flex; align-items: center; gap: 6px; }
+  .stagebar select, .stagebar .ghost {
+    font: inherit; color: var(--ink); background: var(--win); border: 1px solid var(--line-strong);
+    border-radius: 7px; padding: 4px 8px;
+  }
+  .stagebar .ghost { cursor: pointer; }
+  .stagebar .ghost[aria-pressed="true"] { background: var(--sel); border-color: var(--accent); }
+
+  /* Menu bar strip */
+  .menubar {
+    position: relative; height: 26px; border-radius: 8px 8px 0 0;
+    background: var(--side); border: 1px solid var(--side-edge); border-bottom: 0;
+    display: flex; align-items: center; justify-content: flex-end; padding-inline: 10px; gap: 14px;
+    font-size: 12px; color: var(--ink-2);
+  }
+  .menubar .mb-item { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px; border-radius: 5px; cursor: pointer; }
+  .menubar .mb-item.on { background: var(--sel); color: var(--ink); }
+  .led { width: 8px; height: 8px; border-radius: 50%; background: var(--led-off); flex: none; }
+  .led.good { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
+  .led.warn { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 22%, transparent); }
+  .led.bad  { background: var(--bad);  box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 22%, transparent); }
+  .led.live { background: var(--live); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 40%, transparent);} 50% { box-shadow: 0 0 0 5px transparent; } }
+
+  .popover {
+    position: absolute; top: 30px; right: 8px; width: 300px; z-index: 5;
+    background: var(--win); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow);
+    padding: 12px; display: grid; gap: 10px;
+  }
+  .popover[hidden] { display: none; }
+  .popover .row { display: flex; align-items: center; gap: 8px; }
+  .popover .chainmini { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: center; gap: 6px; font-size: 11px; }
+  .popover .chainmini .cell { display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--panel); border-radius: 7px; }
+  .popover .chainmini .arrow { color: var(--ink-3); }
+  .popover hr { border: 0; border-top: 1px solid var(--line); margin: 2px 0; }
+  .popover .menuitem { padding: 5px 6px; border-radius: 6px; cursor: pointer; }
+  .popover .menuitem:hover { background: var(--sel); }
+
+  /* Window */
+  .window {
+    background: var(--win); border: 1px solid var(--side-edge); border-radius: 0 0 12px 12px;
+    box-shadow: var(--shadow); overflow: hidden;
+    display: grid; grid-template-columns: 208px 1fr; min-height: 640px;
+  }
+  .sidebar { background: var(--side); border-right: 1px solid var(--side-edge); padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
+  .lights { display: flex; gap: 8px; padding: 2px 6px 14px; }
+  .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+  .lights i:nth-child(1) { background: #FF5F57; } .lights i:nth-child(2) { background: #FEBC2E; } .lights i:nth-child(3) { background: #28C840; }
+  .nav { display: grid; gap: 2px; }
+  .nav button {
+    display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; padding: 6px 9px;
+    background: transparent; border: 0; border-radius: 7px; cursor: pointer; color: var(--ink);
+  }
+  .nav button[aria-current="page"] { background: var(--sel); font-weight: 600; }
+  .nav button:focus-visible, button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .nav .glyph { width: 18px; height: 18px; display: grid; place-items: center; color: var(--ink-2); }
+  .nav .badge { margin-left: auto; font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+  .side-foot { margin-top: auto; padding: 10px 8px 4px; color: var(--ink-3); font-size: 11px; display: grid; gap: 2px; }
+
+  .content { padding: 22px 26px 30px; display: grid; gap: 22px; align-content: start; min-width: 0; }
+  .screen[hidden] { display: none; }
+  .screen { display: grid; gap: 20px; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .head h2 { font-size: 20px; letter-spacing: -.01em; }
+  .head .sub { color: var(--ink-2); }
+  .eyebrow { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+
+  /* Chain */
+  .chain { display: grid; grid-template-columns: 1fr 24px 1fr 24px 1fr; align-items: stretch; gap: 8px; }
+  .link { display: grid; place-items: center; color: var(--ink-3); font-size: 16px; }
+  .cell {
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; background: var(--panel);
+    display: grid; gap: 6px; align-content: start; min-height: 116px;
+  }
+  .cell .who { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .cell .state { color: var(--ink-2); }
+  .cell .fix { margin-top: 4px; }
+  .cell.attn { border-color: var(--warn); background: var(--warn-soft); }
+  .cell.down { border-color: var(--bad); background: var(--bad-soft); }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line-strong); background: var(--win); color: var(--ink); font-weight: 500;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .btn.small { padding: 3px 9px; font-size: 12px; }
+  .btn:disabled { opacity: .55; cursor: default; }
+
+  /* Tiles */
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .tile { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: grid; gap: 2px; }
+  .tile .k { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+  .tile .v { font-size: 22px; font-weight: 600; letter-spacing: -.01em; }
+  .tile .d { color: var(--ink-2); font-size: 12px; }
+  .tile.hot .v { color: var(--live); }
+
+  /* Activity table */
+  .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .chip { padding: 3px 10px; border-radius: 12px; border: 1px solid var(--line-strong); background: transparent; cursor: pointer; font-size: 12px; }
+  .chip[aria-pressed="true"] { background: var(--ink); color: var(--win); border-color: var(--ink); }
+  .toolbar .spacer { flex: 1; }
+  .tablewrap { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .tscroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 700px; }
+  th { text-align: left; font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--panel); }
+  tbody tr[aria-selected="true"] { background: var(--sel); }
+  td.r, th.r { text-align: right; }
+  .tool { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+  .kind { display: inline-block; width: 6px; height: 6px; border-radius: 2px; margin-right: 8px; vertical-align: 1px; }
+  .kind.read { background: var(--ink-3); } .kind.write { background: var(--live); }
+  .res { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+  .res .led { width: 7px; height: 7px; }
+  .tok { color: var(--ink-2); }
+  .tok b { color: var(--ink); font-weight: 500; }
+
+  .detail { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: grid; gap: 12px; }
+  .detail[hidden] { display: none; }
+  .detail .dh { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .kv { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .kv div { display: grid; gap: 2px; }
+  .kv .k { font-size: 11px; color: var(--ink-3); }
+  pre { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--ink); }
+  .redacted { color: var(--ink-3); font-style: italic; }
+  .note { color: var(--ink-2); font-size: 12px; }
+  .note a, .notes a { color: var(--accent); }
+
+  /* Setup */
+  .steps { display: grid; gap: 10px; }
+  .step { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: grid; grid-template-columns: 28px 1fr; gap: 6px 12px; }
+  .step .n { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-weight: 600; font-size: 12px; background: var(--panel); border: 1px solid var(--line-strong); }
+  .step.done .n { background: var(--good); color: #fff; border-color: transparent; }
+  .step.current { border-color: var(--accent); }
+  .step .t { font-weight: 600; }
+  .step .body { grid-column: 2; display: grid; gap: 8px; color: var(--ink-2); }
+  .step .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .path { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+  .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: transparent; padding: 4px 11px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: var(--win); }
+  .progress { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .6s ease; }
+  .okline { color: var(--good); font-weight: 600; }
+  .callout { border-left: 3px solid var(--warn); background: var(--warn-soft); padding: 8px 12px; border-radius: 0 8px 8px 0; color: var(--ink); }
+
+  /* Settings */
+  .group { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .group h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .srow { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 10px 14px; border-bottom: 1px solid var(--line); align-items: center; }
+  .srow:last-child { border-bottom: 0; }
+  .srow .l { font-weight: 500; }
+  .srow .h { grid-column: 1; color: var(--ink-2); font-size: 12px; }
+  .srow input[type="text"] { font: inherit; padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--win); color: var(--ink); width: 130px; font-family: var(--mono); font-size: 12px; }
+  .switch { position: relative; width: 38px; height: 22px; border-radius: 11px; background: var(--led-off); border: 0; cursor: pointer; transition: background .15s; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: left .15s; }
+  .switch[aria-checked="true"] { background: var(--good); }
+  .switch[aria-checked="true"]::after { left: 18px; }
+  .switch:disabled { opacity: .5; cursor: default; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 10px; font-size: 12px; font-weight: 500; }
+  .pill.off { background: var(--good-soft); color: var(--good); }
+  .pill.none { background: var(--panel); color: var(--ink-2); border: 1px solid var(--line); }
+
+  /* Notes under the window */
+  .notes { max-width: 1040px; margin: 0 auto; display: grid; gap: 14px; }
+  .notes h2 { font-size: 15px; }
+  .notes .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .notes .card { background: var(--win); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: grid; gap: 8px; align-content: start; }
+  .notes ol, .notes ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--ink-2); }
+  .notes li b { color: var(--ink); font-weight: 600; }
+  .notes p { color: var(--ink-2); max-width: 70ch; }
+
+  .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--ink); color: var(--win); padding: 8px 14px; border-radius: 8px; font-size: 12px; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .toast.show { opacity: 1; }
+
+  @media (prefers-reduced-motion: reduce) { .led.live { animation: none; } .progress i { transition: none; } }
+  @media (max-width: 760px) {
+    .window { grid-template-columns: 1fr; }
+    .sidebar { flex-direction: row; flex-wrap: wrap; align-items: center; }
+    .nav { display: flex; flex-wrap: wrap; }
+    .side-foot { display: none; }
+    .chain { grid-template-columns: 1fr; } .link { transform: rotate(90deg); }
+    .tiles, .kv, .notes .cols { grid-template-columns: 1fr 1fr; }
+    .content { padding: 16px; }
+  }
+  @media (max-width: 460px) { .tiles, .kv, .notes .cols { grid-template-columns: 1fr; } }
+</style>
+
+<div class="stage">
+  <div class="stagebar">
+    <span class="name">Prototype · Ableton Music Maker for Mac</span>
+    <label>Simulate
+      <select id="sim">
+        <option value="ok">Everything connected</option>
+        <option value="nolive">Live not running</option>
+        <option value="oldscript">Remote Script outdated</option>
+        <option value="noscript">Fresh Mac, nothing installed</option>
+        <option value="noclient">Live ready, no client yet</option>
+      </select>
+    </label>
+    <button class="ghost" id="mbtoggle" aria-pressed="false">Show menu bar popover</button>
+    <span style="margin-left:auto">Fake data. Real copy and tool names.</span>
+  </div>
+
+  <div>
+    <div class="menubar">
+      <span class="mb-item on" id="mbicon"><span class="led good" id="mbled"></span>Music Maker</span>
+      <span>Wed 14:31</span>
+      <div class="popover" id="popover" hidden>
+        <div class="row"><strong>Ableton Music Maker</strong><span style="margin-left:auto" class="note" id="popstate">Session active</span></div>
+        <div class="chainmini" id="chainmini"></div>
+        <div class="note" id="poplast">Last call: <span class="mono">add_notes_to_clip</span> · 92 ms · ok</div>
+        <hr>
+        <div class="menuitem" data-go="overview">Open Ableton Music Maker</div>
+        <div class="menuitem" data-go="activity">Show activity</div>
+        <div class="menuitem" data-go="setup" id="popfix" hidden>Fix the connection…</div>
+        <hr>
+        <div class="menuitem">Quit</div>
+      </div>
+    </div>
+
+    <div class="window">
+      <aside class="sidebar">
+        <div class="lights"><i></i><i></i><i></i></div>
+        <nav class="nav" aria-label="Sections">
+          <button data-go="overview" aria-current="page"><span class="glyph">◉</span>Overview</button>
+          <button data-go="activity"><span class="glyph">≡</span>Activity <span class="badge num" id="actbadge" hidden>1</span></button>
+          <button data-go="setup"><span class="glyph">⇩</span>Setup <span class="badge" id="setupbadge" hidden>needs you</span></button>
+          <button data-go="settings"><span class="glyph">⚙</span>Settings</button>
+        </nav>
+        <div class="side-foot">
+          <span>App 0.1 · server 2.0.0</span>
+          <span>Remote Script expected 1.8.0</span>
+          <span>Third-party, not made by Ableton</span>
+        </div>
+      </aside>
+
+      <main class="content">
+        <!-- OVERVIEW -->
+        <section class="screen" id="s-overview">
+          <div class="head"><h2>Overview</h2><span class="sub" id="ovsub">Claude Desktop session, 12 min</span></div>
+          <div>
+            <div class="eyebrow" style="margin-bottom:8px">The chain</div>
+            <div class="chain" id="chain"></div>
+          </div>
+          <div>
+            <div class="eyebrow" style="margin-bottom:8px">This session</div>
+            <div class="tiles" id="tiles"></div>
+          </div>
+          <div>
+            <div class="eyebrow" style="margin-bottom:8px">Recent calls</div>
+            <div class="tablewrap"><div class="tscroll"><table>
+              <thead><tr><th>Time</th><th>Tool</th><th>What it did</th><th class="r">Live</th><th>Result</th><th class="r">Tokens (est.)</th></tr></thead>
+              <tbody id="recent"></tbody>
+            </table></div></div>
+          </div>
+        </section>
+
+        <!-- ACTIVITY -->
+        <section class="screen" id="s-activity" hidden>
+          <div class="head"><h2>Activity</h2><span class="sub">Every tool call the server handled, kept on this Mac</span></div>
+          <div class="toolbar">
+            <button class="chip" data-filter="all" aria-pressed="true">All</button>
+            <button class="chip" data-filter="write" aria-pressed="false">Changes to the set</button>
+            <button class="chip" data-filter="read" aria-pressed="false">Reads</button>
+            <button class="chip" data-filter="error" aria-pressed="false">Errors</button>
+            <span class="spacer"></span>
+            <select id="session" style="font:inherit;background:var(--win);color:var(--ink);border:1px solid var(--line-strong);border-radius:7px;padding:4px 8px">
+              <option>Claude Desktop · today 14:02</option>
+              <option>Claude Code · today 11:40</option>
+              <option>Cursor · yesterday 19:15</option>
+            </select>
+            <button class="btn small" id="clearlog">Clear log</button>
+          </div>
+          <div class="tablewrap"><div class="tscroll"><table>
+            <thead><tr><th>Time</th><th>Tool</th><th>What it did</th><th class="r">Live</th><th>Result</th><th class="r">Tokens (est.)</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div></div>
+          <div class="detail" id="detail" hidden></div>
+          <p class="note">Tokens are estimated from the size of what the tool received and returned, about four characters per token. The model's own context is not visible to the server, so this is the cost each call adds, not a bill.</p>
+        </section>
+
+        <!-- SETUP -->
+        <section class="screen" id="s-setup" hidden>
+          <div class="head"><h2>Setup</h2><span class="sub">Four steps. The app checks each one for you.</span></div>
+          <div class="steps" id="steps"></div>
+        </section>
+
+        <!-- SETTINGS -->
+        <section class="screen" id="s-settings" hidden>
+          <div class="head"><h2>Settings</h2></div>
+          <div class="group">
+            <h3>Live</h3>
+            <div class="srow"><span class="l">Host</span><input type="text" id="host" value="localhost"><span class="h">Where Live is running. Leave as is unless the server runs on another machine.</span></div>
+            <div class="srow"><span class="l">Port</span><input type="text" id="port" value="9877"><span class="h">Must match the Remote Script.</span></div>
+          </div>
+          <div class="group">
+            <h3>Activity log</h3>
+            <div class="srow"><span class="l">Keep a log of tool calls</span><button class="switch" id="sw-log" role="switch" aria-checked="true"></button><span class="h">Tool names, timings, sizes and results. Stored in <span class="path">~/.ableton-music-maker/activity/</span> on this Mac. Never uploaded.</span></div>
+            <div class="srow"><span class="l">Keep the payloads too</span><button class="switch" id="sw-payload" role="switch" aria-checked="false"></button><span class="h">Parameters and results include your MIDI notes and track names. Off by default. When off, Activity shows sizes only.</span></div>
+            <div class="srow"><span class="l">Delete entries after</span><span class="mono">7 days</span><span class="h"></span></div>
+          </div>
+          <div class="group">
+            <h3>Your data</h3>
+            <div class="srow"><span class="l">Activity log</span><span class="mono">2 sessions · 41 KB</span><span class="h"><span class="path">~/.ableton-music-maker/activity/</span> — tool names, timings, sizes, results. Payloads only if you turned them on above.</span></div>
+            <div class="srow"><span class="l">Running servers</span><span class="mono">1 heartbeat</span><span class="h"><span class="path">~/.ableton-music-maker/sessions/</span> — which client started a server, and when. Removed when it exits.</span></div>
+            <div class="srow"><span class="l">Remote Script</span><span class="mono">1.8.0</span><span class="h"><span class="path">~/Music/Ableton/User Library/Remote Scripts/AbletonMusicMaker/</span> — left alone by the button below.</span></div>
+            <div class="srow"><span class="l">Nothing is uploaded</span><span class="pill off">No upload path exists</span><span class="h">The server and this app have no network code except the connection to Live. <a href="#" onclick="return false">Terms &amp; data use</a></span></div>
+            <div class="srow"><span class="l">Delete all local data</span><button class="btn small" data-act="deletedata">Delete…</button><span class="h">Removes the activity log and heartbeats. Keeps the Remote Script and your client config.</span></div>
+          </div>
+          <div class="group">
+            <h3>General</h3>
+            <div class="srow"><span class="l">Show in menu bar</span><button class="switch" role="switch" aria-checked="true"></button><span class="h"></span></div>
+            <div class="srow"><span class="l">Open at login</span><button class="switch" role="switch" aria-checked="false"></button><span class="h">The server is started by your client, not by this app. This only keeps the status visible.</span></div>
+            <div class="srow"><span class="l">Check for updates</span><button class="btn small">Check now</button><span class="h">App 0.1 · bundled server 2.0.0 · Remote Script 1.8.0</span></div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h2>Design notes for review</h2>
+    <p>The app never runs the server for a client. Claude Desktop, Claude Code and Cursor each spawn <code>ableton-music-maker</code> over stdio themselves. What the app does is make that invisible process visible and installable: it carries the native binary, puts the Remote Script into Live, writes the client config, and tails the server's local activity log. "Run it" in the menu bar means the app spawns its own short-lived server to test the chain, not that it hosts the one Claude talks to.</p>
+    <div class="cols">
+      <div class="card">
+        <div class="eyebrow">Decisions taken in this prototype</div>
+        <ul>
+          <li><b>Menu bar app with a window.</b> Status must be glanceable while Live and Claude have the screen; the window is for setup and the log.</li>
+          <li><b>The chain is the home screen.</b> Three cells, one state each, one fix each. A producer never has to know which half is broken.</li>
+          <li><b>The app bundles the binary.</b> On a Mac, download, open, Install. Docker stays the hardened path and the Linux/CI path.</li>
+          <li><b>Tokens are an estimate and say so.</b> The server sees payload sizes, not the model's context. The number is what a call adds.</li>
+          <li><b>Local data only.</b> The upload tiers are removed from the server (decision 0004); the app lists what is on disk and deletes it, and there is nothing else to show.</li>
+          <li><b>Activity log on, payloads off.</b> Names, timings and sizes are needed for the app to be useful; MIDI and names are not, so they stay off.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="eyebrow">What the server has to grow</div>
+        <ul>
+          <li>A local activity stream: one JSON line per call under the state dir, written only when the log is on. Nothing leaves the machine, but it is new data at rest and gets a Privacy section and a test.</li>
+          <li>A heartbeat file per running server (client name, pid, started) so the app can show which client is connected and warn about a second instance.</li>
+          <li>A <code>--check</code> command that runs the handshake and one read and prints the result as JSON, for the Test step and the menu bar.</li>
+          <li>The installer and handshake already exist as library code in the crate; the app links them rather than shelling out.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="eyebrow">Questions, answered 2026-09-19</div>
+        <ol>
+          <li><b>Bundle the native binary?</b> Yes — the app is the Mac install path (decision 0005).</li>
+          <li><b>Who signs it?</b> DefoAI UG, as publisher of the fork; Developer ID to be confirmed before packaging.</li>
+          <li><b>Tauri 2 or SwiftUI?</b> Tauri 2; the core links the Rust crate directly.</li>
+          <li><b>Telemetry?</b> Removed entirely. Local data only, ever.</li>
+          <li><b>Activity log on by default?</b> On for names, timings and sizes; payloads off.</li>
+          <li><b>Write the Claude Desktop config?</b> Yes, after showing the entry, with a timestamped backup.</li>
+          <li><b>Per-day token view?</b> Out of scope; per call and per session.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  // ---------- fake data ----------
+  const calls = [
+    ['14:02:11','get_session_info','read','Read tempo, 6 tracks, Session view',48,'ok',90,412,{},{tempo:118,track_count:6,view:'Session'}],
+    ['14:02:19','get_session_snapshot','read','Snapshot of every track, clip and device',611,'ok',110,11960,{include_devices:true},'<11,960 chars — 6 tracks, 14 clips, 22 devices>'],
+    ['14:03:02','set_tempo','write','Tempo 118 → 96',31,'ok',62,88,{tempo:96},{tempo:96}],
+    ['14:03:10','create_midi_track','write','New MIDI track "Bass"',74,'ok',96,140,{index:-1},{index:6,name:'6-MIDI'}],
+    ['14:03:12','set_track_name','write','Renamed track 6 to "Bass"',22,'ok',104,96,{track_index:6,name:'Bass'},{name:'Bass'}],
+    ['14:03:31','get_browser_items_at_path','read','Listed Instruments/Analog (38 items)',203,'ok',124,3280,{path:'Instruments/Analog'},'<3,280 chars — 38 items>'],
+    ['14:03:40','load_instrument_or_effect','write','Loaded "Deep Sub Bass" on track 6',1830,'ok',150,210,{track_index:6,uri:'query:Synths#Analog:Deep%20Sub%20Bass'},{loaded:true,device:'Analog'}],
+    ['14:03:55','create_clip','write','4-bar clip in track 6, slot 0',56,'ok',118,132,{track_index:6,clip_index:0,length:16},{name:'',length:16}],
+    ['14:04:08','add_notes_to_clip','write','32 notes into track 6, slot 0',92,'ok',1420,110,{track_index:6,clip_index:0,notes:'<32 notes>'},{notes_added:32}],
+    ['14:04:12','fire_clip','write','Fired track 6, slot 0',19,'ok',94,80,{track_index:6,clip_index:0},{fired:true}],
+    ['14:04:30','get_device_parameters','read','Track 6, device 2',27,'error',108,196,{track_index:6,device_index:2},'Track 6 has 1 device; index 2 does not exist. Use get_track_info to list devices.'],
+    ['14:04:36','get_device_parameters','read','Read 68 parameters of Analog on track 6',144,'ok',108,5840,{track_index:6,device_index:0},'<5,840 chars — 68 parameters>'],
+    ['14:04:51','set_device_parameter','write','Analog › Filter 1 Freq → 0.42',34,'ok',162,124,{track_index:6,device_index:0,parameter_index:17,value:0.42},{value:0.42}],
+    ['14:05:20','create_locator','write','Locator "Drop" at bar 33',41,'ok',112,90,{time:128,name:'Drop'},{name:'Drop',time:128}],
+    ['14:05:44','duplicate_to_arrangement','write','Track 6 slot 0 → bar 33',88,'ok',140,118,{track_index:6,clip_index:0,destination_time:128},{arrangement_clip:true}],
+    ['14:06:02','get_arrangement_clips','read','Listed 9 Arrangement clips',121,'ok',96,2210,{},'<2,210 chars — 9 clips>'],
+    ['14:07:15','start_playback','write','Play',12,'ok',58,60,{},{playing:true}],
+    ['14:09:40','stop_playback','write','Stop',11,'ok',58,60,{},{playing:false}],
+  ].map((r,i) => ({ id:i, time:r[0], tool:r[1], kind:r[2], what:r[3], ms:r[4], result:r[5], inChars:r[6], outChars:r[7], req:r[8], res:r[9] }));
+  const tok = c => Math.ceil(c/4);
+  const fmt = n => n.toLocaleString('en-US');
+  const totals = calls.reduce((a,c)=>{a.in+=tok(c.inChars);a.out+=tok(c.outChars);a.err+=c.result==='error';a.ms.push(c.ms);return a;},{in:0,out:0,err:0,ms:[]});
+  const median = arr => { const s=[...arr].sort((a,b)=>a-b); return s[Math.floor(s.length/2)]; };
+
+  // ---------- state ----------
+  const state = { sim:'ok', screen:'overview', filter:'all', selected:null, client:'desktop', payloads:false, log:true,
+    setup:{ script:'installed', selected:'checked', client:'configured', test:'passed' } };
+
+  const scenarios = {
+    ok:       { client:{led:'good',state:'Connected · session 12 min · 18 calls'}, server:{led:'live',state:'Running · started by Claude Desktop 14:02'}, live:{led:'good',state:'Live 12.1 · AbletonMusicMaker 1.8.0 loaded · 32 commands'}, sub:'Claude Desktop session, 12 min', pop:'Session active' },
+    nolive:   { client:{led:'good',state:'Connected · waiting'}, server:{led:'warn',state:'Running · cannot reach Live on localhost:9877'}, live:{led:'bad',state:'Live is not running, or AbletonMusicMaker is not selected as a Control Surface', fix:'How to select it', go:'setup', cls:'down'}, sub:'Waiting for Live', pop:'Live not reachable' },
+    oldscript:{ client:{led:'good',state:'Connected · waiting'}, server:{led:'warn',state:'Running · Remote Script is 1.7.0, expected 1.8.0'}, live:{led:'warn',state:'Live 12.1 · AbletonMusicMaker 1.7.0 — the arrangement tools will refuse until it is updated', fix:'Update Remote Script', go:'setup', cls:'attn'}, sub:'Remote Script needs an update', pop:'Update needed' },
+    noscript: { client:{led:'off',state:'Not set up', fix:'Connect a client', go:'setup', cls:'attn'}, server:{led:'off',state:'Bundled, 2.0.0 · not running'}, live:{led:'off',state:'Remote Script not installed', fix:'Install into Live', go:'setup', cls:'attn'}, sub:'Not set up yet', pop:'Not set up' },
+    noclient: { client:{led:'off',state:'No client has connected yet', fix:'Connect a client', go:'setup', cls:'attn'}, server:{led:'off',state:'Bundled, 2.0.0 · starts when a client does'}, live:{led:'good',state:'Live 12.1 · AbletonMusicMaker 1.8.0 loaded · 32 commands'}, sub:'Live is ready', pop:'Live ready' },
+  };
+  const setupFor = {
+    ok:       { script:'installed', selected:'checked', client:'configured', test:'passed' },
+    nolive:   { script:'installed', selected:'unchecked', client:'configured', test:'idle' },
+    oldscript:{ script:'outdated',  selected:'checked',   client:'configured', test:'idle' },
+    noscript: { script:'missing',   selected:'unchecked', client:'none', test:'idle' },
+    noclient: { script:'installed', selected:'checked',   client:'none', test:'idle' },
+  };
+
+  const $ = s => document.querySelector(s);
+  const el = (tag, cls, html) => { const e=document.createElement(tag); if(cls) e.className=cls; if(html!=null) e.innerHTML=html; return e; };
+
+  // ---------- render ----------
+  function renderChain() {
+    const sc = scenarios[state.sim];
+    const cell = (who, c, extra) => `
+      <div class="cell ${c.cls||''}">
+        <div class="who"><span class="led ${c.led}"></span>${who}</div>
+        <div class="state">${c.state}</div>
+        ${extra||''}
+        ${c.fix ? `<div class="fix"><button class="btn small primary" data-go="${c.go}">${c.fix}</button></div>` : ''}
+      </div>`;
+    $('#chain').innerHTML =
+      cell('Claude Desktop', sc.client) + '<div class="link">→</div>' +
+      cell('<span class="mono">ableton-music-maker</span>', sc.server) + '<div class="link">→</div>' +
+      cell('Ableton Live', sc.live);
+    $('#ovsub').textContent = sc.sub;
+    const active = state.sim === 'ok';
+    $('#tiles').innerHTML = active ? `
+      <div class="tile"><span class="k">Calls</span><span class="v num">${calls.length}</span><span class="d">${totals.err} error</span></div>
+      <div class="tile hot"><span class="k">Tokens, est.</span><span class="v num">${fmt(totals.in+totals.out)}</span><span class="d num">${fmt(totals.in)} in · ${fmt(totals.out)} out</span></div>
+      <div class="tile"><span class="k">Live round-trip</span><span class="v num">${median(totals.ms)} ms</span><span class="d">median · slowest 1.8 s (load instrument)</span></div>
+      <div class="tile"><span class="k">Changes to the set</span><span class="v num">${calls.filter(c=>c.kind==='write').length}</span><span class="d">tracks, clips, notes, devices</span></div>`
+    : `<div class="tile"><span class="k">Calls</span><span class="v num">0</span><span class="d">no session yet</span></div>
+       <div class="tile"><span class="k">Tokens, est.</span><span class="v num">0</span><span class="d"></span></div>
+       <div class="tile"><span class="k">Live round-trip</span><span class="v">—</span><span class="d"></span></div>
+       <div class="tile"><span class="k">Changes to the set</span><span class="v num">0</span><span class="d"></span></div>`;
+    $('#recent').innerHTML = active ? calls.slice(-5).reverse().map(rowHtml).join('') : `<tr><td colspan="6" class="note">Calls appear here as soon as a client talks to Live.</td></tr>`;
+    // menu bar
+    const ledCls = sc.server.led==='live' ? 'good' : (sc.live.led==='bad' ? 'bad' : (sc.live.led==='warn'||sc.client.led==='off' ? 'warn' : 'good'));
+    $('#mbled').className = 'led ' + ledCls;
+    $('#popstate').textContent = sc.pop;
+    $('#popfix').hidden = !(sc.live.fix || sc.client.fix);
+    $('#chainmini').innerHTML = `
+      <div class="cell"><span class="led ${sc.client.led}"></span>Claude</div><span class="arrow">→</span>
+      <div class="cell"><span class="led ${sc.server.led}"></span>server</div><span class="arrow">→</span>
+      <div class="cell"><span class="led ${sc.live.led}"></span>Live</div>`;
+    $('#poplast').innerHTML = active ? 'Last call: <span class="mono">stop_playback</span> · 11 ms · ok' : 'No calls yet';
+    $('#actbadge').hidden = !(active && totals.err);
+    $('#actbadge').textContent = totals.err;
+    $('#setupbadge').hidden = active;
+  }
+
+  function rowHtml(c) {
+    const res = c.result==='ok' ? `<span class="res"><span class="led good"></span>ok</span>` : `<span class="res"><span class="led bad"></span>error</span>`;
+    return `<tr data-id="${c.id}" aria-selected="${state.selected===c.id}">
+      <td class="mono num">${c.time}</td>
+      <td><span class="kind ${c.kind}"></span><span class="tool">${c.tool}</span></td>
+      <td>${c.what}</td>
+      <td class="r mono num">${c.ms>=1000 ? (c.ms/1000).toFixed(1)+' s' : c.ms+' ms'}</td>
+      <td>${res}</td>
+      <td class="r mono num tok">${tok(c.inChars)} → <b>${fmt(tok(c.outChars))}</b></td>
+    </tr>`;
+  }
+  function renderActivity() {
+    const list = calls.filter(c => state.filter==='all' || (state.filter==='error' ? c.result==='error' : c.kind===state.filter));
+    $('#rows').innerHTML = list.slice().reverse().map(rowHtml).join('') || `<tr><td colspan="6" class="note">Nothing matches.</td></tr>`;
+    renderDetail();
+  }
+  function renderDetail() {
+    const d = $('#detail');
+    const c = calls.find(x => x.id===state.selected);
+    if (!c) { d.hidden = true; return; }
+    d.hidden = false;
+    const show = v => state.payloads ? JSON.stringify(v, null, 2) : null;
+    const req = show(c.req), res = show(c.res);
+    d.innerHTML = `
+      <div class="dh"><div><span class="tool" style="font-size:14px">${c.tool}</span> <span class="note">· ${c.time} · ${c.kind==='write'?'changes the set':'read only'}</span></div>
+        <button class="btn small" id="closedetail">Close</button></div>
+      <div class="kv">
+        <div><span class="k">Live round-trip</span><span class="mono num">${c.ms} ms</span></div>
+        <div><span class="k">Queued behind poller</span><span class="mono num">${c.id%3===0 ? 6 : 0} ms</span></div>
+        <div><span class="k">Received</span><span class="mono num">${fmt(c.inChars)} chars ≈ ${tok(c.inChars)} tokens</span></div>
+        <div><span class="k">Returned</span><span class="mono num">${fmt(c.outChars)} chars ≈ ${fmt(tok(c.outChars))} tokens</span></div>
+      </div>
+      ${c.result==='error' ? `<div class="callout"><b>Error returned to Claude:</b> ${c.res}</div>` : ''}
+      <div><div class="eyebrow" style="margin-bottom:6px">Parameters</div>
+        ${req ? `<pre>${req}</pre>` : `<pre><span class="redacted">Payloads are not kept. Turn on “Keep the payloads too” in Settings to see parameters and results here. Sizes are always recorded.</span></pre>`}</div>
+      ${c.result!=='error' ? `<div><div class="eyebrow" style="margin-bottom:6px">Result</div>${res ? `<pre>${res}</pre>` : `<pre><span class="redacted">${typeof c.res==='string' ? c.res : fmt(c.outChars)+' chars, not kept'}</span></pre>`}</div>` : ''}`;
+    $('#closedetail').onclick = () => { state.selected=null; renderActivity(); };
+  }
+
+  function renderSetup() {
+    const s = state.setup;
+    const steps = [];
+    // 1 Remote Script
+    const scriptDone = s.script==='installed';
+    steps.push(`<div class="step ${scriptDone?'done':'current'}"><span class="n">${scriptDone?'✓':'1'}</span><span class="t">Remote Script in Live’s User Library</span>
+      <div class="body">
+        <div>${s.script==='installed' ? 'Installed · <span class="mono">AbletonMusicMaker 1.8.0</span>' : s.script==='outdated' ? 'Found <span class="mono">1.7.0</span>, this app ships <span class="mono">1.8.0</span>. The old file is kept as <span class="path">__init__.py.bak</span>.' : s.script==='installing' ? 'Installing…' : 'Not found. The app found your library and will copy one folder into it.'}</div>
+        <div class="path">/Users/nick/Music/Ableton/User Library/Remote Scripts/AbletonMusicMaker/</div>
+        ${s.script==='installing' ? '<div class="progress"><i id="prog"></i></div>' : ''}
+        <div class="actions">
+          ${scriptDone ? '<button class="btn small" data-act="reinstall">Reinstall</button>' : s.script==='installing' ? '' : `<button class="btn small primary" data-act="install">${s.script==='outdated'?'Update Remote Script':'Install into Live'}</button>`}
+          <button class="btn small" data-act="changelib">Change library…</button>
+        </div>
+      </div></div>`);
+    // 2 Select in Live
+    const selDone = s.selected==='checked';
+    steps.push(`<div class="step ${selDone?'done':(scriptDone?'current':'')}"><span class="n">${selDone?'✓':'2'}</span><span class="t">Select it in Live</span>
+      <div class="body">
+        <div>Restart Live, then open <b>Settings › Link, Tempo &amp; MIDI</b>. In a <b>Control Surface</b> slot choose <b>AbletonMusicMaker</b>; set Input and Output to <b>None</b>.</div>
+        ${s.selected==='checked' ? '<div class="okline">Live 12.1 answered: AbletonMusicMaker 1.8.0, 32 commands.</div>' : s.selected==='checking' ? '<div>Asking Live…</div>' : s.selected==='failed' ? '<div class="callout">No answer on localhost:9877. Live is not running, or the control surface is not selected yet. Live has to be restarted after the install.</div>' : ''}
+        <div class="actions"><button class="btn small ${selDone?'':'primary'}" data-act="check" ${scriptDone?'':'disabled'}>${selDone?'Check again':'Check'}</button></div>
+      </div></div>`);
+    // 3 Client
+    const cliDone = s.client==='configured';
+    const cfg = {
+      desktop: `<div>Adds this entry to <span class="path">~/Library/Application Support/Claude/claude_desktop_config.json</span> and keeps a copy of the file first.</div>
+<pre>"AbletonMusicMaker": {
+  "command": "/Applications/Ableton Music Maker.app/Contents/MacOS/ableton-music-maker"
+}</pre>
+<div class="actions"><button class="btn small ${cliDone?'':'primary'}" data-act="addclient">${cliDone?'Added · Restart Claude Desktop':'Add to Claude Desktop'}</button></div>`,
+      code: `<div>Run this once in a terminal:</div>
+<pre>claude mcp add AbletonMusicMaker "/Applications/Ableton Music Maker.app/Contents/MacOS/ableton-music-maker"</pre>
+<div class="actions"><button class="btn small primary" data-act="copy">Copy command</button></div>`,
+      cursor: `<div>In Cursor, open <b>Settings › MCP</b>, add a server and paste this as the command:</div>
+<pre>/Applications/Ableton Music Maker.app/Contents/MacOS/ableton-music-maker</pre>
+<div class="actions"><button class="btn small primary" data-act="copy">Copy path</button></div>`,
+    };
+    steps.push(`<div class="step ${cliDone?'done':(selDone?'current':'')}"><span class="n">${cliDone?'✓':'3'}</span><span class="t">Connect a client</span>
+      <div class="body">
+        <div class="seg">
+          <button data-client="desktop" aria-pressed="${state.client==='desktop'}">Claude Desktop</button>
+          <button data-client="code" aria-pressed="${state.client==='code'}">Claude Code</button>
+          <button data-client="cursor" aria-pressed="${state.client==='cursor'}">Cursor</button>
+        </div>
+        ${cfg[state.client]}
+        <div class="note">Only one client should talk to Live at a time. The app warns when two are running.</div>
+      </div></div>`);
+    // 4 Test
+    const testDone = s.test==='passed';
+    steps.push(`<div class="step ${testDone?'done':(cliDone?'current':'')}"><span class="n">${testDone?'✓':'4'}</span><span class="t">Test the chain</span>
+      <div class="body">
+        <div>The app starts its own copy of the server, asks Live for the session, and stops it. Nothing is changed in your set.</div>
+        ${testDone ? '<div class="okline">Live answered in 48 ms: 96 BPM, 6 tracks, Session view. Ask Claude to build something.</div>' : s.test==='running' ? '<div>Running…</div>' : ''}
+        <div class="actions"><button class="btn small ${testDone?'':'primary'}" data-act="test" ${selDone?'':'disabled'}>${testDone?'Run again':'Run a test call'}</button></div>
+      </div></div>`);
+    $('#steps').innerHTML = steps.join('');
+  }
+
+  function go(screen) {
+    state.screen = screen;
+    document.querySelectorAll('.screen').forEach(s => s.hidden = s.id !== 's-'+screen);
+    document.querySelectorAll('.nav button').forEach(b => { if (b.dataset.go===screen) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current'); });
+    $('#popover').hidden = true; $('#mbtoggle').setAttribute('aria-pressed','false');
+  }
+  function toast(msg) { const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),1800); }
+
+  // ---------- wiring ----------
+  document.addEventListener('click', e => {
+    const goBtn = e.target.closest('[data-go]'); if (goBtn) { go(goBtn.dataset.go); return; }
+    const chip = e.target.closest('.chip'); if (chip) { state.filter = chip.dataset.filter; document.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed', c===chip)); renderActivity(); return; }
+    const row = e.target.closest('tbody tr[data-id]'); if (row) { state.selected = +row.dataset.id; if (state.screen==='overview') go('activity'); renderActivity(); return; }
+    const cl = e.target.closest('[data-client]'); if (cl) { state.client = cl.dataset.client; renderSetup(); return; }
+    const act = e.target.closest('[data-act]'); if (act) { doAct(act.dataset.act); return; }
+    const sw = e.target.closest('.switch'); if (sw && !sw.disabled) {
+      const on = sw.getAttribute('aria-checked')!=='true'; sw.setAttribute('aria-checked', on);
+      if (sw.id==='sw-payload') { state.payloads = on; toast(on ? 'Payloads will be kept for new calls, on this Mac only' : 'Payloads no longer kept'); renderDetail(); }
+      if (sw.id==='sw-log') { state.log = on; $('#sw-payload').disabled = !on; if(!on){ state.payloads=false; $('#sw-payload').setAttribute('aria-checked','false'); } toast(on ? 'Activity log on' : 'Activity log off — Activity will stay empty'); }
+      return;
+    }
+    if (e.target.id==='clearlog') { toast('Log cleared for this session (prototype: nothing removed)'); return; }
+  });
+  function doAct(a) {
+    const s = state.setup;
+    if (a==='install' || a==='reinstall') { s.script='installing'; renderSetup(); requestAnimationFrame(()=>{ const p=$('#prog'); if(p) p.style.width='100%'; }); setTimeout(()=>{ s.script='installed'; s.selected='unchecked'; renderSetup(); toast('Remote Script installed. Restart Live to load it.'); }, 900); }
+    if (a==='changelib') toast('Prototype: would open a folder picker');
+    if (a==='check') { s.selected='checking'; renderSetup(); setTimeout(()=>{ s.selected = (state.sim==='nolive') ? 'failed' : 'checked'; renderSetup(); }, 700); }
+    if (a==='addclient') { s.client='configured'; renderSetup(); toast('Entry added. Backup kept as claude_desktop_config.json.bak'); }
+    if (a==='copy') toast('Copied');
+    if (a==='deletedata') toast('Activity log and heartbeats deleted (prototype)');
+    if (a==='test') { s.test='running'; renderSetup(); setTimeout(()=>{ s.test='passed'; renderSetup(); }, 900); }
+  }
+  $('#sim').addEventListener('change', e => { state.sim = e.target.value; state.setup = {...setupFor[state.sim]}; renderChain(); renderSetup(); });
+  $('#mbtoggle').addEventListener('click', e => { const p=$('#popover'); p.hidden = !p.hidden; e.currentTarget.setAttribute('aria-pressed', !p.hidden); });
+  $('#mbicon').addEventListener('click', () => { const p=$('#popover'); p.hidden = !p.hidden; $('#mbtoggle').setAttribute('aria-pressed', !p.hidden); });
+
+  renderChain(); renderActivity(); renderSetup();
+})();
+</script>
