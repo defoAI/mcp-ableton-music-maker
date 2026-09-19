@@ -35,7 +35,15 @@ table is a copy for orientation.
 | | `load_instrument_or_effect` | `load_browser_item` | by browser URI |
 | | `load_drum_kit` | `get_browser_items_at_path` + `load_browser_item` | |
 | | `get_drum_rack_pads` | `get_drum_rack_pads` | pitch, Live note name (C1 = 36), pad name per pad with a sound |
-| Browser | `get_browser_tree`, `get_browser_items_at_path` | same names | |
+| Browser | `search_browser` | `search_browser` | words matched against name and folder path; URIs ready to load |
+| | `get_browser_tree`, `get_browser_items_at_path` | same names | the tree now recurses two folder levels |
+| | `load_instrument_or_effect` result | `load_browser_item` | reports the loaded device's name and index |
+| Clips | `get_clip_info`, `set_clip_loop`, `set_clip_launch` | same names | loop points, markers, launch mode/quantization, legato |
+| Automation | `set_clip_automation`, `get_clip_automation` | same names | device parameter or mixer target; points or a ramp; steps at `resolution`; Session and Arrangement clips |
+| Listening | `get_track_meters` | `get_track_meters` | one reading of every output meter |
+| | `play_and_measure` | `set_current_song_time` + `start_playback` + `get_track_meters`×N + `stop_playback` | peak per track over a played stretch; names silent tracks |
+| Orchestration | `batch` | any | ordered steps, stop at first failure, `$last_track` |
+| | `build_song` | many | one document → tracks, instruments, clips, placements, locators; validated before the first command; `dry_run` |
 | Arrangement | `switch_to_arrangement_view` | `switch_to_arrangement_view` | |
 | | `set_arrangement_time` | `set_current_song_time` | |
 | | `get_arrangement_clips` | `get_arrangement_clips` | **Live 11+** |

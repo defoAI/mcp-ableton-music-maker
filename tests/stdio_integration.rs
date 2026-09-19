@@ -94,7 +94,7 @@ async fn full_stack_over_stdio() {
     assert_eq!(server_info.version, mcp_ableton_music_maker::MCP_VERSION);
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 38);
+    assert_eq!(tools.len(), 48);
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     for expected in [
         "get_session_info",
