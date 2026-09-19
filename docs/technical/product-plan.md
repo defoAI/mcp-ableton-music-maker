@@ -23,9 +23,9 @@ the product rests on.
 | Capability handshake with the Remote Script | **Live** | `src/handshake.rs` |
 | Hardened Docker image, verified in CI, published to GHCR | **Live** | `docker/verify-image.sh`, `ci.yml` |
 | Telemetry and dataset tiers | **Removed** | [decision 0004](../decisions/0004-who-publishes-and-holds-the-data.md); no upload path exists, pinned by `tests/local_only.rs` |
-| Mac app: install, status, activity | **Designed, not built** | [decision 0005](../decisions/0005-mac-app-is-tauri-and-bundles-the-server.md); story `mac-app-installs-runs-and-watches-the-server` |
-| Remote Script bound to localhost | **Open** | [decision 0003](../decisions/0003-remote-script-bind-address.md) |
-| Verified end-to-end on a Mac with Live and Docker Desktop | **Not recorded** | CI proves the stdio handshake without Live; a real-Live pass has not been written down since the rewrite |
+| Mac app: install, status, activity, and listening to Live | **Runs from source** | [0005](../decisions/0005-mac-app-is-tauri-and-bundles-the-server.md) Tauri and the bundled server, [0008](../decisions/0008-app-hears-live-through-a-process-tap.md) the process tap; signing and notarisation are the open phase |
+| Remote Script bound to loopback | **Live** | [decision 0003](../decisions/0003-remote-script-bind-address.md); `bind_host.txt` beside the script overrides it |
+| Verified end-to-end on a Mac with Live | **Recorded** | Live 12 Suite on macOS 26.6, 2026-09-19: the capture through resampling, and the app's process tap of Live (frames at the device rate, other apps inaudible, no audio device left behind). Docker Desktop against a loopback bind is still unverified — [0003](../decisions/0003-remote-script-bind-address.md) |
 
 ## What is open before the first release under the new name
 
