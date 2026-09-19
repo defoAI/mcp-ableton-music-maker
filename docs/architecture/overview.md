@@ -68,6 +68,9 @@ script is loaded and up to date. Both are for CI and the Mac app.
 - **Multi-command bodies** (`create_clip` with a name and notes, `duplicate_to_arrangement`
   with many placements) send their commands in order and stop at the first failure; the
   activity line lists every command that went out.
+- **Orchestration bodies** (`batch`, `build_song`, `play_and_measure`) call other bodies
+  through `run_named` (a name → params → body table) or directly; they never bypass
+  `require`, and the activity line for the one tool call lists every command that went out.
 - **`require(live, cmd)`** is the capability check: the command must be in the script's
   advertised `SCRIPT_CAPABILITIES`. A missing or outdated script produces one clear "run the
   installer, then restart Live" error instead of a half-working session. A unit test

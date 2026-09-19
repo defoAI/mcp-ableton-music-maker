@@ -23,7 +23,7 @@
 
 <!-- The story's Test Coverage section is the checklist. Work it, don't restate it. -->
 
-- [ ] `cargo test` green (all six suites)
+- [ ] `cargo test` green (all eight suites)
 - [ ] `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all --check` clean
 - [ ] `scripts/check-docs-facts.sh` clean
 - [ ] `docker build --target test .` and `docker/verify-image.sh` if the Dockerfile changed

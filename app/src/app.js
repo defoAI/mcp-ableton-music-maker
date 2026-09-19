@@ -251,6 +251,7 @@
           <button data-client="cursor" aria-pressed="${state.client === 'cursor'}">Cursor</button>
         </div>
         ${cfg}
+        ${st.clients?.desktop?.legacy_entry ? '<div class="callout"><b>The original AbletonMCP entry is still in Claude Desktop’s config.</b> It talks to the same Remote Script, so Claude sees two overlapping tool sets. <button class="btn small" data-act="removelegacy">Remove the old entry</button> (a backup of the file is kept)</div>' : ''}
         <div class="note">Only one client should talk to Live at a time. The app warns when two are running.</div>
       </div></div>`);
 
@@ -383,6 +384,13 @@
       } catch (e) { toast('Could not write the config: ' + e); }
     }
     if (a === 'copy') copy(el.dataset.copy);
+    if (a === 'removelegacy') {
+      try {
+        const r = await invoke('remove_legacy_client');
+        toast(r.removed ? 'Old AbletonMCP entry removed. Restart Claude Desktop.' : 'Nothing to remove.');
+        await refreshStatus(); renderSetup();
+      } catch (e) { toast('Could not edit the config: ' + e); }
+    }
     if (a === 'test') {
       su.testing = true; renderSetup();
       try { su.test = await invoke('check_live'); } catch (e) { su.test = { live_reachable: false, error: String(e) }; }

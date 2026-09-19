@@ -103,7 +103,7 @@ Conventions specific to this product:
    reviewed, and Solution + ACs are agreed.
 3. **Plan** — copy `templates/implementation_plan.md` → `stories/<slug>-impl.md`; Status
    `In Progress`.
-4. **Build & verify** — implement against the ACs; keep the six `cargo test` suites and
+4. **Build & verify** — implement against the ACs; keep the eight `cargo test` suites and
    `docker/verify-image.sh` honest; update [architecture/overview](../architecture/overview.md)
    and the [feature-matrix](../technical/feature-matrix.md) in the same PR.
 5. **Close** — Status `Done`; add a Changelog line. **Then prune**: once the code has stood on
