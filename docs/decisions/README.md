@@ -15,6 +15,7 @@ Routine calls do not.
 | [0004](0004-who-publishes-and-holds-the-data.md) | Who publishes this product and who holds the data? | **Decided** — both tiers are removed; nothing leaves the machine, so nobody holds data. DefoAI UG publishes the fork (2026-09-19) |
 | [0005](0005-mac-app-is-tauri-and-bundles-the-server.md) | Is the Mac app native Swift or Tauri, and does it bundle the server? | **Decided** — Tauri 2 in `app/`, depending on the crate as a library, shipping the server binary as a sidecar (2026-09-19) |
 | [0006](0006-one-artist-surface-raw-layer-marked-advanced.md) | Which tools does the server present, and in what units? | **Decided** — the artist's set (`CORE_TOOLS`) in five groups, dB and bars; the raw layer is served too, as `adv_<name>`, never hidden (2026-09-19) |
+| [0007](0007-live-main-thread-only-in-slices.md) | Where does the Remote Script run its work, and how long may it hold Live? | **Decided** — one executor on Live's main thread, long work sliced per tick (8 ms while playing), one undo step per mutating command, `main_ms` on every reply and activity line (2026-09-19) |
 
 ## Already settled, recorded where they bind
 
