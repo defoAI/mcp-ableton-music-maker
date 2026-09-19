@@ -64,10 +64,9 @@ the training dataset the upstream project was built to collect.
 
 ## Consequences
 
-- The removal is a story:
-  [remove-telemetry-and-dataset-tiers-local-data-only](../product_management/stories/remove-telemetry-and-dataset-tiers-local-data-only.md).
-  Until it ships, the code still carries both tiers, off by default, and every document
-  keeps describing the code as it is.
+- The removal has shipped: no upload path exists in the binary. `tests/local_only.rs` and
+  the CI dependency gate fail on a removed variable, the word Supabase in `src/`, or an
+  HTTP client in the dependency tree.
 - [0001](0001-telemetry-opt-in-by-default.md) is superseded.
 - `TERMS.md` shrinks to what is stored locally and how to delete it; the deletion-request
   contact goes away with the data.

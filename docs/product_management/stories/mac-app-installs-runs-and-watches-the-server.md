@@ -332,13 +332,14 @@ Manual, on a Mac with Live 12 and Claude Desktop — the verification steps belo
 ## Dependencies
 | Dependency | Status | Notes |
 |------------|--------|-------|
-| [remove-telemetry-and-dataset-tiers-local-data-only](remove-telemetry-and-dataset-tiers-local-data-only.md) | Ready | Phase 1 lands after it |
+| No upload path in the server | Shipped | [decision 0004](../../decisions/0004-who-publishes-and-holds-the-data.md); pinned by `tests/local_only.rs` and the CI dependency gate |
 | Tauri 2 toolchain on the build machine and in CI | Ready | `cargo tauri` CLI, Xcode command line tools |
 | Apple Developer ID for DefoAI UG | **Unknown** | Phase 3 only; confirm before starting it |
 | [0003](../../decisions/0003-remote-script-bind-address.md) bind address | Open | Not blocking; the app's Check step is the cheapest place to run its test |
 
 ## Related Stories
-- `remove-telemetry-and-dataset-tiers-local-data-only` — the dependency.
+- `app-taps-live-output-spectrum-and-meters` — the Listen screen this app gains once its
+  signing phase lands.
 
 ---
 

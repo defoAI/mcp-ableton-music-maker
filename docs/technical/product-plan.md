@@ -19,10 +19,10 @@ the product rests on.
 | Capability | Status | Notes |
 |---|---|---|
 | Rust server on `rmcp`, stdio | **Live** | [decision 0002](../decisions/0002-rust-server-remote-script-stays-python.md) |
-| 37 tools across Session, Tracks, Clips, Devices, Browser, Arrangement | **Live** | count in `src/tools.rs`; [feature-matrix](feature-matrix.md) |
+| The artist's tool set, with the raw layer served as `adv_` | **Live** | [decision 0006](../decisions/0006-one-artist-surface-raw-layer-marked-advanced.md); the count lives in `src/tools.rs`, see [source-of-truth](../facts/source-of-truth.md) |
 | Capability handshake with the Remote Script | **Live** | `src/handshake.rs` |
 | Hardened Docker image, verified in CI, published to GHCR | **Live** | `docker/verify-image.sh`, `ci.yml` |
-| Telemetry and dataset tiers | **Being removed** | [decision 0004](../decisions/0004-who-publishes-and-holds-the-data.md); story `remove-telemetry-and-dataset-tiers-local-data-only` |
+| Telemetry and dataset tiers | **Removed** | [decision 0004](../decisions/0004-who-publishes-and-holds-the-data.md); no upload path exists, pinned by `tests/local_only.rs` |
 | Mac app: install, status, activity | **Designed, not built** | [decision 0005](../decisions/0005-mac-app-is-tauri-and-bundles-the-server.md); story `mac-app-installs-runs-and-watches-the-server` |
 | Remote Script bound to localhost | **Open** | [decision 0003](../decisions/0003-remote-script-bind-address.md) |
 | Verified end-to-end on a Mac with Live and Docker Desktop | **Not recorded** | CI proves the stdio handshake without Live; a real-Live pass has not been written down since the rewrite |
