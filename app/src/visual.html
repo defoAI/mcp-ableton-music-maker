@@ -19,7 +19,7 @@
   body.hidecursor { cursor: none; }
   canvas { display: block; width: 100vw; height: 100vh; }
   .drag { position: fixed; top: 0; left: 0; right: 0; height: 28px; z-index: 3; }
-  .hud { position: fixed; left: 18px; bottom: 16px; z-index: 4; pointer-events: none; opacity: 0; transition: opacity .35s; display: grid; gap: 4px; }
+  .hud { position: fixed; left: 18px; bottom: 16px; z-index: 4; pointer-events: none; opacity: 0; transition: opacity .6s; display: grid; gap: 4px; }
   .hud.show { opacity: 1; }
   .hud .name { font-size: 22px; font-weight: 600; letter-spacing: -.01em; text-shadow: 0 1px 12px rgba(0,0,0,.8); }
   .hud .line { font-family: var(--mono); font-size: 11px; color: var(--dim); text-shadow: 0 1px 8px rgba(0,0,0,.8); }
@@ -33,6 +33,7 @@
   .btns.show { opacity: 1; }
   .btns button { font: inherit; color: var(--ink); background: rgba(20,20,20,.7); border: 1px solid rgba(255,255,255,.18); border-radius: 7px; padding: 4px 10px; backdrop-filter: blur(8px); }
   .btns button:active { filter: brightness(1.3); }
+  @media (prefers-reduced-motion: reduce) { .hud, .center, .help, .btns { transition: none; } }
 </style>
 </head>
 <body>
@@ -41,15 +42,17 @@
 <div class="center" id="center"><div><h1>Waiting for Live</h1><div>Start listening in the app, then play something.</div></div></div>
 <div class="hud" id="hud"><div class="name" id="pname">—</div><div class="line" id="pline"></div></div>
 <div class="help" id="help">
-  <div><b>space</b> / <b>→</b> next preset · <b>←</b> previous</div>
-  <div><b>A</b> auto-cycle · <b>F</b> full screen · <b>esc</b> leave full screen</div>
-  <div><b>H</b> this help · <b>1–8</b> a preset by number</div>
+  <div><b>space</b> somewhere else · <b>→</b> / <b>←</b> step in order</div>
+  <div><b>A</b> wander on its own · <b>F</b> full screen · <b>esc</b> leave full screen</div>
+  <div><b>H</b> this help · <b>1–8</b> a preset by number, rolled anew</div>
 </div>
 <div class="btns" id="btns"><button id="b-next">Next</button><button id="b-full">Full screen</button></div>
 
+<script src="visual-presets.js"></script>
 <script>
 (function () {
   'use strict';
+  const { PRESETS, makeBlender, TAU } = window.AMMPresets;
   const canvas = document.getElementById('gl');
   const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, premultipliedAlpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
   const hud = document.getElementById('hud'), pname = document.getElementById('pname'), pline = document.getElementById('pline');
@@ -62,36 +65,69 @@
     return;
   }
 
+  // How long one preset becomes another, and how long it stays before the
+  // next. The transition is deliberately slower than a bar at most tempos:
+  // it should read as the picture evolving, never as a change of slide.
+  // Nominal only: the blender rolls each transition somewhere between half
+  // and one and a half times this, and the dwell below is rolled too, so
+  // neither the order nor the pace of the changes is ever a pattern.
+  const BLEND_SECS = 6.0;
+  const AUTO_MIN = 11, AUTO_MAX = 30;
+
   // ── shaders ───────────────────────────────────────────────────────────────
   const VS_QUAD = `#version 300 es
   in vec2 aPos; out vec2 vUv;
   void main(){ vUv = aPos*0.5+0.5; gl_Position = vec4(aPos,0.0,1.0); }`;
 
-  // Feedback: read the last frame through a per-preset warp, blur it a
-  // touch, fade it, turn its hue. This is the MilkDrop "warp" pass.
+  // Feedback: read the last frame through a warp, blur it a touch, fade it,
+  // turn its hue. Two warp modes are evaluated and mixed, so a change of
+  // preset bends the existing picture instead of replacing it. Every mode
+  // *adds* to the base zoom and rotation; none assigns them, or one mode
+  // would win outright halfway through a blend.
   const FS_WARP = `#version 300 es
   precision highp float;
   in vec2 vUv; out vec4 o;
   uniform sampler2D uPrev; uniform vec2 uRes; uniform float uTime;
-  uniform float uZoom,uRot,uWarp,uWarpSpeed,uDx,uDy,uSx,uSy,uDecay,uHueShift,uBass,uMid,uTreb,uVol,uBeat;
-  uniform int uMode;
+  uniform float uZoom,uRot,uWarp,uWarpSpeed,uDx,uDy,uSx,uSy,uDecay,uHueShift,uBass,uMid,uTreb,uBlend,uSwirl,uRipple;
+  uniform int uModeA, uModeB;
+
   vec3 hue(vec3 c, float a){ const vec3 k = vec3(0.57735); float cs=cos(a), sn=sin(a); return c*cs + cross(k,c)*sn + k*dot(k,c)*(1.0-cs); }
+
+  void modeWarp(int m, vec2 c, float r, float ang, out float dz, out float dr, out vec2 push){
+    dz = 0.0; dr = 0.0; push = vec2(0.0);
+    if (m==1)      { dz = 0.06*sin(r*9.0 - uTime*2.5)*(0.5+uBass); }
+    else if (m==2) { dr = 0.45*r*(0.6+uMid); dz = 0.03*uBass; }
+    else if (m==3) { dz = 0.05*sin(ang*6.0+uTime*1.5)*(0.3+uTreb); dr = 0.08*sin(uTime*0.7); }
+    else if (m==4) { dz = -0.025 - 0.06*uBass - 0.02*sin(uTime*0.9); dr = 0.02*sin(uTime*0.4); }
+    else if (m==5) { push = 0.01*vec2(sin(uTime*0.8), cos(uTime*0.6))*(1.0+uMid); dz = 0.02*sin(uTime*1.3)*(0.5+uBass); }
+    else if (m==6) { push = uWarp*0.02*vec2(sin(c.y*11.0+uTime*uWarpSpeed), cos(c.x*9.0-uTime*uWarpSpeed*1.1)); }
+    else if (m==7) { float w = step(0.5, fract(ang/6.2831853*8.0 + uTime*0.05)); dz = 0.05*uBass*w - 0.02*uBass*(1.0-w); dr = 0.01; }
+    else if (m==8) { dz = 0.07*(0.5 - r)*(0.6+uBass); dr = 0.05*sin(r*5.0 - uTime); }
+    else if (m==9) { push = 0.014*vec2(sin(uTime*0.45), sin(uTime*0.9))*(0.7+uTreb); dr = 0.03*sin(uTime*0.23); }
+  }
+
   void main(){
     float ar = uRes.x/uRes.y;
     vec2 c = (vUv-0.5)*vec2(ar,1.0);
-    float r = length(c), a = atan(c.y,c.x);
-    float zoom = uZoom, rot = uRot; vec2 push = vec2(0.0);
-    if (uMode==1) { zoom += 0.06*sin(r*9.0 - uTime*2.5)*(0.5+uBass); }
-    else if (uMode==2) { rot += 0.45*r*(0.6+uMid); zoom += 0.03*uBass; }
-    else if (uMode==3) { zoom += 0.05*sin(a*6.0+uTime*1.5)*(0.3+uTreb); rot += 0.08*sin(uTime*0.7); }
-    else if (uMode==4) { zoom = 0.975 - 0.06*uBass - 0.02*sin(uTime*0.9); rot += 0.02*sin(uTime*0.4); }
-    else if (uMode==5) { push = 0.01*vec2(sin(uTime*0.8), cos(uTime*0.6))*(1.0+uMid); zoom += 0.02*sin(uTime*1.3)*(0.5+uBass); }
-    else if (uMode==6) { push = uWarp*0.02*vec2(sin(c.y*11.0+uTime*uWarpSpeed), cos(c.x*9.0-uTime*uWarpSpeed*1.1)); }
-    else if (uMode==7) { float w = step(0.5, fract(a/6.2831853*8.0 + uTime*0.05)); zoom += 0.05*uBass*w - 0.02*uBass*(1.0-w); rot += 0.01; }
-    c /= zoom;
+    float r = length(c), ang = atan(c.y,c.x);
+
+    float dzA,drA,dzB,drB; vec2 pushA,pushB;
+    modeWarp(uModeA, c, r, ang, dzA, drA, pushA);
+    modeWarp(uModeB, c, r, ang, dzB, drB, pushB);
+    float zoom = uZoom + mix(dzA, dzB, uBlend);
+    float rot  = uRot  + mix(drA, drB, uBlend);
+    vec2 push  = mix(pushA, pushB, uBlend);
+
+    // Rolled per variant, applied on top of whichever mode is running, so
+    // they blend like every other number rather than switching on.
+    rot  += uSwirl * r * (0.5 + uMid);
+    zoom += uRipple * 0.05 * sin(r*14.0 - uTime*1.7 + uBass*2.0);
+
+    c /= max(zoom, 0.2);
     float cs = cos(rot), sn = sin(rot); c = vec2(c.x*cs - c.y*sn, c.x*sn + c.y*cs);
     c += uWarp*0.01*vec2(sin(uTime*uWarpSpeed + c.y*8.0 + uBass*3.0), cos(uTime*uWarpSpeed*1.3 + c.x*6.0));
     c = c*vec2(uSx,uSy) + vec2(uDx,uDy) + push;
+
     vec2 uv = c/vec2(ar,1.0) + 0.5;
     vec2 px = 1.0/uRes;
     vec3 p = texture(uPrev, uv).rgb*0.44
@@ -102,8 +138,8 @@
     o = vec4(p*uDecay*edge, 1.0);
   }`;
 
-  // Shapes: the waveform and the spectrum, drawn as thick strips, added on
-  // top of the feedback so they leave trails.
+  // The wave and the spectrum, as thick strips added over the feedback so
+  // they leave trails.
   const VS_SHAPE = `#version 300 es
   in vec2 aPos; in float aT; out float vT;
   void main(){ vT = aT; gl_Position = vec4(aPos,0.0,1.0); }`;
@@ -111,20 +147,34 @@
   precision highp float;
   in float vT; out vec4 o;
   uniform vec3 uColA, uColB; uniform float uAlpha;
-  void main(){ vec3 c = mix(uColA, uColB, vT); o = vec4(c, uAlpha); }`;
+  void main(){ o = vec4(mix(uColA, uColB, vT), uAlpha); }`;
 
-  // Composite to the screen: optional kaleidoscope fold, a touch of chroma
-  // on the beat, gamma, vignette.
+  // Composite: the fold (which differs between presets, so it is sampled
+  // twice and crossfaded), a touch of chroma on the beat, gamma, vignette.
   const FS_POST = `#version 300 es
   precision highp float;
   in vec2 vUv; out vec4 o;
-  uniform sampler2D uTex; uniform vec2 uRes; uniform int uKaleido; uniform float uBright, uBeat, uTime, uGamma;
+  uniform sampler2D uTex; uniform vec2 uRes;
+  uniform int uKaleidoA, uKaleidoB;
+  uniform float uBright, uBeat, uTime, uGamma, uBlend, uChroma;
+
+  vec2 fold(int n, vec2 c){
+    if (n <= 0) return c;
+    float seg = 6.2831853/float(n);
+    float ang = atan(c.y,c.x), r = length(c);
+    ang = mod(ang + uTime*0.05, seg);
+    ang = abs(ang - seg*0.5);
+    return vec2(cos(ang), sin(ang))*r;
+  }
+  vec3 grab(vec2 c, float ar, float sh){
+    vec2 uv = clamp(c/vec2(ar,1.0) + 0.5, 0.0, 1.0);
+    return vec3(texture(uTex, uv+vec2(sh,0.0)).r, texture(uTex, uv).g, texture(uTex, uv-vec2(sh,0.0)).b);
+  }
   void main(){
     float ar = uRes.x/uRes.y; vec2 c = (vUv-0.5)*vec2(ar,1.0);
-    if (uKaleido > 0) { float n = float(uKaleido); float a = atan(c.y,c.x), r = length(c); float seg = 6.2831853/n; a = mod(a + uTime*0.05, seg); a = abs(a - seg*0.5); c = vec2(cos(a), sin(a))*r; }
-    vec2 uv = clamp(c/vec2(ar,1.0) + 0.5, 0.0, 1.0);
-    float sh = 0.0035*uBeat;
-    vec3 col = vec3(texture(uTex, uv+vec2(sh,0.0)).r, texture(uTex, uv).g, texture(uTex, uv-vec2(sh,0.0)).b);
+    float sh = 0.0035*uBeat*uChroma;
+    vec3 col = grab(fold(uKaleidoA, c), ar, sh);
+    if (uKaleidoA != uKaleidoB) col = mix(col, grab(fold(uKaleidoB, c), ar, sh), uBlend);
     col = pow(max(col*uBright, 0.0), vec3(1.0/uGamma));
     float vig = smoothstep(1.25, 0.3, length((vUv-0.5)*vec2(ar,1.0)));
     col *= mix(0.55, 1.0, vig);
@@ -221,7 +271,6 @@
     A.bassAtt += (A.bass - A.bassAtt) * 0.08;
     A.midAtt += (A.mid - A.midAtt) * 0.08;
     A.trebAtt += (A.treb - A.trebAtt) * 0.08;
-    // Onsets: a kick is bass well above its own recent average.
     const now = A.lastFrameAt;
     A.avg += (A.bass - A.avg) * 0.06;
     if (A.bass > A.avg * 1.32 && A.bass > 0.18 && now - A.lastBeat > 200) { A.beat = 1; A.lastBeat = now; }
@@ -239,65 +288,31 @@
     for (let i = 0; i < N; i++) A.wave[i] += (A.waveTarget[i] - A.wave[i]) * 0.45;
     for (let i = 0; i < 72; i++) A.bands[i] += (A.bandsTarget[i] - A.bands[i]) * 0.35;
     if (performance.now() - A.lastFrameAt > 1500 && A.live) {
-      // Frames stopped: decay everything so the trails wash out gracefully.
       A.vol *= 0.97; A.bass *= 0.97; A.mid *= 0.97; A.treb *= 0.97;
       for (let i = 0; i < N; i++) A.waveTarget[i] *= 0.9;
     }
   }
 
-  // ── presets ───────────────────────────────────────────────────────────────
-  // Each is a MilkDrop-style page: a warp mode, a way to draw the wave, a
-  // fold, a palette, and a per-frame function of time and the audio.
-  const TAU = Math.PI * 2;
-  const P = [
-    { name: 'Nebular Drift', mode: 0, wave: 'circle', kaleido: 0, decay: 0.975, warp: 0.5, warpSpeed: 0.9, hueRate: 0.12, scale: 0.28, thick: 0.007, gamma: 1.15,
-      colA: (t) => hsv(0.62 + 0.05 * Math.sin(t * 0.3), 0.85, 1), colB: (t) => hsv(0.85 + 0.05 * Math.sin(t * 0.21), 0.9, 1),
-      frame: (t, a) => ({ zoom: 1.012 + 0.05 * a.bass, rot: 0.006 * Math.sin(t * 0.2) + 0.01 * a.mid, dx: 0, dy: 0, sx: 1, sy: 1, bright: 1.05 + 0.25 * a.beat }) },
-    { name: 'Tunnel of Bass', mode: 4, wave: 'spectrum', kaleido: 0, decay: 0.982, warp: 0.25, warpSpeed: 0.5, hueRate: 0.07, scale: 0.35, thick: 0.006, gamma: 1.1,
-      colA: (t) => hsv(0.05 + 0.03 * Math.sin(t * 0.5), 0.95, 1), colB: (t) => hsv(0.12, 0.7, 1),
-      frame: (t, a) => ({ zoom: 1, rot: 0.004 + 0.02 * a.treb, dx: 0, dy: 0, sx: 1, sy: 1, bright: 1.1 + 0.3 * a.beat }) },
-    { name: 'Kaleido Bloom', mode: 3, wave: 'dual', kaleido: 6, decay: 0.968, warp: 0.9, warpSpeed: 1.4, hueRate: 0.2, scale: 0.32, thick: 0.008, gamma: 1.2,
-      colA: (t) => hsv(0.32 + 0.1 * Math.sin(t * 0.4), 0.8, 1), colB: (t) => hsv(0.55, 0.9, 1),
-      frame: (t, a) => ({ zoom: 1.02 + 0.06 * a.bass, rot: 0.012 * Math.sin(t * 0.5), dx: 0, dy: 0, sx: 1, sy: 1, bright: 1 + 0.35 * a.beat }) },
-    { name: 'Ink Waves', mode: 6, wave: 'line', kaleido: 0, decay: 0.955, warp: 1.4, warpSpeed: 0.7, hueRate: 0.05, scale: 0.5, thick: 0.012, gamma: 1.05,
-      colA: (t) => hsv(0.53, 0.35, 1), colB: (t) => hsv(0.58, 0.95, 0.9),
-      frame: (t, a) => ({ zoom: 1.0, rot: 0, dx: 0.002 * Math.sin(t * 0.7), dy: -0.004 - 0.006 * a.bass, sx: 1, sy: 1, bright: 1.15 + 0.2 * a.beat }) },
-    { name: 'Solar Flare', mode: 1, wave: 'circle', kaleido: 0, decay: 0.97, warp: 0.4, warpSpeed: 2.0, hueRate: 0.03, scale: 0.4, thick: 0.009, gamma: 1.25,
-      colA: (t) => hsv(0.08, 1, 1), colB: (t) => hsv(0.16 + 0.04 * Math.sin(t), 0.9, 1),
-      frame: (t, a) => ({ zoom: 1.03 + 0.08 * a.bass, rot: 0.02 + 0.03 * a.mid, dx: 0, dy: 0, sx: 1, sy: 1, bright: 1.05 + 0.4 * a.beat }) },
-    { name: 'Neon Grid', mode: 7, wave: 'spiral', kaleido: 8, decay: 0.965, warp: 0.2, warpSpeed: 1, hueRate: 0.25, scale: 0.3, thick: 0.005, gamma: 1.15,
-      colA: (t) => hsv(0.9, 0.9, 1), colB: (t) => hsv(0.48, 0.95, 1),
-      frame: (t, a) => ({ zoom: 1.015 + 0.04 * a.bass, rot: 0.008, dx: 0, dy: 0, sx: 1 + 0.03 * a.mid, sy: 1 - 0.03 * a.mid, bright: 1 + 0.3 * a.beat }) },
-    { name: 'Deep Spiral', mode: 2, wave: 'dual', kaleido: 0, decay: 0.978, warp: 0.6, warpSpeed: 0.8, hueRate: 0.1, scale: 0.26, thick: 0.007, gamma: 1.1,
-      colA: (t) => hsv(0.7, 0.8, 1), colB: (t) => hsv(0.95, 0.85, 1),
-      frame: (t, a) => ({ zoom: 1.008 + 0.05 * a.bass, rot: 0.01 + 0.02 * a.treb, dx: 0, dy: 0, sx: 1, sy: 1, bright: 1.05 + 0.3 * a.beat }) },
-    { name: 'Breathing Sea', mode: 5, wave: 'line', kaleido: 0, decay: 0.985, warp: 0.35, warpSpeed: 0.4, hueRate: 0.04, scale: 0.34, thick: 0.01, gamma: 1.05,
-      colA: (t) => hsv(0.5, 0.7, 1), colB: (t) => hsv(0.62, 0.9, 1),
-      frame: (t, a) => ({ zoom: 1.004 + 0.03 * a.bass, rot: 0.003 * Math.sin(t * 0.3), dx: 0, dy: 0.001 * Math.sin(t * 0.5), sx: 1, sy: 1, bright: 1.1 + 0.25 * a.beat }) },
-  ];
-  function hsv(h, s, v) {
-    h = ((h % 1) + 1) % 1;
-    const i = Math.floor(h * 6), f = h * 6 - i, p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
-    switch (i % 6) { case 0: return [v, t, p]; case 1: return [q, v, p]; case 2: return [p, v, t]; case 3: return [p, q, v]; case 4: return [t, p, v]; default: return [v, p, q]; }
-  }
+  // ── which preset, and how far between ─────────────────────────────────────
+  const blender = makeBlender({ seconds: BLEND_SECS });
+  blender.set(Math.floor(Math.random() * 8));
+  let auto = true, lastSwitch = 0, hueAcc = 0;
+  let dwell = AUTO_MIN + Math.random() * (AUTO_MAX - AUTO_MIN);
 
-  let preset = 0, auto = true, lastSwitch = performance.now(), flash = 0, hueAcc = 0;
   function showHud() {
-    pname.textContent = P[preset].name;
-    pline.textContent = `${preset + 1}/${P.length} · ${auto ? 'auto-cycle on' : 'auto-cycle off'}${A.rate ? ' · ' + (A.rate / 1000).toFixed(1) + ' kHz' : ''}`;
     hud.classList.add('show'); btns.classList.add('show');
-    clearTimeout(showHud._h); showHud._h = setTimeout(() => { hud.classList.remove('show'); btns.classList.remove('show'); }, 2600);
+    clearTimeout(showHud._h);
+    showHud._h = setTimeout(() => { hud.classList.remove('show'); btns.classList.remove('show'); }, 3200);
   }
   function setPreset(i) {
-    preset = ((i % P.length) + P.length) % P.length;
-    lastSwitch = performance.now();
-    flash = 1;
+    if (blender.go(i)) { lastSwitch = clock; dwell = AUTO_MIN + Math.random() * (AUTO_MAX - AUTO_MIN); }
     showHud();
+  }
+  function wander() {
+    if (blender.goRandom()) { lastSwitch = clock; dwell = AUTO_MIN + Math.random() * (AUTO_MAX - AUTO_MIN); }
   }
 
   // ── geometry for the wave ─────────────────────────────────────────────────
-  // A strip of quads along a polyline, in NDC, aspect-corrected so a circle
-  // is a circle. Returns interleaved [x, y, t].
   function strip(points, thick, ar) {
     const n = points.length / 2;
     const out = new Float32Array(n * 2 * 3);
@@ -314,8 +329,8 @@
     }
     return out;
   }
-  function wavePoints(mode, t, p) {
-    const s = p.scale * (0.6 + 0.8 * A.vol), pts = [];
+  function wavePoints(mode, t, scale) {
+    const s = scale * (0.6 + 0.8 * A.vol), pts = [];
     if (mode === 'line') {
       for (let i = 0; i < N; i++) pts.push(-0.9 + 1.8 * i / (N - 1), A.wave[i] * s * 1.6);
     } else if (mode === 'dual') {
@@ -332,20 +347,34 @@
     }
     return pts;
   }
+  // The running hue turn, applied to a colour on its way to the shader.
+  function turned(c) {
+    const k = 0.57735, cs = Math.cos(hueAcc), sn = Math.sin(hueAcc), d = k * (c[0] + c[1] + c[2]);
+    return [
+      c[0] * cs + (k * c[2] - k * c[1]) * sn + k * d * (1 - cs),
+      c[1] * cs + (k * c[0] - k * c[2]) * sn + k * d * (1 - cs),
+      c[2] * cs + (k * c[1] - k * c[0]) * sn + k * d * (1 - cs),
+    ];
+  }
 
   // ── render ────────────────────────────────────────────────────────────────
-  let cur = 0, last = performance.now(), t0 = last;
+  let cur = 0, last = performance.now(), t0 = last, clock = 0;
   function render(now) {
     requestAnimationFrame(render);
     resize();
     const dt = Math.min(0.05, (now - last) / 1000); last = now;
-    const t = (now - t0) / 1000;
+    clock = (now - t0) / 1000;
+    const t = clock;
     tickAudio(dt);
-    if (auto && now - lastSwitch > 26000 && A.beat > 0.9) setPreset(preset + 1);
-    flash = Math.max(0, flash - dt * 2.5);
-    const p = P[preset];
-    const v = p.frame(t, A);
-    hueAcc += dt * p.hueRate * (0.6 + 0.8 * A.midAtt);
+    blender.advance(dt);
+
+    // Auto-cycle prefers to start on a kick, but never waits forever for one.
+    if (auto && !blender.blending && t - lastSwitch > dwell) {
+      if (A.beat > 0.6 || t - lastSwitch > dwell + 10) wander();
+    }
+
+    const v = blender.state(t, A);
+    hueAcc += dt * v.hueRate * (0.6 + 0.8 * A.midAtt);
     const ar = W / H;
     const prev = cur, next = 1 - cur;
 
@@ -359,43 +388,46 @@
     gl.uniform2f(warpP.u.uRes, W, H);
     gl.uniform1f(warpP.u.uTime, t);
     gl.uniform1f(warpP.u.uZoom, v.zoom); gl.uniform1f(warpP.u.uRot, v.rot);
-    gl.uniform1f(warpP.u.uWarp, p.warp); gl.uniform1f(warpP.u.uWarpSpeed, p.warpSpeed);
-    gl.uniform1f(warpP.u.uDx, v.dx); gl.uniform1f(warpP.u.uDy, v.dy); gl.uniform1f(warpP.u.uSx, v.sx); gl.uniform1f(warpP.u.uSy, v.sy);
-    gl.uniform1f(warpP.u.uDecay, flash > 0 ? p.decay * (1 - 0.35 * flash) : p.decay);
-    gl.uniform1f(warpP.u.uHueShift, dt * p.hueRate * 4.0);
-    gl.uniform1f(warpP.u.uBass, A.bass); gl.uniform1f(warpP.u.uMid, A.mid); gl.uniform1f(warpP.u.uTreb, A.treb); gl.uniform1f(warpP.u.uVol, A.vol); gl.uniform1f(warpP.u.uBeat, A.beat);
-    gl.uniform1i(warpP.u.uMode, p.mode);
+    gl.uniform1f(warpP.u.uWarp, v.warp); gl.uniform1f(warpP.u.uWarpSpeed, v.warpSpeed);
+    gl.uniform1f(warpP.u.uDx, v.dx); gl.uniform1f(warpP.u.uDy, v.dy);
+    gl.uniform1f(warpP.u.uSx, v.sx); gl.uniform1f(warpP.u.uSy, v.sy);
+    gl.uniform1f(warpP.u.uDecay, v.decay);
+    gl.uniform1f(warpP.u.uHueShift, dt * v.hueRate * 4.0);
+    gl.uniform1f(warpP.u.uBass, A.bass); gl.uniform1f(warpP.u.uMid, A.mid);
+    gl.uniform1f(warpP.u.uTreb, A.treb);
+    gl.uniform1f(warpP.u.uSwirl, v.swirl); gl.uniform1f(warpP.u.uRipple, v.ripple);
+    gl.uniform1f(warpP.u.uBlend, v.blend);
+    gl.uniform1i(warpP.u.uModeA, v.modeA); gl.uniform1i(warpP.u.uModeB, v.modeB);
     gl.bindBuffer(gl.ARRAY_BUFFER, quad);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     gl.disableVertexAttribArray(1);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-    // 2. draw the wave on top, additively
+    // 2. the wave over it, additively. During a change both shapes are drawn,
+    //    their weights summing to one, so the ink on screen never dips.
     if (A.live) {
       gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
       gl.useProgram(shapeP.p);
-      const a = p.colA(t), b = p.colB(t);
-      const h = hueAcc;
-      const rot = (c) => { const k = 0.57735, cs = Math.cos(h), sn = Math.sin(h); const d = k * (c[0] + c[1] + c[2]); return [
-        c[0] * cs + (k * c[2] - k * c[1]) * sn + k * d * (1 - cs),
-        c[1] * cs + (k * c[0] - k * c[2]) * sn + k * d * (1 - cs),
-        c[2] * cs + (k * c[1] - k * c[0]) * sn + k * d * (1 - cs)]; };
-      const ca = rot(a), cb = rot(b);
-      gl.uniform3f(shapeP.u.uColA, ca[0], ca[1], ca[2]);
-      gl.uniform3f(shapeP.u.uColB, cb[0], cb[1], cb[2]);
-      gl.uniform1f(shapeP.u.uAlpha, 0.55 + 0.35 * A.vol + 0.2 * A.beat);
-      const pts = wavePoints(p.wave, t, p);
-      const geo = strip(pts, p.thick * (1 + 0.8 * A.beat), ar);
       gl.bindBuffer(gl.ARRAY_BUFFER, shapeBuf);
-      gl.bufferData(gl.ARRAY_BUFFER, geo, gl.DYNAMIC_DRAW);
-      gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 12, 0);
-      gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 12, 8);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, geo.length / 3);
-      // a second, fainter echo of the same wave, slightly larger, for glow
-      gl.uniform1f(shapeP.u.uAlpha, 0.12 + 0.1 * A.beat);
-      const geo2 = strip(pts, p.thick * 3.2, ar);
-      gl.bufferData(gl.ARRAY_BUFFER, geo2, gl.DYNAMIC_DRAW);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, geo2.length / 3);
+      const base = 0.55 + 0.35 * A.vol + 0.2 * A.beat;
+      for (const w of v.waves) {
+        const ca = turned(w.colA), cb = turned(w.colB);
+        gl.uniform3f(shapeP.u.uColA, ca[0], ca[1], ca[2]);
+        gl.uniform3f(shapeP.u.uColB, cb[0], cb[1], cb[2]);
+        const pts = wavePoints(w.shape, t, w.scale);
+        if (!pts.length) continue;
+        gl.uniform1f(shapeP.u.uAlpha, base * w.weight);
+        const geo = strip(pts, w.thick * (1 + 0.8 * A.beat), ar);
+        gl.bufferData(gl.ARRAY_BUFFER, geo, gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 12, 0);
+        gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 12, 8);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, geo.length / 3);
+        // a fainter, wider echo of the same wave, for glow
+        gl.uniform1f(shapeP.u.uAlpha, (0.12 + 0.1 * A.beat) * w.weight);
+        const geo2 = strip(pts, w.thick * 3.2, ar);
+        gl.bufferData(gl.ARRAY_BUFFER, geo2, gl.DYNAMIC_DRAW);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, geo2.length / 3);
+      }
       gl.disable(gl.BLEND);
     }
 
@@ -406,17 +438,25 @@
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[next]);
     gl.uniform1i(postP.u.uTex, 0);
     gl.uniform2f(postP.u.uRes, W, H);
-    gl.uniform1i(postP.u.uKaleido, p.kaleido);
+    gl.uniform1i(postP.u.uKaleidoA, v.kaleidoA); gl.uniform1i(postP.u.uKaleidoB, v.kaleidoB);
+    gl.uniform1f(postP.u.uBlend, v.blend);
     gl.uniform1f(postP.u.uBright, v.bright);
     gl.uniform1f(postP.u.uBeat, A.beat);
     gl.uniform1f(postP.u.uTime, t);
-    gl.uniform1f(postP.u.uGamma, p.gamma);
+    gl.uniform1f(postP.u.uGamma, v.gamma);
+    gl.uniform1f(postP.u.uChroma, v.chroma);
     gl.bindBuffer(gl.ARRAY_BUFFER, quad);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     gl.disableVertexAttribArray(1);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     cur = next;
 
+    if (hud.classList.contains('show')) {
+      pname.textContent = v.name;
+      pline.textContent = `${blender.target + 1}/${PRESETS.length} · ${auto ? 'wandering' : 'held'}`
+        + (blender.blending ? ` · becoming ${PRESETS[blender.target].name}` : '')
+        + (A.rate ? ` · ${(A.rate / 1000).toFixed(1)} kHz` : '');
+    }
     center.classList.toggle('show', !A.live);
   }
   requestAnimationFrame(render);
@@ -437,12 +477,13 @@
     try { if (await w.isFullscreen()) await w.setFullscreen(false); document.body.classList.remove('hidecursor'); } catch (e) { /* not permitted */ }
   }
   document.addEventListener('keydown', (e) => {
-    if (e.key === ' ' || e.key === 'ArrowRight') { setPreset(preset + 1); e.preventDefault(); }
-    else if (e.key === 'ArrowLeft') setPreset(preset - 1);
-    else if (e.key === 'a' || e.key === 'A') { auto = !auto; showHud(); }
+    if (e.key === ' ') { wander(); showHud(); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') setPreset(blender.target + 1);
+    else if (e.key === 'ArrowLeft') setPreset(blender.target - 1);
+    else if (e.key === 'a' || e.key === 'A') { auto = !auto; lastSwitch = clock; showHud(); }
     else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
     else if (e.key === 'Escape') leaveFullscreen();
-    else if (e.key === 'h' || e.key === 'H') { help.classList.toggle('show'); }
+    else if (e.key === 'h' || e.key === 'H') help.classList.toggle('show');
     else if (e.key >= '1' && e.key <= '8') setPreset(parseInt(e.key, 10) - 1);
   });
   let cursorTimer = 0;
@@ -451,7 +492,7 @@
     clearTimeout(cursorTimer);
     cursorTimer = setTimeout(async () => { const w = tauriWin(); if (w && await w.isFullscreen().catch(() => false)) document.body.classList.add('hidecursor'); }, 2000);
   });
-  document.getElementById('b-next').addEventListener('click', () => setPreset(preset + 1));
+  document.getElementById('b-next').addEventListener('click', () => { wander(); showHud(); });
   document.getElementById('b-full').addEventListener('click', toggleFullscreen);
   canvas.addEventListener('dblclick', toggleFullscreen);
   showHud();

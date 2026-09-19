@@ -152,6 +152,7 @@ Count the tools before quoting a total; the snapshot in
 | Activity: per-session table, detail, estimated tokens, filters, retention | Built |
 | Listen: spectrum, master meters, six ranges from a process tap of Live (macOS 14.4+; the app itself still runs on 12) | Built — `cargo test` in `app/src-tauri` (19 unit, 5 integration of which 2 need Live), `node --test app/src/listen.test.mjs` (16), `cargo run --example listen_probe` against Live |
 | Float window (always on top) and the full-screen visual (WebGL, eight presets) | Built |
+| The visual never repeats and never cuts: each visit re-rolls the preset into a variant (palette, warp mode, shape, fold, swirl, ripple, chroma), wanders at random, and cross-dissolves — both warp modes mixed per pixel, both folds crossfaded, the shapes dissolving on one feedback buffer | Built — `node --test app/src/visual.test.mjs` (18), including a simulated twenty minutes in which no field moves more than 6% of its own range in a frame |
 | Signed, notarised download | Not yet |
 
 ## The image contract

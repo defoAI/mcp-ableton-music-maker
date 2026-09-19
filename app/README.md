@@ -19,7 +19,9 @@ app/
 │   ├── listen.js        the Listen screen; spectrum.js draws for it and for float.html
 │   ├── float.html       the small always-on-top spectrum
 │   ├── visual.html      the full-screen visual: WebGL feedback, eight presets, F / esc / space
-│   └── listen.test.mjs  node --test: the screen's states and the drawing scale, headless
+│   ├── visual-presets.js  the presets and the blend between two of them — no drawing, so it is testable
+│   ├── listen.test.mjs  node --test: the screen's states and the drawing scale, headless
+│   └── visual.test.mjs  node --test: every frame of a preset change is a small step from the last
 ├── src-tauri/           The Rust core (Tauri 2); depends on the crate at ../.. by path
 │   ├── src/lib.rs       commands the UI calls
 │   ├── src/status.rs    the chain: heartbeats + one check against Live
@@ -59,7 +61,8 @@ Without the CLI, `cd src-tauri && cargo run` also works after the sidecar script
 cd app/src-tauri && cargo test                                   # unit + integration without Live
 cd app/src-tauri && cargo test --test listen_integration -- --ignored --test-threads=1   # with Live open and playing
 cd app/src-tauri && cargo run --example listen_probe -- 4         # taps Live for 4 s, prints levels, checks nothing leaks
-cd app/src && node --test listen.test.mjs                        # the Listen screen, headless
+cd app/src && node --test listen.test.mjs visual.test.mjs        # the Listen screen and the visual's transitions
+glslangValidator -S frag <shader>                                # the visual's GLSL, if you change it
 ```
 
 The probe asks Live to play if it is stopped and puts the transport back; set
