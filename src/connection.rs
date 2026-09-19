@@ -153,6 +153,10 @@ const MODIFYING_COMMANDS: &[&str] = &[
     "ensure_capture_track",
     "start_capture",
     "stop_capture",
+    "play_from",
+    "delete_track",
+    "back_to_arrangement",
+    "set_arrangement_loop",
 ];
 
 /// Socket budget per command. Importing a large audio file can keep Live's

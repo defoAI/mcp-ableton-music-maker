@@ -27,7 +27,7 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.11.0"
+SCRIPT_VERSION = "1.12.0"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
@@ -89,6 +89,10 @@ SCRIPT_CAPABILITIES = [
     "capture_status",
     "stop_capture",
     "list_captures",
+    "play_from",
+    "delete_track",
+    "back_to_arrangement",
+    "set_arrangement_loop",
 ]
 
 def create_instance(c_instance):
@@ -340,7 +344,9 @@ class AbletonMCP(ControlSurface):
                                  "set_track_mixer", "set_send", "set_track_color", "set_clip_color",
                                  "delete_arrangement_clip", "delete_locator",
                                  "set_clip_loop", "set_clip_launch", "set_clip_automation",
-                                 "ensure_capture_track", "start_capture", "stop_capture"]:
+                                 "ensure_capture_track", "start_capture", "stop_capture",
+                                 "play_from", "delete_track", "back_to_arrangement",
+                                 "set_arrangement_loop"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -471,6 +477,15 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "set_clip_launch":
                             result = self._set_clip_launch(
                                 params.get("track_index", 0), params.get("clip_index", 0), params)
+                        elif command_type == "play_from":
+                            result = self._play_from(params.get("time", 0.0), response_queue)
+                        elif command_type == "delete_track":
+                            result = self._delete_track(params.get("track_index", -1))
+                        elif command_type == "back_to_arrangement":
+                            result = self._back_to_arrangement()
+                        elif command_type == "set_arrangement_loop":
+                            result = self._set_arrangement_loop(
+                                params.get("start"), params.get("length"), params.get("enabled"))
                         elif command_type == "ensure_capture_track":
                             result = self._ensure_capture_track()
                         elif command_type == "start_capture":
@@ -1627,8 +1642,92 @@ class AbletonMCP(ControlSurface):
     BROWSER_CATEGORIES = ["instruments", "sounds", "drums", "audio_effects", "midi_effects",
                           "samples", "packs", "user_library"]
 
+    def _browser_indexer(self, category_roots):
+        """A generator that walks the browser once, yielding loadable items.
+        Kept on self so successive searches continue where the last stopped."""
+        max_depth = 7
+        for cat, root in category_roots:
+            stack = [(root, [], 0)]
+            while stack:
+                item, path, depth = stack.pop()
+                name = item.name if hasattr(item, "name") else ""
+                here = path + [name] if name else path
+                if depth > 0 and bool(getattr(item, "is_loadable", False)):
+                    yield {"name": name, "uri": getattr(item, "uri", None),
+                           "path": "/".join(here), "category": cat,
+                           "is_device": bool(getattr(item, "is_device", False))}
+                if depth >= max_depth:
+                    continue
+                try:
+                    kids = list(item.children) if hasattr(item, "children") else []
+                except Exception:
+                    kids = []
+                for kid in reversed(kids):
+                    stack.append((kid, here, depth + 1))
+
+    def _browser_index(self, wanted, budget_s):
+        """Grow the per-category index for up to budget_s seconds; return
+        (items so far, complete?)."""
+        if not hasattr(self, "_index"):
+            self._index = {}
+        state = self._index.get(wanted)
+        if state is None:
+            app = self.application()
+            roots = []
+            for name in self.BROWSER_CATEGORIES:
+                if (wanted == "all" and name in ("instruments", "sounds", "drums", "audio_effects", "midi_effects")) or wanted == name:
+                    root = getattr(app.browser, name, None)
+                    if root is not None:
+                        roots.append((name, root))
+            if not roots:
+                raise ValueError("unknown category '%s'; use one of: all, %s" % (wanted, ", ".join(self.BROWSER_CATEGORIES)))
+            state = {"items": [], "gen": self._browser_indexer(roots), "done": False}
+            self._index[wanted] = state
+        started = time.time()
+        while not state["done"] and time.time() - started < budget_s:
+            try:
+                for _ in range(50):
+                    state["items"].append(next(state["gen"]))
+            except StopIteration:
+                state["done"] = True
+        return state["items"], state["done"]
+
     def _search_browser(self, query, category="all", limit=30):
-        """Find loadable browser items whose name or path contains every word of the query."""
+        """Find loadable browser items whose name or path contains every word of
+        the query. The browser is indexed once per category and kept for the
+        session, so the first search pays the walk and the rest are instant."""
+        try:
+            words = [w for w in str(query or "").lower().split() if w]
+            if not words:
+                raise ValueError("give a query, e.g. 'analog bass' or 'techno kit'")
+            wanted = str(category or "all").lower()
+            limit = max(1, min(int(limit or 30), 200))
+            started = time.time()
+            items, complete = self._browser_index(wanted, 8.0)
+            hits = []
+            total = 0
+            for it in items:
+                hay = (it["path"] or "").lower()
+                if all(w in hay for w in words):
+                    total += 1
+                    if len(hits) < limit:
+                        hits.append(it)
+            return {
+                "query": query,
+                "category": wanted,
+                "total_matches": total,
+                "returned": len(hits),
+                "indexed_items": len(items),
+                "index_complete": complete,
+                "truncated_walk": not complete,
+                "seconds": round(time.time() - started, 2),
+                "items": hits,
+            }
+        except Exception as e:
+            self.log_message("Error searching browser: " + str(e))
+            raise
+
+    def _search_browser_legacy(self, query, category="all", limit=30):
         try:
             app = self.application()
             browser = app.browser
@@ -1738,12 +1837,24 @@ class AbletonMCP(ControlSurface):
                     out.append(entry)
                 return out
 
+            packs = top_level("packs")
+            # One level into each pack, so a search can go straight to a folder.
+            try:
+                root = getattr(browser, "packs", None)
+                kids = list(root.children) if root is not None else []
+                for entry, pack in zip(packs, kids):
+                    try:
+                        entry["folders"] = [str(getattr(k, "name", "?")) for k in list(pack.children)[:40]]
+                    except Exception:
+                        entry["folders"] = []
+            except Exception:
+                pass
             result = {
                 "live_version": version,
                 "instruments": top_level("instruments"),
                 "audio_effects": top_level("audio_effects"),
                 "midi_effects": top_level("midi_effects"),
-                "packs": top_level("packs"),
+                "packs": packs,
                 "drums": top_level("drums"),
                 "sounds": top_level("sounds"),
                 "has_user_library": getattr(browser, "user_library", None) is not None,
@@ -1756,6 +1867,73 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error reading library status: " + str(e))
+            raise
+
+    # ── Transport and structure helpers ──────────────────────────────────────
+
+    def _play_from(self, time_val, response_queue=None):
+        """Move the playhead and play from there (continue_playing), on the
+        tick after the move has landed."""
+        try:
+            song = self._song
+            target = float(time_val)
+            if song.is_playing:
+                song.stop_playing()
+            song.current_song_time = target
+
+            def finish():
+                try:
+                    song.continue_playing()
+                    result = {"playing_from": target, "is_playing": bool(song.is_playing)}
+                    if response_queue is not None:
+                        response_queue.put({"status": "success", "result": result})
+                except Exception as e:
+                    if response_queue is not None:
+                        response_queue.put({"status": "error", "message": str(e)})
+
+            if response_queue is None:
+                finish()
+                return {"playing_from": target}
+            self.schedule_message(2, finish)
+            return DEFERRED
+        except Exception as e:
+            self.log_message("Error playing from position: " + str(e))
+            raise
+
+    def _delete_track(self, track_index):
+        try:
+            tracks = list(self._song.tracks)
+            track_index = int(track_index)
+            if track_index < 0 or track_index >= len(tracks):
+                raise IndexError("track index %d out of range (0-%d)" % (track_index, len(tracks) - 1))
+            name = tracks[track_index].name
+            self._song.delete_track(track_index)
+            return {"deleted": name, "index": track_index, "track_count": len(self._song.tracks)}
+        except Exception as e:
+            self.log_message("Error deleting track: " + str(e))
+            raise
+
+    def _back_to_arrangement(self):
+        try:
+            self._song.back_to_arranger = False
+            return {"back_to_arrangement": True}
+        except Exception as e:
+            self.log_message("Error returning to arrangement: " + str(e))
+            raise
+
+    def _set_arrangement_loop(self, start=None, length=None, enabled=None):
+        try:
+            song = self._song
+            if start is not None:
+                song.loop_start = float(start)
+            if length is not None:
+                song.loop_length = float(length)
+            if enabled is not None:
+                song.loop = bool(enabled)
+            return {"loop_start": float(song.loop_start), "loop_length": float(song.loop_length),
+                    "loop": bool(song.loop)}
+        except Exception as e:
+            self.log_message("Error setting arrangement loop: " + str(e))
             raise
 
     # ── Capture: record the master through a Resampling track ────────────────
@@ -1849,7 +2027,15 @@ class AbletonMCP(ControlSurface):
             preroll = 1.0 if float(song.tempo) <= 160.0 else 2.0
             if Live is None:
                 raise RuntimeError("captures need Live's own Python (Live 11 or newer)")
-            quant = Live.Song.Quantization.q_beat
+            # Live's enum names a beat "q_quarter"; fall back to no quantization
+            # rather than fail if a Live version spells it differently.
+            quant = None
+            for attr in ("q_quarter", "q_beat", "q_no_q"):
+                quant = getattr(Live.Song.Quantization, attr, None)
+                if quant is not None:
+                    break
+            if quant is None:
+                raise RuntimeError("Live.Song.Quantization has no usable member")
             self._pending_capture = {"slot": slot_index, "name": str(name or "capture"),
                                      "start": start, "bars": bars}
             # Fixed-length Session recording needs Live 11+; probe the signature.
@@ -1863,7 +2049,9 @@ class AbletonMCP(ControlSurface):
 
             def finish():
                 try:
-                    song.start_playing()
+                    # continue_playing plays from current_song_time; start_playing
+                    # would jump back to the start marker.
+                    song.continue_playing()
                     slot.fire(record_length=record_length, launch_quantization=quant)
                     result = {"slot": slot_index, "record_length": record_length,
                               "preroll_beats": preroll, "beats_per_bar": beats_per_bar,
@@ -2347,8 +2535,16 @@ class AbletonMCP(ControlSurface):
             if not item:
                 raise ValueError("Browser item with URI '{0}' not found".format(item_uri))
             
-            # Select the track
+            # Select the track, and its last device, so an effect is inserted
+            # at the end of the chain. An instrument replaces the track's
+            # instrument regardless (Live's own rule).
             self._song.view.selected_track = track
+            try:
+                devices = list(track.devices)
+                if devices:
+                    self._song.view.select_device(devices[-1])
+            except Exception as e:
+                self.log_message("could not select the last device: " + str(e))
 
             before = [d.name for d in track.devices]
 

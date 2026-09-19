@@ -184,6 +184,8 @@ async fn deleting_reports_what_went_and_what_is_left() {
     let p = DeleteArrangementClipParams {
         track_index: 0,
         clip_index: 5,
+        clip_indices: vec![],
+        all: false,
     };
     let r = server
         .run(
