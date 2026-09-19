@@ -53,6 +53,11 @@ pub trait LiveBridge: Send + Sync {
 pub struct CallTrace {
     pub commands: Vec<String>,
     pub live_ms: f64,
+    /// Time the script's tasks held Live's main thread, summed over the
+    /// commands' slices (`main_ms` in each reply; 0 for an older script).
+    pub main_ms: f64,
+    /// How many main-thread slices those commands took in total.
+    pub slices: u64,
     /// The Remote Script's clock from the last response of this call, when a
     /// performance runs (the script attaches it to every response envelope).
     #[serde(skip)]
@@ -62,6 +67,16 @@ pub struct CallTrace {
 thread_local! {
     static TRACE: RefCell<Option<CallTrace>> = const { RefCell::new(None) };
     static EXCHANGE_CLOCK: RefCell<Option<Value>> = const { RefCell::new(None) };
+    static EXCHANGE_COST: RefCell<(f64, u64)> = const { RefCell::new((0.0, 0)) };
+}
+
+/// Called by the connection with the reply's `main_ms` and `slices`.
+pub fn note_exchange_cost(main_ms: f64, slices: u64) {
+    EXCHANGE_COST.with(|c| *c.borrow_mut() = (main_ms, slices));
+}
+
+fn take_exchange_cost() -> (f64, u64) {
+    EXCHANGE_COST.with(|c| std::mem::replace(&mut *c.borrow_mut(), (0.0, 0)))
 }
 
 /// Called by the connection when a response envelope carries `clock`; a
@@ -84,16 +99,36 @@ pub fn end_trace() -> CallTrace {
     TRACE.with(|t| t.borrow_mut().take().unwrap_or_default())
 }
 
-fn note_command(command: &str, elapsed: Duration, clock: Option<&Value>) {
+fn note_command_cost(
+    command: &str,
+    elapsed: Duration,
+    clock: Option<&Value>,
+    main_ms: f64,
+    slices: u64,
+) {
     TRACE.with(|t| {
         if let Some(trace) = t.borrow_mut().as_mut() {
             trace.commands.push(command.to_string());
             trace.live_ms += elapsed.as_secs_f64() * 1000.0;
+            trace.main_ms += main_ms;
+            trace.slices += slices;
             if let Some(c) = clock {
                 trace.clock = Some(c.clone());
             }
         }
     });
+}
+
+/// `main_ms` and `slices` from a reply envelope (a script before 1.23.0
+/// sends neither).
+fn cost_of(response: &Value) -> (f64, u64) {
+    (
+        response
+            .get("main_ms")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        response.get("slices").and_then(Value::as_u64).unwrap_or(0),
+    )
 }
 
 /// `ABLETON_HOST` (default `localhost`) and `ABLETON_PORT` (default 9877).
@@ -168,7 +203,8 @@ impl LiveState {
         let result = self.bridge.send_command(command_type, params);
         let elapsed = start.elapsed();
         let clock = take_exchange_clock();
-        note_command(command_type, elapsed, clock.as_ref());
+        let (main_ms, slices) = take_exchange_cost();
+        note_command_cost(command_type, elapsed, clock.as_ref(), main_ms, slices);
         if result.is_ok() {
             let mut rt = self.round_trips.lock().unwrap_or_else(|e| e.into_inner());
             rt.push_back(elapsed.as_secs_f64());
@@ -469,9 +505,13 @@ impl AbletonConnection {
             };
             tracing::error!("Ableton error for {}: {}", command_type, message);
             note_exchange_clock(response.get("clock").cloned());
+            let (main_ms, slices) = cost_of(&response);
+            note_exchange_cost(main_ms, slices);
             return Err(LiveError::Ableton(message));
         }
         note_exchange_clock(response.get("clock").cloned());
+        let (main_ms, slices) = cost_of(&response);
+        note_exchange_cost(main_ms, slices);
         Ok(response.get("result").cloned().unwrap_or_else(|| json!({})))
     }
 }

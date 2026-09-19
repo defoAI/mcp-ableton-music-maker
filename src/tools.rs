@@ -5874,6 +5874,35 @@ pub struct Server {
     tool_router: ToolRouter<Self>,
 }
 
+/// A single main-thread slice longer than this, while the transport runs,
+/// is audible on a small buffer: the reply says so.
+pub const HELD_MS_THRESHOLD: f64 = 50.0;
+
+/// The line under a reply when the call held Live's main thread for longer
+/// than [`HELD_MS_THRESHOLD`] while the music played; None otherwise.
+pub fn held_line(trace: &connection::CallTrace) -> Option<String> {
+    let playing = trace
+        .clock
+        .as_ref()
+        .and_then(|c| c.get("is_playing"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !playing || trace.main_ms < HELD_MS_THRESHOLD {
+        return None;
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for c in &trace.commands {
+        if !seen.contains(&c.as_str()) {
+            seen.push(c);
+        }
+    }
+    Some(format!(
+        "Held Live for {} ms while the music played ({}). Tracks, devices and scenes are Live's own work and cannot be sliced: make those edits before the show, or between sections.",
+        trace.main_ms.round() as i64,
+        seen.join(", ")
+    ))
+}
+
 fn run_blocking<P: Serialize>(
     live: &LiveState,
     spec: &ToolSpec,
@@ -5895,6 +5924,17 @@ fn run_blocking<P: Serialize>(
         .and_then(|p| p.song.as_ref())
         .and_then(|s| s.plan_cue_id);
     let result = match trace.clock.as_ref().map(|c| perf::clock_lines(c, plan_cue)) {
+        Some(line) => match result {
+            Ok(text) => Ok(format!("{text}\n{line}")),
+            Err(text) => Err(format!("{text}\n{line}")),
+        },
+        None => result,
+    };
+    // The cost line: what this call held Live's main thread for while the
+    // music played, measured by the script (decision 0007). Under the
+    // threshold nothing is said; over it the artist learns which edits to
+    // make before the show.
+    let result = match held_line(&trace) {
         Some(line) => match result {
             Ok(text) => Ok(format!("{text}\n{line}")),
             Err(text) => Err(format!("{text}\n{line}")),

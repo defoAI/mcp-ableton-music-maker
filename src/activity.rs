@@ -102,6 +102,8 @@ impl Activity {
             "error": error,
             "duration_ms": (duration.as_secs_f64() * 10_000.0).round() / 10.0,
             "live_ms": (trace.live_ms * 10.0).round() / 10.0,
+            "main_ms": (trace.main_ms * 10.0).round() / 10.0,
+            "slices": trace.slices,
             "in_chars": in_chars,
             "out_chars": out_chars,
         });

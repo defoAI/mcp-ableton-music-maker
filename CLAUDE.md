@@ -77,6 +77,12 @@ docker/                verify-image.sh, Claude Desktop example config
   Adding a Remote Script command means: handler in the script, name in `SCRIPT_CAPABILITIES`,
   bump `SCRIPT_VERSION`, add it to `tools::ALL_REMOTE_COMMANDS` (a test cross-checks the list),
   then the tool body.
+- **The Remote Script touches Live only from Live's main thread** (decision 0007). The
+  socket thread parses and waits; `_run_on_main` → `_dispatch` runs every command there. A
+  handler that loops over tracks, clips or browser items is a generator (`yield None`
+  between units, `yield Done(result)` last) so the executor can slice it per tick; never
+  call the Live API from the socket thread, never loop for seconds in one task. Every reply
+  carries `main_ms`; the activity line carries it; a slice over 25 ms lands in Live's log.
 - **The Live socket is synchronous.** Bodies run on the blocking pool through `spawn_blocking`;
   do not call the bridge from async code directly.
 - **The Docker image is hardened by contract**: distroless, non-root, read-only root, `/state`

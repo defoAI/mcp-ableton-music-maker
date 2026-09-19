@@ -243,8 +243,15 @@ stage, `verify-image.sh`, trivy on CRITICAL, and on `main` push to
 
 - **One server instance at a time**, across all clients — the Remote Script serves one
   socket and the server holds one connection. The app warns when two heartbeats are alive.
-- **Live's main thread is the bottleneck.** Every command runs there; the timeouts exist
-  because a big audio import blocks everything else.
+- **Live's main thread is the bottleneck, and the only thread** (decision 0007). The
+  script's socket thread parses JSON and waits; `_run_on_main` schedules one task per
+  command on Live's main thread and `_dispatch` runs it there — reads, writes, the clock
+  stamp. A handler with many units of work is a generator the executor slices: 8 ms per tick
+  while the transport runs, 40 ms while stopped, re-armed with `schedule_message(1)`. Each
+  mutating command is one undo step. Every reply carries `main_ms` and `slices`; the
+  activity line carries their sum, so what a tool cost Live is a number in the log. A slice
+  over 25 ms is written to Live's log with the command name. The timeouts exist because a
+  big audio import still blocks everything else.
 - **The bind address is an open decision** —
   [0003](../decisions/0003-remote-script-bind-address.md).
 - **Arrangement commands are Live 11+**; the script has Python 2 branches for Live 10 but no

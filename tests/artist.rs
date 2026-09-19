@@ -614,3 +614,41 @@ async fn arrangement_automation_is_refused_before_live_and_the_surface_is_marked
         Some(false)
     );
 }
+
+#[test]
+fn a_call_that_held_live_while_playing_says_so() {
+    use mcp_ableton_music_maker::connection::CallTrace;
+    use mcp_ableton_music_maker::tools::{held_line, HELD_MS_THRESHOLD};
+    let playing = json!({"is_playing": true, "bar": 9, "beat": 32.0});
+    let mut t = CallTrace {
+        commands: vec![
+            "create_midi_track".into(),
+            "load_browser_item".into(),
+            "load_browser_item".into(),
+        ],
+        live_ms: 1200.0,
+        main_ms: 839.0,
+        slices: 2,
+        clock: Some(playing.clone()),
+    };
+    let line = held_line(&t).expect("over the threshold while playing");
+    assert!(
+        line.starts_with(
+            "Held Live for 839 ms while the music played (create_midi_track, load_browser_item)."
+        ),
+        "{line}"
+    );
+    t.main_ms = HELD_MS_THRESHOLD - 1.0;
+    assert!(held_line(&t).is_none(), "under the threshold: nothing said");
+    t.main_ms = 839.0;
+    t.clock = Some(json!({"is_playing": false}));
+    assert!(
+        held_line(&t).is_none(),
+        "stopped: Live's cost is nobody's problem"
+    );
+    t.clock = None;
+    assert!(
+        held_line(&t).is_none(),
+        "no performance clock: nothing said"
+    );
+}
