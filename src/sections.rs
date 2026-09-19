@@ -93,6 +93,13 @@ pub struct PlaySongParams {
     /// Start from this section of the setlist (default: the first entry)
     #[serde(default)]
     pub from: Option<String>,
+    /// What to do with the Arrangement while the song plays: "ask" (default — records from bar 1 when the Arrangement is empty, otherwise returns what is there and the choices), "after" (record after everything already there), "replace" (delete it and record from bar 1), "off" (do not record)
+    #[serde(default = "ask_record")]
+    pub record: String,
+}
+
+fn ask_record() -> String {
+    "ask".to_string()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -1012,9 +1019,16 @@ pub fn play_song_body(live: &LiveState, p: &PlaySongParams) -> ToolResult {
                 disarm: true,
                 limiter: false,
                 follow_key: false,
+                record: p.record.clone(),
             },
         )?;
-        let head: Vec<&str> = started.lines().take(2).collect();
+        // The take line is the third, right after the scene that fired; it is
+        // only there when one is being recorded.
+        let recording = performance_running(live).and_then(|r| r.take).is_some();
+        let head: Vec<&str> = started
+            .lines()
+            .take(if recording { 3 } else { 2 })
+            .collect();
         text.push_str(&head.join("\n"));
         text.push_str("\nGuards on: the transport-touching tools refuse until end_performance.\n");
         if !before.is_playing {
@@ -1193,6 +1207,9 @@ fn steer(live: &LiveState, m: Move) -> ToolResult {
                 disarm: true,
                 limiter: false,
                 follow_key: false,
+                // Consults the session's remembered answer, so a steering verb
+                // that starts a performance asks at most once.
+                record: ask_record(),
             },
         )?;
     }

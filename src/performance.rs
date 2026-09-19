@@ -1728,9 +1728,121 @@ pub fn events_text(events: &[Value]) -> String {
     format!("Since the last call: {}", lines.join("; "))
 }
 
+/// What to do with the Arrangement while a performance plays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordChoice {
+    /// Record from bar 1 when the Arrangement is empty; otherwise ask
+    Ask,
+    /// Record after everything already there
+    After,
+    /// Delete what is there and record from bar 1
+    Replace,
+    /// Do not record
+    Off,
+}
+
+impl RecordChoice {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RecordChoice::Ask => "ask",
+            RecordChoice::After => "after",
+            RecordChoice::Replace => "replace",
+            RecordChoice::Off => "off",
+        }
+    }
+}
+
+/// The producer's answer, however they phrase it. Unknown words are an error
+/// rather than a guess: this one decides what happens to their arrangement.
+pub fn parse_record_choice(s: &str) -> Result<RecordChoice, String> {
+    match s.trim().to_lowercase().as_str() {
+        "" | "ask" | "true" | "yes" => Ok(RecordChoice::Ask),
+        "after" | "append" | "end" => Ok(RecordChoice::After),
+        "replace" | "over" | "overwrite" => Ok(RecordChoice::Replace),
+        "off" | "false" | "no" | "none" => Ok(RecordChoice::Off),
+        other => Err(format!(
+            "record must be \"ask\" (the default), \"after\", \"replace\" or \"off\", not '{other}'."
+        )),
+    }
+}
+
+/// The beat a take starts on: the next bar line at or after what the
+/// Arrangement already uses. An empty Arrangement starts at beat 0 (bar 1),
+/// and an end that already sits on a bar line is not pushed to the next one.
+pub fn take_start_beat(end_beat: f64, beats_per_bar: f64) -> f64 {
+    let bpb = if beats_per_bar > 0.0 {
+        beats_per_bar
+    } else {
+        4.0
+    };
+    if end_beat <= 0.0 {
+        return 0.0;
+    }
+    let bars = end_beat / bpb;
+    // A hair under a bar line counts as on it: Live's end times are floats.
+    let whole = if (bars - bars.round()).abs() < 1e-6 {
+        bars.round()
+    } else {
+        bars.ceil()
+    };
+    whole * bpb
+}
+
+/// Live's 1-based bar for a beat.
+pub fn bar_of_beat(beat: f64, beats_per_bar: f64) -> i64 {
+    let bpb = if beats_per_bar > 0.0 {
+        beats_per_bar
+    } else {
+        4.0
+    };
+    (beat / bpb).floor() as i64 + 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_take_starts_on_the_next_bar_after_what_the_arrangement_uses() {
+        // Empty: bar 1.
+        assert_eq!(take_start_beat(0.0, 4.0), 0.0);
+        // Already on a bar line: stay there, do not skip a bar.
+        assert_eq!(take_start_beat(512.0, 4.0), 512.0);
+        // A hair under one counts as on it — Live's end times are floats.
+        assert_eq!(take_start_beat(511.999_999, 4.0), 512.0);
+        // Mid-bar: the next bar line.
+        assert_eq!(take_start_beat(513.5, 4.0), 516.0);
+        // The set's own beats per bar, not an assumed four.
+        assert_eq!(take_start_beat(30.0, 3.0), 30.0);
+        assert_eq!(take_start_beat(31.0, 3.0), 33.0);
+        // A nonsensical signature falls back rather than dividing by zero.
+        assert_eq!(take_start_beat(5.0, 0.0), 8.0);
+    }
+
+    #[test]
+    fn bars_are_lives_own_one_based_numbering() {
+        assert_eq!(bar_of_beat(0.0, 4.0), 1);
+        assert_eq!(bar_of_beat(512.0, 4.0), 129);
+        assert_eq!(bar_of_beat(515.9, 4.0), 129);
+        assert_eq!(bar_of_beat(516.0, 4.0), 130);
+    }
+
+    #[test]
+    fn the_record_answer_is_a_word_never_a_guess() {
+        assert_eq!(parse_record_choice("").unwrap(), RecordChoice::Ask);
+        assert_eq!(parse_record_choice("ask").unwrap(), RecordChoice::Ask);
+        assert_eq!(parse_record_choice("After").unwrap(), RecordChoice::After);
+        assert_eq!(
+            parse_record_choice(" replace ").unwrap(),
+            RecordChoice::Replace
+        );
+        assert_eq!(parse_record_choice("no").unwrap(), RecordChoice::Off);
+        assert_eq!(parse_record_choice("off").unwrap(), RecordChoice::Off);
+        // Anything else is refused: this one decides the fate of an arrangement.
+        let e = parse_record_choice("probably").unwrap_err();
+        assert!(e.contains("\"after\""), "{e}");
+        assert!(e.contains("probably"), "{e}");
+    }
 
     fn state() -> PerfState {
         PerfState::from_value(&json!({

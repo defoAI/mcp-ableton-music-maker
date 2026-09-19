@@ -159,6 +159,20 @@ pub struct Performance {
     /// The song cursor while a setlist is being played or steered
     #[serde(default)]
     pub song: Option<crate::song::Song>,
+    /// The take this performance is recording into the Arrangement, if any
+    #[serde(default)]
+    pub take: Option<Take>,
+}
+
+/// The Arrangement take a performance is being recorded into. The server
+/// holds where it starts so `end_performance` can say what it covered; Live
+/// holds the recording itself.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct Take {
+    pub start_bar: i64,
+    pub start_beat: f64,
+    /// Bars deleted to make room, when the producer answered `replace`
+    pub replaced_bars: i64,
 }
 
 /// Everything a tool needs to talk to Live: the bridge, the cached
@@ -176,6 +190,10 @@ pub struct LiveState {
     pub last_clock: Mutex<Option<(Instant, Value)>>,
     /// One level of undo for vary_clip: (track, slot) → the notes before.
     pub vary_undo: Mutex<std::collections::HashMap<(i64, i64), Vec<Value>>>,
+    /// What the producer last answered about recording into an Arrangement
+    /// that already had something in it, so the next performance of this
+    /// session does not ask again. `replace` is never kept here.
+    pub record_answer: Mutex<Option<String>>,
 }
 
 impl LiveState {
@@ -194,6 +212,7 @@ impl LiveState {
             round_trips: Mutex::new(std::collections::VecDeque::new()),
             last_clock: Mutex::new(None),
             vary_undo: Mutex::new(std::collections::HashMap::new()),
+            record_answer: Mutex::new(None),
         }
     }
 

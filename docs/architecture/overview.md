@@ -108,6 +108,18 @@ script is loaded and up to date. Both are for CI and the Mac app.
   count over), `duplicate_scene` plus per-track rewrites, or `create_scene` plus clips.
   Transitions (`src/transition.rs`) are composed on the server into the cue primitives above
   (ramps, sets, fires, stops) and note rewrites written into the target row before the jump.
+- **A performance is kept as a take.** Live writes Session launches into the Arrangement only
+  while `Song.record_mode` is on, so `start_performance` and `play_song` arm it
+  (`start_arrangement_record`) and `end_performance` disarms it (`stop_arrangement_record`,
+  which also calls Back to Arrangement and reports the bars). `record` decides what happens to
+  an Arrangement that already holds something: the default `ask` reads it
+  (`arrangement_summary`, one pass over the tracks) and, when it is not empty, **returns the
+  question having sent nothing else** — the producer answers `after` (the next bar line past
+  the last clip), `replace` (delete it, record from bar 1) or `off`. The answer is remembered
+  for the session; `replace` never is. There is no `undo` command, so `replace` names Cmd+Z.
+  Live 10 has no `track.arrangement_clips`, so it cannot be asked about and is not recorded.
+  A failure between arming and the first fire disarms Live again, and the script's tick clears
+  `record_mode` when the transport stops, so a take never outlives its performance.
 - **Levels ride with the clock.** The script's tick keeps the master and per-track meter peaks
   for the current and last bar and the master's peak per scene row; they travel as `levels` on
   the `clock` envelope and the state, `run_blocking` renders the 🔊 line under the ⏱ line, and

@@ -5,7 +5,7 @@
 //! so tests can drive them with a fake bridge; the `#[tool]` methods only
 //! bind a body to its [`ToolSpec`] and hand both to [`Server::run`].
 
-use crate::connection::{self, LiveError, LiveState, Performance};
+use crate::connection::{self, LiveError, LiveState, Performance, Take};
 use crate::notes::NotesInput;
 use crate::performance::{self as perf, CueParams, PerfState};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -108,6 +108,9 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "create_return_track",
     "create_tracks",
     "write_clips",
+    "arrangement_summary",
+    "start_arrangement_record",
+    "stop_arrangement_record",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -3581,6 +3584,9 @@ macro_rules! named_tools {
 fn one_bar_q() -> String {
     "1_bar".to_string()
 }
+fn ask_record() -> String {
+    "ask".to_string()
+}
 
 params!(StartPerformanceParams {
     /// Scene to fire first, by name or index (optional: keeps whatever plays)
@@ -3597,6 +3603,8 @@ params!(StartPerformanceParams {
     limiter: bool = "bool::default",
     /// After every record_clip, estimate the key of what was played and re-key the other MIDI clips to it
     follow_key: bool = "bool::default",
+    /// What to do with the Arrangement while this plays: "ask" (default — records from bar 1 when the Arrangement is empty, otherwise returns what is there and the choices), "after" (record after everything already there), "replace" (delete it and record from bar 1), "off" (do not record)
+    record: String = "ask_record",
 });
 params!(GetContextParams {
     /// Also read the browser inventory (instruments, effects, packs); slower, so off by default
@@ -4668,6 +4676,164 @@ pub fn keep_track_playing_body(live: &LiveState, p: &KeepTrackPlayingParams) -> 
     })
 }
 
+/// The take's start, or the question. Runs before anything is changed in
+/// Live, because the producer may answer "off" — and because a question that
+/// arrives after the launch quantization has been rewritten is not a question,
+/// it is an apology.
+///
+/// `Ok(None)` means nothing will be recorded and `notes` says why.
+fn prepare_take(
+    live: &LiveState,
+    choice: perf::RecordChoice,
+    bpb: f64,
+    notes: &mut Vec<String>,
+) -> Result<Option<Take>, String> {
+    if choice == perf::RecordChoice::Off {
+        return Ok(None);
+    }
+    if !live.script.has_capability("arrangement_summary")
+        || !live.script.has_capability("start_arrangement_record")
+    {
+        notes.push(
+            "Not recording: this Remote Script cannot keep a take (reinstall it to record performances)."
+                .into(),
+        );
+        return Ok(None);
+    }
+    let summary = match live.send_command("arrangement_summary", None) {
+        Ok(v) => v,
+        Err(e) => {
+            notes.push(format!(
+                "Not recording: I could not read what the Arrangement holds ({e}), and I will not record over it blind."
+            ));
+            return Ok(None);
+        }
+    };
+    if !summary
+        .get("supported")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        notes.push(
+            "Not recording: this Live does not report Arrangement clips, so I cannot tell what is already there, and I will not record over it blind. Live 11 or newer records the take."
+                .into(),
+        );
+        return Ok(None);
+    }
+    let end_beat = summary
+        .get("end_beat")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let bars = summary.get("bars").and_then(Value::as_i64).unwrap_or(0);
+    let tracks = summary.get("tracks").and_then(Value::as_i64).unwrap_or(0);
+    if bars <= 0 {
+        return Ok(Some(Take {
+            start_bar: 1,
+            start_beat: 0.0,
+            replaced_bars: 0,
+        }));
+    }
+    match choice {
+        perf::RecordChoice::Off => Ok(None),
+        perf::RecordChoice::After => {
+            let beat = perf::take_start_beat(end_beat, bpb);
+            Ok(Some(Take {
+                start_bar: perf::bar_of_beat(beat, bpb),
+                start_beat: beat,
+                replaced_bars: 0,
+            }))
+        }
+        perf::RecordChoice::Replace => Ok(Some(Take {
+            start_bar: 1,
+            start_beat: 0.0,
+            replaced_bars: bars,
+        })),
+        perf::RecordChoice::Ask => {
+            let after_bar = perf::bar_of_beat(perf::take_start_beat(end_beat, bpb), bpb);
+            Err(format!(
+                "Not started — your Arrangement already has {bars} bars on {tracks} track{}, and I keep performances as a take in the Arrangement. What should I do with what is there?\n\n  after    record the take from bar {after_bar}, leaving those {bars} bars alone\n  replace  delete those {bars} bars and record the take from bar 1\n  off      play without recording; the Arrangement is untouched\n\nCall again with record set to one of those. I will remember after or off for the rest of this session.",
+                if tracks == 1 { "" } else { "s" }
+            ))
+        }
+    }
+}
+
+/// Arm Live for the take and say what that did.
+fn arm_take(live: &LiveState, take: &Take) -> Result<String, String> {
+    let r = live
+        .send_command(
+            "start_arrangement_record",
+            Some(json!({"from_beat": take.start_beat, "replace": take.replaced_bars > 0})),
+        )
+        .map_err(|e| live_err("arm the Arrangement take", e))?;
+    if take.replaced_bars > 0 {
+        let clips = r.get("replaced_clips").and_then(Value::as_i64).unwrap_or(0);
+        let tracks = r
+            .get("replaced_tracks")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        Ok(format!(
+            "Deleted {} bars ({clips} clip{} on {tracks} track{}) and recording this take from bar 1, as you asked. There is no undo in this server — Cmd+Z in Live is the way back, and only before you save.",
+            take.replaced_bars,
+            if clips == 1 { "" } else { "s" },
+            if tracks == 1 { "" } else { "s" }
+        ))
+    } else if take.start_bar == 1 {
+        Ok("Recording this take from bar 1 — the Arrangement was empty, so there was nothing to ask about. Say record \"off\" if you would rather I did not.".into())
+    } else {
+        Ok(format!(
+            "Recording this take from bar {}. Everything before it is untouched. Live still has to be saved by hand when you like it.",
+            take.start_bar
+        ))
+    }
+}
+
+/// A take armed and then abandoned would leave Live recording into a
+/// performance the server has already given up on. Every fallible step
+/// between arming and storing the performance goes through here.
+fn disarm_on_err<T>(
+    live: &LiveState,
+    armed: Option<&Take>,
+    r: Result<T, String>,
+) -> Result<T, String> {
+    if let (Err(_), Some(t)) = (&r, armed) {
+        let _ = live.send_command(
+            "stop_arrangement_record",
+            Some(json!({"from_beat": t.start_beat, "back_to_arrangement": false})),
+        );
+    }
+    r
+}
+
+/// Remember an answer worth reusing. `replace` never is: the material it
+/// would delete is different every time.
+fn remember_record_answer(live: &LiveState, choice: perf::RecordChoice) {
+    if matches!(choice, perf::RecordChoice::After | perf::RecordChoice::Off) {
+        *live.record_answer.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(choice.as_str().to_string());
+    }
+}
+
+/// The parameter, unless the producer already answered this session.
+pub(crate) fn record_choice_for(
+    live: &LiveState,
+    given: &str,
+) -> Result<perf::RecordChoice, String> {
+    let choice = perf::parse_record_choice(given)?;
+    if choice != perf::RecordChoice::Ask {
+        return Ok(choice);
+    }
+    let remembered = live
+        .record_answer
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    match remembered.as_deref() {
+        Some(a) => perf::parse_record_choice(a),
+        None => Ok(perf::RecordChoice::Ask),
+    }
+}
+
 pub fn start_performance_body(live: &LiveState, p: &StartPerformanceParams) -> ToolResult {
     for c in [
         "get_performance_state",
@@ -4695,8 +4861,13 @@ pub fn start_performance_body(live: &LiveState, p: &StartPerformanceParams) -> T
             perf::GLOBAL_QUANTIZATIONS.join(", ")
         ));
     }
+    // A word we do not understand costs nothing: checked before the first read.
+    let choice = record_choice_for(live, &p.record)?;
     let before = read_perf_state(live)?;
     let mut notes: Vec<String> = Vec::new();
+    // The take is settled next: prepare_take may return the question, and a
+    // question must arrive before anything in Live has moved.
+    let take = prepare_take(live, choice, before.beats_per_bar(), &mut notes)?;
     live.send_command("set_launch_quantization", Some(json!({"name": q})))
         .map_err(|e| live_err("set the launch quantization", e))?;
     if live.script.has_capability("set_performance_mode") {
@@ -4785,12 +4956,27 @@ pub fn start_performance_body(live: &LiveState, p: &StartPerformanceParams) -> T
             ));
         }
     }
+    let mut take_note: Option<String> = None;
+    if let Some(t) = take.as_ref() {
+        match arm_take(live, t) {
+            Ok(line) => take_note = Some(line),
+            Err(e) => notes.push(format!("Not recording: {e}")),
+        }
+    }
+    let armed_take = if take_note.is_some() {
+        take.clone()
+    } else {
+        None
+    };
     let mut fired: Option<(String, usize)> = None;
     if let Some(which) = &p.scene {
-        let scene = before.scene_by(which)?;
-        let r = live
-            .send_command("fire_scene", Some(json!({"scene_index": scene.index})))
-            .map_err(|e| live_err("fire the scene", e))?;
+        let scene = disarm_on_err(live, armed_take.as_ref(), before.scene_by(which))?;
+        let r = disarm_on_err(
+            live,
+            armed_take.as_ref(),
+            live.send_command("fire_scene", Some(json!({"scene_index": scene.index})))
+                .map_err(|e| live_err("fire the scene", e)),
+        )?;
         let clips = r.get("clips").and_then(Value::as_array).map_or(0, Vec::len);
         let would_record = join_names(r.get("would_record"));
         if !would_record.is_empty() {
@@ -4801,10 +4987,14 @@ pub fn start_performance_body(live: &LiveState, p: &StartPerformanceParams) -> T
         }
         fired = Some((scene.name.clone(), clips));
     } else if !before.is_playing {
-        live.send_command("start_playback", None)
-            .map_err(|e| live_err("start playback", e))?;
+        disarm_on_err(
+            live,
+            armed_take.as_ref(),
+            live.send_command("start_playback", None)
+                .map_err(|e| live_err("start playback", e)),
+        )?;
     }
-    let after = read_perf_state(live)?;
+    let after = disarm_on_err(live, armed_take.as_ref(), read_perf_state(live))?;
     let (key, key_text) = match key_set_in_live {
         Some(k) => (Some(k.clone()), format!("key {k} (set in Live)")),
         None => key_line(&after, p.key.as_ref()),
@@ -4819,8 +5009,10 @@ pub fn start_performance_body(live: &LiveState, p: &StartPerformanceParams) -> T
         cues_cancelled: 0,
         follow_key: p.follow_key,
         song: None,
+        take: armed_take,
     };
     *live.performance.lock().unwrap_or_else(|e| e.into_inner()) = Some(started.clone());
+    remember_record_answer(live, choice);
     let mut text = format!(
         "Performance started at {}.\n",
         started.started_at.format("%H:%M:%S")
@@ -4859,6 +5051,10 @@ pub fn start_performance_body(live: &LiveState, p: &StartPerformanceParams) -> T
                 after.signature_denominator
             ));
         }
+    }
+    if let Some(line) = take_note.as_ref() {
+        text.push_str(line);
+        text.push('\n');
     }
     text.push_str(&format!(
         "Launch quantization is {}: everything you or I fire lands on the next {}.\n",
@@ -4927,6 +5123,12 @@ pub fn get_performance_state_body(live: &LiveState, p: &GetPerformanceStateParam
     if !followed.is_empty() {
         text.push('\n');
         text.push_str(&followed);
+    }
+    if let Some(take) = running.as_ref().and_then(|r| r.take.as_ref()) {
+        text.push_str(&format!(
+            "\nRecording this performance into the Arrangement from bar {}; end_performance stops the take and says what it covered.",
+            take.start_bar
+        ));
     }
     if running.is_some() && !state.is_playing {
         text.push_str("\nThe transport is stopped (outside this server, or by end_performance's cue). The guards are still on: fire_scene or start a cue to resume, or end_performance to lift them.");
@@ -5228,6 +5430,42 @@ pub fn set_crossfader_body(live: &LiveState, p: &SetCrossfaderParams) -> ToolRes
     ))
 }
 
+/// Disarm Live's Arrangement Record and say what the take came to.
+fn stop_take(live: &LiveState, take: &Take, scheduled_stop: bool) -> String {
+    if !live.script.has_capability("stop_arrangement_record") {
+        return "The take is still armed: this Remote Script cannot stop it. Turn Live's Arrangement Record off by hand.".into();
+    }
+    let r = match live.send_command(
+        "stop_arrangement_record",
+        Some(json!({"from_beat": take.start_beat, "back_to_arrangement": true})),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return format!(
+                "The take could not be stopped ({e}). Turn Live's Arrangement Record off by hand."
+            )
+        }
+    };
+    let end_bar = r.get("end_bar").and_then(Value::as_i64).unwrap_or(0);
+    let tracks = r.get("tracks").and_then(Value::as_i64).unwrap_or(0);
+    if end_bar < take.start_bar || tracks == 0 {
+        return "Nothing reached the Arrangement — the take is empty.".into();
+    }
+    let bars = end_bar - take.start_bar + 1;
+    let mut line = format!(
+        "Take recorded: bars {}–{end_bar} of the Arrangement, {bars} bar{} on {tracks} track{}. Back to Arrangement is on, so the tracks follow the timeline again. Press Cmd+S in Live to keep it.",
+        take.start_bar,
+        if bars == 1 { "" } else { "s" },
+        if tracks == 1 { "" } else { "s" }
+    );
+    if scheduled_stop {
+        line.push_str(
+            " The take stops here; what plays until the transport actually stops is not in it.",
+        );
+    }
+    line
+}
+
 pub fn end_performance_body(live: &LiveState, p: &EndPerformanceParams) -> ToolResult {
     let Some(running) = performance_running(live) else {
         return Err("No performance is running.".into());
@@ -5320,11 +5558,23 @@ pub fn end_performance_body(live: &LiveState, p: &EndPerformanceParams) -> ToolR
             perf_num(bar)
         )
     };
+    // The take stops here, whatever the transport does next: Live keeps
+    // recording only while record_mode is on, and leaving it on after the
+    // server has forgotten the performance would arm the next thing played.
+    let scheduled_stop = !p.now && state.is_playing;
+    let take_line = running
+        .take
+        .as_ref()
+        .map(|t| stop_take(live, t, scheduled_stop));
     if live.script.has_capability("set_performance_mode") {
         let _ = live.send_command("set_performance_mode", Some(json!({"on": false})));
     }
     *live.performance.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let mut text = format!("{how} {summary} Guards lifted.");
+    if let Some(line) = take_line {
+        text.push('\n');
+        text.push_str(&line);
+    }
     if state.pending_record.is_some() {
         text.push_str(" A recording was pending; the script disarms the track when it ends or the transport stops.");
     }
@@ -6559,9 +6809,18 @@ impl Server {
     /// set_arrangement_time, set_tempo, capture_mix, play_and_measure,
     /// switch_to_arrangement_view, back_to_arrangement, and
     /// delete_track/delete_clip on anything playing or queued are refused
-    /// with a message that names the on-the-bar alternative. Nothing in the
-    /// set changes except the quantization. Refused if a performance is
-    /// already running. Then: get_performance_state to see where the set is,
+    /// with a message that names the on-the-bar alternative. Keeps the
+    /// performance as a take in the Arrangement (`record`, default "ask"):
+    /// from bar 1 when the Arrangement is empty, and when it is not, nothing
+    /// is started — the reply says what is there and offers "after" (record
+    /// after it), "replace" (delete it and record from bar 1) and "off". The
+    /// answer is remembered for the session, except "replace", which is asked
+    /// every time. There is no undo in this server, so "replace" says how many
+    /// bars it deleted and that Cmd+Z in Live is the way back. Live's API
+    /// cannot save the set: the producer presses Cmd+S. Recording needs Live
+    /// 11 or newer; on Live 10 nothing is recorded and the reply says why.
+    /// Apart from the take, nothing in the set changes except the
+    /// quantization. Refused if a performance is already running. Then: get_performance_state to see where the set is,
     /// cue for timed moves, fire_scene for the next section, record_clip to
     /// record the producer playing.
     #[tool(name = "start_performance")]
@@ -6678,6 +6937,11 @@ impl Server {
     /// stop (the master volume is restored after the stop), or stop now.
     /// Cancels pending cues, lifts the guards, and reports the set: duration,
     /// cues scheduled and cancelled. The launch quantization stays as it is.
+    /// Stops the Arrangement take if one was recording, reports the bars it
+    /// covers and how many tracks it touched, and puts the tracks back on the
+    /// timeline with Back to Arrangement. A stop scheduled on a bar or after a
+    /// fade ends the take now, so what plays until the transport stops is not
+    /// in it.
     #[tool(name = "end_performance")]
     async fn end_performance(
         &self,
@@ -6848,7 +7112,11 @@ impl Server {
     /// every counted jump as one cue at phrase boundaries, waiting at the
     /// first entry without a count. Then go, next_section, previous_section,
     /// back and jump_to steer it; hold_section stops a count. Every reply
-    /// carries the plan, the clock line and the level line.
+    /// carries the plan, the clock line and the level line. Keeps the
+    /// performance as a take in the Arrangement (`record`, default "ask" —
+    /// see start_performance): with something already in the Arrangement the
+    /// song does not start until the producer says "after", "replace" or
+    /// "off".
     #[tool(name = "play_song")]
     async fn play_song(
         &self,
@@ -7153,5 +7421,30 @@ mod tests {
             "length has a default"
         );
         assert!(!required.iter().any(|r| r == "user_prompt"));
+    }
+
+    #[test]
+    fn recording_a_take_is_a_parameter_not_a_tool() {
+        // Decision 0006: a new capability joins the artist tool that owns the
+        // intent. Keeping a performance is part of playing one.
+        let router = Server::tool_router();
+        let tools = router.list_all();
+        assert_eq!(tools.len(), 99, "the take must not add a tool");
+        // start_performance is served as adv_start_performance (decision 0006).
+        for name in ["adv_start_performance", "play_song"] {
+            let tool = tools.iter().find(|t| t.name == name).unwrap();
+            let schema = serde_json::to_value(&tool.input_schema).unwrap();
+            assert!(
+                schema["properties"].get("record").is_some(),
+                "{name} has no record parameter"
+            );
+            assert!(
+                !schema["required"]
+                    .as_array()
+                    .map(|r| r.iter().any(|x| x == "record"))
+                    .unwrap_or(false),
+                "{name}: record has a default"
+            );
+        }
     }
 }
