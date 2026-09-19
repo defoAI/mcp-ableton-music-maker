@@ -166,6 +166,7 @@ Every tool checks that the loaded Remote Script advertises the command it needs.
 |---|---|
 | Tools report the Remote Script cannot run a command | Run the installer again, restart Live, and re-select AbletonMusicMaker as a Control Surface. `get_remote_script_info` shows the loaded and expected versions. |
 | "could not connect to Ableton" | Live is not running, or the AbletonMusicMaker control surface is not selected. From Docker, Live must be reachable at `host.docker.internal:9877`. |
+| The server runs on another machine, or a container cannot reach the host's loopback | The Remote Script listens on this machine only (`127.0.0.1`) by default. Put the address to bind — `0.0.0.0` for any interface — on the first line of a file named `bind_host.txt` beside the script's `__init__.py`, and restart Live. `ableton-music-maker --check` prints what the loaded script bound. |
 | The client says the server failed to start | With Docker, Docker Desktop must be running before the client launches the server. |
 | Timeout errors | Break the request into smaller steps. Importing large audio files is given 65 seconds; everything else 10 to 15. |
 
@@ -177,7 +178,7 @@ Nothing is uploaded, by the server or by the app; there is no code that could. W
 
 ## Mac app (developer preview)
 
-`app/` holds a Tauri 2 menu bar app that installs the Remote Script into Live, connects Claude Desktop, Claude Code or Cursor to the bundled server, shows whether Claude, the server and Live are talking, and lists every call with its timing and an estimated token cost. It runs from source today:
+`app/` holds a Tauri 2 menu bar app that installs the Remote Script into Live, connects Claude Desktop, Claude Code or Cursor to the bundled server, shows whether Claude, the server and Live are talking, and lists every call with its timing and an estimated token cost. Its Listen screen shows what Live is putting out right now — a spectrum from 20 Hz to 20 kHz, master meters in dBFS and the six ranges of the mix — through a macOS process tap of Live alone, with no routing and nothing recorded; a small always-on-top window keeps it beside Live, and a full-screen visual draws MilkDrop-style from the same audio. macOS 14.4 or later for that screen; the rest of the app runs on 12. It runs from source today:
 
 ```bash
 cd app && npm install && npm run dev      # needs Rust 1.85+, Xcode command line tools

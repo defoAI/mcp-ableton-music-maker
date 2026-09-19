@@ -3,17 +3,23 @@
 The menu bar companion to `mcp-ableton-music-maker`. It installs the Remote Script into
 Live, connects Claude Desktop, Claude Code or Cursor to the bundled server, shows whether
 Claude, the server and Live are talking, and lists every tool call with its timing and an
-estimated token cost. It never runs the server Claude talks to — the client does — and it
-opens no socket except the one to Live.
+estimated token cost. Its Listen screen shows what Live is putting out, through a macOS
+process tap of Live alone, with a float window and a full-screen visual. It never runs the
+server Claude talks to — the client does — and it opens no socket except the one to Live.
 
 Design: `docs/product_management/stories/mac-app-installs-runs-and-watches-the-server.md`
-and the prototype beside it. Decisions: `docs/decisions/0005-…`.
+and `app-taps-live-output-spectrum-and-meters.md`, with the prototypes beside them.
+Decisions: `docs/decisions/0005-…` (Tauri, bundled server) and `0007-…` (the tap).
 
 ## Layout
 
 ```
 app/
 ├── src/                 The UI: index.html, app.css, app.js — plain HTML, no framework
+│   ├── listen.js        the Listen screen; spectrum.js draws for it and for float.html
+│   ├── float.html       the small always-on-top spectrum
+│   ├── visual.html      the full-screen visual: WebGL feedback, eight presets, F / esc / space
+│   └── listen.test.mjs  node --test: the screen's states and the drawing scale, headless
 ├── src-tauri/           The Rust core (Tauri 2); depends on the crate at ../.. by path
 │   ├── src/lib.rs       commands the UI calls
 │   ├── src/status.rs    the chain: heartbeats + one check against Live
@@ -21,6 +27,10 @@ app/
 │   ├── src/activity.rs  reading the server's activity files; retention; delete
 │   ├── src/settings.rs  the app's settings; mirrored into the client config's env block
 │   ├── src/tray.rs      the menu bar item
+│   ├── src/listen/      the tap (tap.m, Objective-C, compiled by cc), its FFI (tap.rs), the analysis (pure, tested), the session
+│   ├── Info.plist       NSAudioCaptureUsageDescription — merged into the bundle and embedded in dev builds by Tauri
+│   ├── examples/listen_probe.rs   the live check: taps Live for a few seconds and prints what arrived
+│   ├── tests/listen_integration.rs  the commands on Tauri's mock runtime; two tests need Live (--ignored)
 │   ├── binaries/        the sidecar, produced by scripts/build-sidecar.sh (gitignored)
 │   └── icons/
 └── scripts/build-sidecar.sh
@@ -41,6 +51,18 @@ cargo tauri dev                        # or: npm install && npm run dev
 ```
 
 Without the CLI, `cd src-tauri && cargo run` also works after the sidecar script has run.
+
+## Tests
+
+```bash
+cd app/src-tauri && cargo test                                   # unit + integration without Live
+cd app/src-tauri && cargo test --test listen_integration -- --ignored --test-threads=1   # with Live open and playing
+cd app/src-tauri && cargo run --example listen_probe -- 4         # taps Live for 4 s, prints levels, checks nothing leaks
+cd app/src && node --test listen.test.mjs                        # the Listen screen, headless
+```
+
+The probe asks Live to play if it is stopped and puts the transport back; set
+`AMM_PROBE_NO_TRANSPORT=1` to leave the transport alone.
 
 ## Build the bundle
 

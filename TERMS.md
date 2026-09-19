@@ -14,7 +14,11 @@ on every build: the continuous-integration run fails if an HTTP client library e
 dependency tree, and the Docker image is verified to carry no trace of one.
 
 The Mac app is the same: it reads files the server writes on your Mac and never connects
-to anything but Live.
+to anything but Live. When you ask it to, it also listens to Live's audio, in memory (see
+**Listening** below).
+
+The Remote Script inside Live accepts connections from this machine only, unless you put
+another address in a `bind_host.txt` file beside it.
 
 ## What is stored on your machine
 
@@ -39,6 +43,17 @@ folder. The server reads that file once to measure it (peak, RMS per bar, silenc
 stereo correlation), writes nothing, and the Mac app plays it in place. Captures are your
 project's files: nothing here copies, uploads or deletes them, and "Delete all local data"
 leaves them alone.
+
+## Listening
+
+The Mac app's Listen screen hears what Live is sending to your speakers through a macOS
+process tap of Live alone: not the microphone, not other apps, not the system. macOS asks
+you once whether the app may record audio from other apps, and you can take that back any
+time under System Settings › Privacy & Security › Screen & System Audio Recording. The
+audio is analysed in memory about thirty times a second — a spectrum, the master level, six
+range levels and a short waveform — and thrown away. It is never written to disk, never
+sent anywhere, and it stops the moment no window is showing it. The only thing stored is
+where you left the small float window.
 
 ## Library index
 

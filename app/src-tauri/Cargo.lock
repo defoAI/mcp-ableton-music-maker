@@ -6,6 +6,7 @@ version = 4
 name = "ableton-music-maker-app"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "chrono",
  "dirs",
  "mcp-ableton-music-maker",

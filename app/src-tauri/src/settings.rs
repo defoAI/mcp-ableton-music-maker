@@ -17,6 +17,12 @@ pub struct Settings {
     pub retention_days: u32,
     pub library: Option<String>,
     pub show_in_menu_bar: bool,
+    /// Where the Listen float window was left. Geometry only; no audio and
+    /// nothing about what was played is ever stored.
+    pub float_x: Option<f64>,
+    pub float_y: Option<f64>,
+    pub float_w: Option<f64>,
+    pub float_h: Option<f64>,
 }
 
 impl Default for Settings {
@@ -29,6 +35,10 @@ impl Default for Settings {
             retention_days: 7,
             library: None,
             show_in_menu_bar: true,
+            float_x: None,
+            float_y: None,
+            float_w: None,
+            float_h: None,
         }
     }
 }

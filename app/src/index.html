@@ -13,6 +13,7 @@
     <nav class="nav" aria-label="Sections">
       <button data-go="overview" aria-current="page"><span class="glyph">◉</span>Overview</button>
       <button data-go="activity"><span class="glyph">≡</span>Activity <span class="badge num" id="actbadge" hidden></span></button>
+      <button data-go="listen"><span class="glyph">∿</span>Listen <span class="led live" id="listen-led" hidden></span></button>
       <button data-go="setup"><span class="glyph">⇩</span>Setup <span class="badge" id="setupbadge" hidden>needs you</span></button>
       <button data-go="settings"><span class="glyph">⚙</span>Settings</button>
     </nav>
@@ -70,6 +71,37 @@
       <p class="note">Tokens are estimated from the size of what the tool received and returned, about four characters per token. The model's own context is not visible to the server, so this is the cost each call adds, not a bill.</p>
     </section>
 
+    <!-- LISTEN -->
+    <section class="screen" id="s-listen" hidden>
+      <div class="head"><h2>Listen</h2><span class="sub">What Live is putting out, right now</span></div>
+      <div class="listenbar" id="listenbar"></div>
+      <div id="listen-gate" hidden></div>
+      <div id="listen-scope" hidden>
+        <div class="scope">
+          <div class="spec">
+            <canvas id="spec" aria-label="Spectrum of Live's output, 20 Hz to 20 kHz, in dBFS"></canvas>
+            <div class="legend"><span><i class="sw-band"></i>now</span><span><i class="sw-hold"></i>peak hold</span></div>
+            <div class="peakbox">loudest band <b id="peakband">—</b></div>
+          </div>
+          <div class="meters">
+            <div class="mh"><span>MASTER</span><span class="clip"><i id="clipled"></i>clip</span></div>
+            <canvas id="meter" aria-label="Master level, left and right, in dBFS"></canvas>
+            <div class="readout">
+              <div><span>peak L / R</span><b id="pk" class="num">—</b></div>
+              <div><span>RMS</span><b id="rms" class="num">—</b></div>
+              <div><span>correlation</span><b id="corr" class="num">—</b></div>
+              <div><span>peak hold</span><b id="tph" class="num">—</b></div>
+            </div>
+          </div>
+        </div>
+        <div class="listen-words">
+          <div class="eyebrow">In words · the six ranges of a mix</div>
+          <div class="words" id="words"></div>
+          <p class="note">The ranges are named the way people talk about a mix, so what you see is what you can say to Claude. Each number is that range’s share of the whole, in dB; 0 dB would be all of it. Nothing here is recorded: the audio is measured in memory and thrown away.</p>
+        </div>
+      </div>
+    </section>
+
     <!-- SETUP -->
     <section class="screen" id="s-setup" hidden>
       <div class="head"><h2>Setup</h2><span class="sub">Four steps. The app checks each one for you.</span></div>
@@ -96,6 +128,7 @@
         <div class="srow"><span class="l">Activity log</span><span class="mono" id="data-activity">—</span><span class="h"><span class="path" id="data-activity-path"></span> — tool names, timings, sizes, results. Payloads only if you turned them on above.</span></div>
         <div class="srow"><span class="l">Running servers</span><span class="mono" id="data-sessions">—</span><span class="h"><span class="path" id="data-sessions-path"></span> — which client started a server, and when. Removed when it exits.</span></div>
         <div class="srow"><span class="l">Remote Script</span><span class="mono" id="data-script">—</span><span class="h"><span class="path" id="data-script-path"></span> — left alone by the button below.</span></div>
+        <div class="srow"><span class="l">Listening</span><span class="pill off">Nothing stored</span><span class="h">When you start listening, Live’s audio is analysed in memory about thirty times a second and discarded. Only Live’s process is heard; the float window’s position is the one thing remembered.</span></div>
         <div class="srow"><span class="l">Nothing is uploaded</span><span class="pill off">No upload path exists</span><span class="h">The server and this app have no network code except the connection to Live. <a href="#" data-open="https://github.com/defoAI/mcp-ableton-music-maker/blob/main/TERMS.md">Terms &amp; data use</a></span></div>
         <div class="srow"><span class="l">Delete all local data</span><button class="btn small" id="deletedata">Delete…</button><span class="h">Removes the activity log and heartbeats. Keeps the Remote Script, your client config, and the captures in Live's project folder.</span></div>
       </div>
@@ -108,6 +141,8 @@
   </main>
 </div>
 <div class="toast" id="toast"></div>
+<script src="spectrum.js"></script>
 <script src="app.js"></script>
+<script src="listen.js"></script>
 </body>
 </html>

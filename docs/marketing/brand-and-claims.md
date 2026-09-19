@@ -49,6 +49,8 @@ Do not introduce that name anywhere new; it is the upstream name.
 | "31 tools" | `grep -c '#\[tool(name = ' src/tools.rs` — count before printing |
 | "Every tool checks the Remote Script's version and capabilities before running" | `src/handshake.rs`; `require()` in every body |
 | "Works with Claude Desktop, Claude Code and Cursor" | README quickstart; all three are stdio clients |
+| "The Remote Script listens on this machine only by default" | `DEFAULT_HOST = "127.0.0.1"` in the Remote Script, pinned by `tests/local_only.rs`; [decision 0003](../decisions/0003-remote-script-bind-address.md). Always "by default": `bind_host.txt` can open it on purpose |
+| "The app hears Live only, in memory, and records nothing" | the tap names one process (`app/src-tauri/src/listen/tap.m`); the no-I/O test in the listen module; [decision 0007](../decisions/0007-app-hears-live-through-a-process-tap.md); `TERMS.md` Listening |
 | "Third-party integration, not made by Ableton" | **Mandatory** wherever the product is listed |
 | "Derived from AbletonMCP by Siddharth Ahuja, MIT" | `LICENSE` — the notice must be preserved |
 
@@ -57,7 +59,8 @@ Do not introduce that name anywhere new; it is the upstream name.
 - **"Official", "Ableton-approved", "partner", "verified by Ableton"** — never, on any surface.
 - **"Works with every version of Live"** — the arrangement tools are Live 11+, and there is
   no test matrix. Say "Live 11 and 12; Live 10 without the arrangement tools".
-- **"Listens only on localhost"** — not until [decision 0003](../decisions/0003-remote-script-bind-address.md) is made.
+- **"Listens only on localhost"** without "by default" — the override file exists on purpose; say "on this machine only by default" ([decision 0003](../decisions/0003-remote-script-bind-address.md)).
+- **"The app hears your whole Mac" or "records your audio"** — it taps Live's process only and keeps nothing ([decision 0007](../decisions/0007-app-hears-live-through-a-process-tap.md)).
 - **"No data is ever stored"** — the activity log is stored, locally. Say "nothing is
   uploaded" and point at `TERMS.md` for what is kept on the machine.
 - **"Independent project with no company behind it"** — this fork is maintained by DefoAI UG,

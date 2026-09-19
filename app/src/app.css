@@ -184,3 +184,69 @@ input[type="text"] { font: inherit; padding: 4px 8px; border: 1px solid var(--li
 .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--ink); color: var(--win); padding: 8px 14px; border-radius: 8px; font-size: 12px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 10; max-width: 80vw; }
 .toast.show { opacity: 1; }
 .empty { color: var(--ink-3); }
+
+/* ── Listen: the scope has its own dark ground, whatever the theme ────── */
+:root {
+  --scope: #14130F;
+  --scope-grid: #2B2A24;
+  --scope-ink: #9C9A92;
+  --band: #E39B21;
+  --band-hot: #F25A4F;
+  --hold: #FFFFFF;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --scope: #0E0D0B;
+    --scope-grid: #26251F;
+    --scope-ink: #8A877F;
+    --band: #EBA83A;
+    --hold: #EDEBE6;
+  }
+}
+
+.listenbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.listenbar .state { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.listenbar .facts { color: var(--ink-2); font-size: 12px; }
+.listenbar .bad-text { color: var(--bad); }
+.listenbar .spacer { flex: 1; min-width: 8px; }
+.listenbar.attn { border-color: var(--warn); background: var(--warn-soft); }
+.listenbar.down { border-color: var(--bad); background: var(--bad-soft); }
+
+.gate { border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px; display: grid; gap: 10px; max-width: 64ch; }
+.gate h3 { font-size: 15px; }
+.gate p { color: var(--ink-2); }
+.gate-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+
+.scope { display: grid; grid-template-columns: 1fr 180px; gap: 12px; }
+.spec { position: relative; background: var(--scope); border: 1px solid var(--line-strong); border-radius: var(--radius); overflow: hidden; }
+.spec canvas { display: block; width: 100%; height: 300px; }
+.spec .legend { position: absolute; top: 7px; left: 42px; display: flex; gap: 12px; font-family: var(--mono); font-size: 11px; color: var(--scope-ink); pointer-events: none; }
+.spec .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.spec .legend .sw-band { background: var(--band); }
+.spec .legend .sw-hold { background: var(--hold); }
+.spec .peakbox { position: absolute; top: 7px; right: 12px; font-family: var(--mono); font-size: 11px; color: var(--scope-ink); pointer-events: none; }
+.spec .peakbox b { color: var(--hold); font-weight: 500; }
+
+.meters { background: var(--scope); border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 9px 11px; display: grid; grid-template-rows: auto 1fr auto; gap: 8px; color: var(--scope-ink); font-family: var(--mono); font-size: 11px; }
+.meters .mh { display: flex; justify-content: space-between; align-items: center; }
+.meters canvas { display: block; width: 100%; height: 218px; }
+.meters .clip { display: inline-flex; align-items: center; gap: 5px; }
+.meters .clip i { width: 8px; height: 8px; border-radius: 50%; background: var(--scope-grid); }
+.meters .clip i.on { background: var(--band-hot); }
+.meters .readout { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.meters .readout div { display: grid; gap: 1px; }
+.meters .readout span { font-size: 10px; }
+.meters .readout b { color: var(--hold); font-weight: 500; font-size: 13px; }
+
+.listen-words { display: grid; gap: 8px; }
+.words { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.word { border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; display: grid; gap: 1px; }
+.word .k { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.word .v { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.word .d { font-size: 11px; color: var(--ink-2); }
+
+@media (max-width: 900px) {
+  .scope { grid-template-columns: 1fr; }
+  .meters canvas { height: 130px; }
+  .words { grid-template-columns: repeat(3, 1fr); }
+}

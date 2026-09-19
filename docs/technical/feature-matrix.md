@@ -150,6 +150,8 @@ Count the tools before quoting a total; the snapshot in
 | Setup: install the Remote Script, check Live, connect Claude Desktop / Claude Code / Cursor, test | Built |
 | Delete all local data: activity, sessions, the library index and the set exports | Built |
 | Activity: per-session table, detail, estimated tokens, filters, retention | Built |
+| Listen: spectrum, master meters, six ranges from a process tap of Live (macOS 14.4+; the app itself still runs on 12) | Built — `cargo test` in `app/src-tauri` (19 unit, 5 integration of which 2 need Live), `node --test app/src/listen.test.mjs` (16), `cargo run --example listen_probe` against Live |
+| Float window (always on top) and the full-screen visual (WebGL, eight presets) | Built |
 | Signed, notarised download | Not yet |
 
 ## The image contract

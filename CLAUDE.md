@@ -36,7 +36,7 @@ src/activity.rs        the local activity log: one JSON line per tool call, payl
 src/state.rs           state_dir / activity_dir / sessions_dir — the only places the server writes
 src/install.rs         installer logic (Library.cfg discovery, install with .bak)
 src/app.rs             startup handshake, heartbeat, stdio serve, shutdown, --status, --check
-app/                   the Mac companion app (Tauri 2): src-tauri/ links this crate, src/ is the UI
+app/                   the Mac companion app (Tauri 2): src-tauri/ links this crate, src/ is the UI; src-tauri/src/listen/ is the process tap of Live (Objective-C + Rust, decision 0007)
 src/notes.rs           compact note forms (csv, step strings, patterns, tiling) → plain Note objects
 src/audio.rs           WAV/AIFF reader and the capture measurements (peak, RMS per bar, silence, clipping)
 src/performance.rs     performance state, bar arithmetic, cue resolution (bars → beats, silence check), readout text
@@ -158,10 +158,10 @@ The product layer lives in `docs/` (index: `docs/README.md`), shaped after
 - **Any new data capture is a story with a Privacy section** naming the `TERMS.md` change
   and the test in `tests/privacy_defaults.rs` that pins the default as off.
 - **Decisions that cost real work to reverse go in `docs/decisions/`**, numbered, never
-  renumbered or deleted (`templates/decision.md`). Two are open — the Remote Script bind
-  address (0003) and who publishes the product and holds the data (0004). Do not resolve
-  them in prose; do not claim "listens only on localhost" or name a data controller until
-  they are decided.
+  renumbered or deleted (`templates/decision.md`). One is open — who publishes the product
+  and holds the data (0004). Do not resolve it in prose; do not name a data controller until
+  it is decided. The bind address is decided (0003: loopback by default, `bind_host.txt`
+  overrides), so say "listens on this machine only by default", never without "by default".
 - **Documents describe now.** No changelogs, no "previously this said", no superseded plan
   left beside a live one — git holds the history. The only date in a document is the
   `Verified` row in its header; move it only when you actually re-verified.

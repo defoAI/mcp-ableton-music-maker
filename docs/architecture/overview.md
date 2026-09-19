@@ -209,6 +209,8 @@ Code and Cursor, and derives everything it shows from files the server writes:
 | Activity | the session's `.jsonl`, re-read every 2 s; tokens are `ceil(chars / 4)`, labelled *est.* |
 | Setup | Library.cfg discovery for the script path and its `SCRIPT_VERSION`; `check`; the client config |
 | Settings | its own `settings.json`; the switches that concern the server are written into the client config's `env` block, because only the environment reaches a client-started server |
+| Listen | a Core Audio process tap of Live's process (`src/listen/tap.m`, compiled by `cc`; every 14.2 symbol weak-imported behind `@available`, so the app still launches on macOS 12), drained by an analysis thread into 72 log-spaced bands, master peak / RMS / correlation, six range shares and a 256-point waveform, sent to every window as a `listen:frame` event about thirty times a second. Nothing is written. Silence longer than three seconds asks Live over the existing socket whether its transport runs, so the screen can tell "quiet" from "the permission is off" |
+| Float, Visual | two more windows fed by the same events: a small always-on-top spectrum (`float.html`) and a WebGL feedback visualiser with eight presets and full screen (`visual.html`). Listening stops when no window is showing it |
 
 The menu bar item shows the same three states and the last call, refreshed in the background
 while the window is closed.
@@ -252,7 +254,8 @@ stage, `verify-image.sh`, trivy on CRITICAL, and on `main` push to
   activity line carries their sum, so what a tool cost Live is a number in the log. A slice
   over 25 ms is written to Live's log with the command name. The timeouts exist because a
   big audio import still blocks everything else.
-- **The bind address is an open decision** —
-  [0003](../decisions/0003-remote-script-bind-address.md).
+- **The Remote Script binds loopback by default** and `bind_host.txt` beside it overrides
+  that — [0003](../decisions/0003-remote-script-bind-address.md). `get_script_info` reports
+  `bind_host`, and `--check` prints it.
 - **Arrangement commands are Live 11+**; the script has Python 2 branches for Live 10 but no
   test matrix across versions.

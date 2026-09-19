@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live · master</title>
+<style>
+  /* The float window is always the scope's own dark, whatever the system
+     theme: it sits over Live, not over the app. */
+  :root {
+    --scope: #0E0D0B;
+    --scope-grid: #26251F;
+    --scope-ink: #8A877F;
+    --band: #EBA83A;
+    --band-hot: #F25A4F;
+    --hold: #EDEBE6;
+    --mono: "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--scope); color: var(--scope-ink);
+    font: 11px/1.4 var(--mono);
+    user-select: none; -webkit-user-select: none; overflow: hidden;
+    display: grid; grid-template-rows: auto 1fr;
+  }
+  header {
+    display: flex; align-items: center; gap: 8px; padding: 5px 9px;
+    border-bottom: 1px solid var(--scope-grid);
+  }
+  header .spacer { flex: 1; }
+  header b { color: var(--hold); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .led { width: 7px; height: 7px; border-radius: 50%; background: var(--band); }
+  canvas { display: block; width: 100%; height: 100%; }
+  .quiet { color: var(--scope-ink); }
+</style>
+</head>
+<body>
+<header data-tauri-drag-region>
+  <span class="led" id="led"></span>
+  <span data-tauri-drag-region>Live · master</span>
+  <span class="spacer" data-tauri-drag-region></span>
+  <span id="state" class="quiet">waiting</span>
+  <b id="peak">−∞</b>
+</header>
+<canvas id="spec"></canvas>
+<script src="spectrum.js"></script>
+<script>
+(function () {
+  const S = window.AMMSpectrum;
+  const spec = document.getElementById('spec');
+  const peak = document.getElementById('peak');
+  const stateEl = document.getElementById('state');
+  const led = document.getElementById('led');
+  let frame = null, drawn = null, raf = 0, lastText = 0;
+
+  function loop() {
+    raf = 0;
+    if (frame) {
+      drawn = S.smooth(drawn, frame, 'fast');
+      S.drawSpectrum(spec, drawn, { labels: false });
+      const now = performance.now();
+      if (now - lastText > 120) {
+        lastText = now;
+        peak.textContent = S.db(Math.max(frame.peak[0], frame.peak[1])) + ' dBFS';
+        const quiet = frame.silent;
+        stateEl.textContent = quiet ? (frame.live_playing === 1 ? 'no audio' : 'quiet') : 'listening';
+        led.style.background = quiet ? 'var(--scope-grid)' : (frame.clip ? 'var(--band-hot)' : 'var(--band)');
+      }
+    }
+    schedule();
+  }
+  function schedule() { if (!raf) raf = requestAnimationFrame(loop); }
+
+  window.__TAURI__.event.listen('listen:frame', (e) => { frame = e.payload; schedule(); });
+  window.__TAURI__.event.listen('listen:ended', () => {
+    frame = null; drawn = null;
+    stateEl.textContent = 'stopped';
+    led.style.background = 'var(--scope-grid)';
+    S.drawSpectrum(spec, null, { labels: false });
+  });
+  addEventListener('resize', schedule);
+  S.drawSpectrum(spec, null, { labels: false });
+  schedule();
+})();
+</script>
+</body>
+</html>

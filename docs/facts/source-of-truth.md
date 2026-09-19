@@ -50,10 +50,11 @@ Paths are relative to the repository root.
 | Fact | Authoritative source | How to check |
 |---|---|---|
 | Port | `DEFAULT_PORT` in the Remote Script; `ABLETON_PORT` on the server side (`RealBridge::from_env`) | |
-| Bind address | `HOST` in the Remote Script — currently `0.0.0.0`, which is [decision 0003](../decisions/0003-remote-script-bind-address.md), still open | |
+| Bind address | `DEFAULT_HOST` in the Remote Script (`127.0.0.1`), overridden by the first non-comment line of `bind_host.txt` beside it; reported as `bind_host` in `get_script_info` — [decision 0003](../decisions/0003-remote-script-bind-address.md) | `grep -n '^DEFAULT_HOST' AbletonMusicMaker_Remote_Script/__init__.py`; `ableton-music-maker --check` prints what the loaded script bound |
 | Per-command socket timeouts | `command_timeout` in `src/connection.rs` and the `MODIFYING_COMMANDS` list beside it | The README's troubleshooting row copies these |
 | Connect timeout | `TcpStream::connect_timeout` in `src/connection.rs` | |
 | Where Live is, from inside Docker | `ENV ABLETON_HOST=host.docker.internal` in the `Dockerfile` | |
+| What the Mac app hears | `app/src-tauri/src/listen/tap.m`: a Core Audio process tap of the process whose executable is inside an `Ableton Live*.app` bundle, unmuted; in memory only — [decision 0007](../decisions/0007-app-hears-live-through-a-process-tap.md) | the no-I/O test in `app/src-tauri/src/listen/mod.rs`; `cargo run --example listen_probe` in `app/src-tauri` with Live playing |
 
 ### Local data
 
@@ -100,7 +101,7 @@ matches on them.
 |---|---|---|
 | MCP tools | **99** | `src/tools.rs` |
 | Remote Script commands | **86** | `SCRIPT_CAPABILITIES` |
-| Remote Script version | **1.23.0** | `SCRIPT_VERSION` |
+| Remote Script version | **1.24.0** | `SCRIPT_VERSION` |
 | Server version | **2.0.0** | `Cargo.toml` |
 | Image size limit | **50** MB | `docker/verify-image.sh` |
 | Port | **9877** | `DEFAULT_PORT` |
@@ -108,6 +109,7 @@ matches on them.
 | Uploads | **none** — no code path exists | `tests/local_only.rs`, CI dependency gate |
 | Activity log | on by default, payloads off; `ABLETON_MCP_ACTIVITY=false` / `ABLETON_MCP_ACTIVITY_PAYLOADS=true` | `tests/activity.rs` |
 | Transport | stdio only | `src/app.rs` |
+| Bind address | **127.0.0.1** by default; `bind_host.txt` overrides | `DEFAULT_HOST` |
 | Live versions | 11 and 12 fully; 10 without the arrangement tools; untested beyond the script's own branches | the Remote Script |
 
 ### Surfaces known to carry stale facts today

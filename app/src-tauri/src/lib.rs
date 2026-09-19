@@ -6,13 +6,14 @@
 
 mod activity;
 mod clients;
+pub mod listen;
 mod settings;
 mod status;
 mod tray;
 
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub use settings::Settings;
 
@@ -176,6 +177,110 @@ fn show_window(app: AppHandle) {
     }
 }
 
+// ── listening to Live ───────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn listen_start(app: AppHandle) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || listen::start(&app))
+        .await
+        .map_err(err)?
+}
+
+#[tauri::command]
+fn listen_stop(app: AppHandle) -> Value {
+    listen::stop(&app)
+}
+
+#[tauri::command]
+fn listen_status(app: AppHandle) -> Result<Value, String> {
+    listen::status(&app)
+}
+
+/// The small always-on-top spectrum that sits beside Live's own window.
+#[tauri::command]
+fn listen_float(app: AppHandle, open: bool) -> Result<Value, String> {
+    if !open {
+        if let Some(w) = app.get_webview_window(FLOAT_LABEL) {
+            save_float_geometry(&app, &w);
+            let _ = w.close();
+        }
+        return Ok(json!({"open": false}));
+    }
+    if let Some(w) = app.get_webview_window(FLOAT_LABEL) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(json!({"open": true}));
+    }
+    let s = settings::load(&app);
+    let mut b = WebviewWindowBuilder::new(&app, FLOAT_LABEL, WebviewUrl::App("float.html".into()))
+        .title("Live · master")
+        .inner_size(s.float_w.unwrap_or(360.0), s.float_h.unwrap_or(180.0))
+        .min_inner_size(240.0, 120.0)
+        .always_on_top(true)
+        .skip_taskbar(false)
+        .resizable(true);
+    if let (Some(x), Some(y)) = (s.float_x, s.float_y) {
+        b = b.position(x, y);
+    }
+    b.build().map_err(err)?;
+    Ok(json!({"open": true}))
+}
+
+const FLOAT_LABEL: &str = "listen-float";
+const VISUAL_LABEL: &str = "listen-visual";
+
+/// The visual: a window of its own that can go full screen, drawn from the
+/// same frames the Listen screen receives. Listening keeps running while it
+/// is open, even with the main window hidden.
+#[tauri::command]
+fn listen_visual(app: AppHandle, open: bool, fullscreen: Option<bool>) -> Result<Value, String> {
+    if !open {
+        if let Some(w) = app.get_webview_window(VISUAL_LABEL) {
+            let _ = w.close();
+        }
+        return Ok(json!({"open": false}));
+    }
+    if let Some(w) = app.get_webview_window(VISUAL_LABEL) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        if let Some(full) = fullscreen {
+            let _ = w.set_fullscreen(full);
+        }
+        return Ok(json!({"open": true}));
+    }
+    WebviewWindowBuilder::new(&app, VISUAL_LABEL, WebviewUrl::App("visual.html".into()))
+        .title("Live · visual")
+        .inner_size(960.0, 600.0)
+        .min_inner_size(320.0, 200.0)
+        .resizable(true)
+        .fullscreen(fullscreen.unwrap_or(false))
+        .build()
+        .map_err(err)?;
+    Ok(json!({"open": true}))
+}
+
+/// Where the float window was left, so it comes back in the same place.
+fn save_float_geometry(app: &AppHandle, w: &tauri::WebviewWindow) {
+    let mut s = settings::load(app);
+    if let Ok(p) = w.outer_position() {
+        s.float_x = Some(p.x as f64);
+        s.float_y = Some(p.y as f64);
+    }
+    if let Ok(size) = w.inner_size() {
+        let scale = w.scale_factor().unwrap_or(1.0);
+        s.float_w = Some(size.width as f64 / scale);
+        s.float_h = Some(size.height as f64 / scale);
+    }
+    let _ = settings::save(app, &s);
+}
+
+/// The app's Tauri context: `tauri.conf.json`, the icons, the front end and,
+/// on macOS, the Info.plist with the audio-capture usage string merged in.
+/// One expansion for the crate, shared with the tests.
+pub fn context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -198,8 +303,14 @@ pub fn run() {
             set_settings,
             open_external,
             show_window,
+            listen_start,
+            listen_stop,
+            listen_status,
+            listen_float,
+            listen_visual,
         ])
         .setup(|app| {
+            app.manage(listen::Listen::default());
             let s = settings::load(app.handle());
             settings::apply_env(&s);
             activity::prune(app.handle(), s.retention_days);
@@ -208,12 +319,34 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the window keeps the menu bar item; Quit lives there.
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            let app = window.app_handle().clone();
+            match event {
+                // Closing the main window keeps the menu bar item; Quit lives
+                // there. Listening is something the producer can see, so it
+                // stops as soon as no window is showing it.
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    let label = window.label().to_string();
+                    if label == FLOAT_LABEL || label == VISUAL_LABEL {
+                        if label == FLOAT_LABEL {
+                            if let Some(w) = app.get_webview_window(FLOAT_LABEL) {
+                                save_float_geometry(&app, &w);
+                            }
+                        }
+                        listen::stop_if_unwatched(&app, &label);
+                        return;
+                    }
+                    api.prevent_close();
+                    let _ = window.hide();
+                    listen::stop_if_unwatched(&app, window.label());
+                }
+                tauri::WindowEvent::Destroyed => {
+                    // The Listen screen keeps its Float / Visual buttons honest.
+                    let _ = app.emit("listen:window-closed", json!({"label": window.label()}));
+                    listen::stop_if_unwatched(&app, window.label());
+                }
+                _ => {}
             }
         })
-        .run(tauri::generate_context!())
+        .run(context())
         .expect("error while running the app");
 }

@@ -13,6 +13,7 @@ pub struct TrayLines {
     client: MenuItem<tauri::Wry>,
     server: MenuItem<tauri::Wry>,
     live: MenuItem<tauri::Wry>,
+    listen: MenuItem<tauri::Wry>,
     last: MenuItem<tauri::Wry>,
     fix: MenuItem<tauri::Wry>,
 }
@@ -22,6 +23,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
     let server = MenuItem::with_id(app, "st_server", "○ Server not running", false, None::<&str>)?;
     let live = MenuItem::with_id(app, "st_live", "○ Live: checking…", false, None::<&str>)?;
     let last = MenuItem::with_id(app, "st_last", "No calls yet", false, None::<&str>)?;
+    let listen = MenuItem::with_id(app, "listen", "Listen to Live…", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Ableton Music Maker", true, None::<&str>)?;
     let activity = MenuItem::with_id(app, "activity", "Show Activity", true, None::<&str>)?;
     let fix = MenuItem::with_id(app, "fix", "Fix the connection…", true, None::<&str>)?;
@@ -35,6 +37,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
             &PredefinedMenuItem::separator(app)?,
             &last,
             &PredefinedMenuItem::separator(app)?,
+            &listen,
             &open,
             &activity,
             &fix,
@@ -46,6 +49,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         client,
         server,
         live,
+        listen,
         last,
         fix,
     });
@@ -56,6 +60,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show(app, None),
             "activity" => show(app, Some("activity")),
+            "listen" => show(app, Some("listen")),
             "fix" => show(app, Some("setup")),
             "quit" => app.exit(0),
             _ => {}
@@ -113,6 +118,12 @@ pub fn update(app: &AppHandle, st: &Value) {
     } else {
         "✕ Live not reachable".to_string()
     };
+    // Listening is visible wherever the app is: the menu bar says so too.
+    let _ = lines.listen.set_text(if crate::listen::is_listening(app) {
+        "● Listening to Live"
+    } else {
+        "Listen to Live…"
+    });
     let _ = lines.client.set_text(client_txt);
     let _ = lines.server.set_text(server_txt);
     let _ = lines.live.set_text(live_txt);

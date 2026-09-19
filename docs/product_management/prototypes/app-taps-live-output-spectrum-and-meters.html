@@ -1,0 +1,489 @@
+<title>Listen · Ableton Music Maker for Mac</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground: #E4E2DD;
+    --win: #FFFFFF;
+    --side: #F2F1EE;
+    --side-edge: #DCDAD4;
+    --panel: #F7F6F3;
+    --scope: #14130F;
+    --scope-grid: #2B2A24;
+    --scope-ink: #9C9A92;
+    --line: #E3E1DB;
+    --line-strong: #CFCCC4;
+    --ink: #1D1C1A;
+    --ink-2: #5C5A55;
+    --ink-3: #8C8983;
+    --accent: #0A7AFF;
+    --accent-ink: #FFFFFF;
+    --live: #E39B21;
+    --live-soft: #FBEFD8;
+    --good: #2FB344;
+    --good-soft: #E3F5E6;
+    --warn: #F08A00;
+    --warn-soft: #FDEEDC;
+    --bad: #E5372B;
+    --bad-soft: #FBE3E1;
+    --led-off: #C9C6BF;
+    --sel: #E7EFFB;
+    --band: #E39B21;
+    --band-hot: #F25A4F;
+    --hold: #FFFFFF;
+    --shadow: 0 18px 50px rgba(30, 25, 10, .18), 0 1px 0 rgba(0,0,0,.05);
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #141311; --win: #1B1A18; --side: #262523; --side-edge: #34322E; --panel: #232220;
+      --scope: #0E0D0B; --scope-grid: #26251F; --scope-ink: #8A877F;
+      --line: #34322E; --line-strong: #4A4740; --ink: #EDEBE6; --ink-2: #B3B0A8; --ink-3: #7E7B74;
+      --accent: #3D96FF; --accent-ink: #0B1420; --live: #EBA83A; --live-soft: #3A2E17;
+      --good: #4CC95F; --good-soft: #1E3322; --warn: #F5A030; --warn-soft: #3B2C14;
+      --bad: #F25A4F; --bad-soft: #3D1F1C; --led-off: #4A4740; --sel: #253549;
+      --band: #EBA83A; --band-hot: #F25A4F; --hold: #EDEBE6;
+      --shadow: 0 18px 50px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #141311; --win: #1B1A18; --side: #262523; --side-edge: #34322E; --panel: #232220;
+    --scope: #0E0D0B; --scope-grid: #26251F; --scope-ink: #8A877F;
+    --line: #34322E; --line-strong: #4A4740; --ink: #EDEBE6; --ink-2: #B3B0A8; --ink-3: #7E7B74;
+    --accent: #3D96FF; --accent-ink: #0B1420; --live: #EBA83A; --live-soft: #3A2E17;
+    --good: #4CC95F; --good-soft: #1E3322; --warn: #F5A030; --warn-soft: #3B2C14;
+    --bad: #F25A4F; --bad-soft: #3D1F1C; --led-off: #4A4740; --sel: #253549;
+    --band: #EBA83A; --band-hot: #F25A4F; --hold: #EDEBE6;
+    --shadow: 0 18px 50px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 13px/1.45 var(--ui); padding-block: 28px 48px; padding-inline: 16px; -webkit-font-smoothing: antialiased; }
+  h1, h2, h3, h4 { margin: 0; font-weight: 600; text-wrap: balance; }
+  p { margin: 0; }
+  button { font: inherit; color: inherit; }
+  code, .mono { font-family: var(--mono); font-size: 12px; }
+  .num { font-variant-numeric: tabular-nums; }
+  a { color: var(--accent); }
+
+  .stage { max-width: 1040px; margin: 0 auto; display: grid; gap: 18px; }
+  .stagebar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; color: var(--ink-2); }
+  .stagebar .name { font-weight: 600; color: var(--ink); }
+  .stagebar label { display: inline-flex; align-items: center; gap: 6px; }
+  .stagebar select, .stagebar .ghost { font: inherit; color: var(--ink); background: var(--win); border: 1px solid var(--line-strong); border-radius: 7px; padding: 4px 8px; }
+  .stagebar .ghost { cursor: pointer; }
+  .stagebar .ghost[aria-pressed="true"] { background: var(--sel); border-color: var(--accent); }
+
+  .menubar { position: relative; height: 26px; border-radius: 8px 8px 0 0; background: var(--side); border: 1px solid var(--side-edge); border-bottom: 0; display: flex; align-items: center; justify-content: flex-end; padding-inline: 10px; gap: 14px; font-size: 12px; color: var(--ink-2); }
+  .menubar .mb-item { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px; border-radius: 5px; }
+  .menubar .mb-item.on { background: var(--sel); color: var(--ink); }
+  .led { width: 8px; height: 8px; border-radius: 50%; background: var(--led-off); flex: none; }
+  .led.good { background: var(--good); }
+  .led.warn { background: var(--warn); }
+  .led.bad  { background: var(--bad); }
+  .led.live { background: var(--live); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 40%, transparent);} 50% { box-shadow: 0 0 0 5px transparent; } }
+
+  .window { position: relative; background: var(--win); border: 1px solid var(--side-edge); border-radius: 0 0 12px 12px; box-shadow: var(--shadow); overflow: hidden; display: grid; grid-template-columns: 208px 1fr; min-height: 640px; }
+  .sidebar { background: var(--side); border-right: 1px solid var(--side-edge); padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
+  .lights { display: flex; gap: 8px; padding: 2px 6px 14px; }
+  .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+  .lights i:nth-child(1) { background: #FF5F57; } .lights i:nth-child(2) { background: #FEBC2E; } .lights i:nth-child(3) { background: #28C840; }
+  .nav { display: grid; gap: 2px; }
+  .nav button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; padding: 6px 9px; background: transparent; border: 0; border-radius: 7px; cursor: pointer; color: var(--ink); }
+  .nav button[aria-current="page"] { background: var(--sel); font-weight: 600; }
+  button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .nav .glyph { width: 18px; height: 18px; display: grid; place-items: center; color: var(--ink-2); }
+  .nav .led { margin-left: auto; }
+  .side-foot { margin-top: auto; padding: 10px 8px 4px; color: var(--ink-3); font-size: 11px; display: grid; gap: 2px; }
+
+  .content { padding: 22px 26px 30px; display: grid; gap: 18px; align-content: start; min-width: 0; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .head h2 { font-size: 20px; letter-spacing: -.01em; }
+  .head .sub { color: var(--ink-2); }
+  .eyebrow { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  .note { color: var(--ink-3); font-size: 12px; }
+
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 7px; cursor: pointer; border: 1px solid var(--line-strong); background: var(--win); color: var(--ink); font-weight: 500; }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .btn.small { padding: 3px 9px; font-size: 12px; }
+  .btn:disabled { opacity: .55; cursor: default; }
+  .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 7px; overflow: hidden; }
+  .seg button { padding: 3px 10px; border: 0; background: var(--win); cursor: pointer; font-size: 12px; }
+  .seg button + button { border-left: 1px solid var(--line-strong); }
+  .seg button[aria-pressed="true"] { background: var(--sel); font-weight: 600; }
+
+  /* The listen bar: state + controls */
+  .listenbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+  .listenbar .state { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .listenbar .facts { color: var(--ink-2); font-size: 12px; }
+  .listenbar .spacer { flex: 1; }
+  .listenbar.attn { border-color: var(--warn); background: var(--warn-soft); }
+  .listenbar.down { border-color: var(--bad); background: var(--bad-soft); }
+
+  /* Blocking states: one card that replaces the scope */
+  .gate { border: 1px solid var(--line); border-radius: var(--radius); padding: 22px 24px; display: grid; gap: 10px; max-width: 560px; }
+  .gate h3 { font-size: 15px; }
+  .gate p { color: var(--ink-2); max-width: 62ch; }
+  .gate .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .gate .sysprompt { border: 1px solid var(--line-strong); border-radius: 12px; padding: 14px 16px; background: var(--win); display: grid; gap: 6px; max-width: 320px; box-shadow: var(--shadow); }
+  .gate .sysprompt b { font-size: 13px; }
+  .gate .sysprompt .row { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
+
+  /* The scope */
+  .scope { display: grid; grid-template-columns: 1fr 176px; gap: 12px; }
+  .scope.compact { grid-template-columns: 1fr; }
+  .spec { position: relative; background: var(--scope); border-radius: var(--radius); overflow: hidden; border: 1px solid var(--line-strong); }
+  .spec canvas { display: block; width: 100%; height: 300px; }
+  .spec .legend { position: absolute; top: 8px; left: 10px; display: flex; gap: 12px; font-size: 11px; color: var(--scope-ink); font-family: var(--mono); }
+  .spec .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .spec .peakbox { position: absolute; top: 8px; right: 10px; font-family: var(--mono); font-size: 11px; color: var(--scope-ink); text-align: right; }
+  .spec .peakbox b { color: var(--hold); font-weight: 500; }
+  .meters { background: var(--scope); border-radius: var(--radius); border: 1px solid var(--line-strong); padding: 10px 12px; display: grid; grid-template-rows: auto 1fr auto; gap: 8px; color: var(--scope-ink); font-family: var(--mono); font-size: 11px; }
+  .meters canvas { display: block; width: 100%; height: 232px; }
+  .meters .mh { display: flex; justify-content: space-between; align-items: center; }
+  .meters .clip { display: inline-flex; align-items: center; gap: 5px; }
+  .meters .clip i { width: 8px; height: 8px; border-radius: 50%; background: var(--scope-grid); }
+  .meters .clip i.on { background: var(--band-hot); }
+  .meters .readout { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .meters .readout div { display: grid; gap: 1px; }
+  .meters .readout span { color: var(--scope-ink); font-size: 10px; }
+  .meters .readout b { color: var(--hold); font-weight: 500; font-size: 13px; }
+
+  .words { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+  .word { border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; display: grid; gap: 1px; }
+  .word .k { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+  .word .v { font-family: var(--mono); font-size: 12px; }
+  .word .d { font-size: 11px; color: var(--ink-2); }
+
+  /* The float window */
+  .float { position: absolute; right: 22px; bottom: 26px; width: 340px; z-index: 6; background: var(--scope); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
+  .float[hidden] { display: none; }
+  .float .fh { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 11px; color: var(--scope-ink); font-family: var(--mono); border-bottom: 1px solid var(--scope-grid); }
+  .float .fh .spacer { flex: 1; }
+  .float canvas { display: block; width: 100%; height: 120px; }
+
+  .toast { position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 20px); background: var(--ink); color: var(--win); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: .2s; pointer-events: none; z-index: 20; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* Review notes */
+  .notes { display: grid; gap: 14px; color: var(--ink-2); }
+  .notes h2 { color: var(--ink); font-size: 17px; }
+  .notes p { max-width: 78ch; }
+  .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .card { background: var(--win); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: grid; gap: 8px; align-content: start; }
+  .card ul, .card ol { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+  .card b { color: var(--ink); }
+
+  @media (max-width: 860px) {
+    .window { grid-template-columns: 1fr; }
+    .sidebar { flex-direction: row; flex-wrap: wrap; }
+    .side-foot { display: none; }
+    .scope { grid-template-columns: 1fr; }
+    .meters canvas { height: 140px; }
+    .words { grid-template-columns: repeat(3, 1fr); }
+    .cols { grid-template-columns: 1fr; }
+    .float { position: static; width: auto; margin-top: 10px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .led.live { animation: none; } }
+</style>
+
+<div class="stage">
+  <div class="stagebar">
+    <span class="name">Prototype · Listen</span>
+    <label>Simulate
+      <select id="sim">
+        <option value="listening">Listening to Live</option>
+        <option value="idle">Not started yet</option>
+        <option value="ask">Permission not given yet</option>
+        <option value="denied">Silence: permission off</option>
+        <option value="nolive">Live not running</option>
+        <option value="oldmac">macOS 13, no tap API</option>
+        <option value="silent">Live open, transport stopped</option>
+      </select>
+    </label>
+    <button class="ghost" id="floattoggle" aria-pressed="false">Show float window</button>
+    <span style="margin-left:auto">Fake audio. Real copy, real units.</span>
+  </div>
+
+  <div>
+    <div class="menubar">
+      <span class="mb-item on"><span class="led good"></span>Music Maker</span>
+      <span class="mb-item" id="mblisten"><span class="led live"></span>Listening</span>
+      <span>Wed 14:31</span>
+    </div>
+
+    <div class="window">
+      <aside class="sidebar">
+        <div class="lights"><i></i><i></i><i></i></div>
+        <nav class="nav" aria-label="Sections">
+          <button><span class="glyph">◉</span>Overview</button>
+          <button><span class="glyph">≡</span>Activity</button>
+          <button aria-current="page"><span class="glyph">∿</span>Listen <span class="led live" id="navled"></span></button>
+          <button><span class="glyph">⇩</span>Setup</button>
+          <button><span class="glyph">⚙</span>Settings</button>
+        </nav>
+        <div class="side-foot">
+          <span>App 0.1 · server 2.0.0</span>
+          <span>Remote Script expected 1.22.0</span>
+          <span>Third-party, not made by Ableton</span>
+        </div>
+      </aside>
+
+      <main class="content">
+        <div class="head"><h2>Listen</h2><span class="sub">What Live is putting out, right now</span></div>
+
+        <div class="listenbar" id="listenbar"></div>
+
+        <div id="gate" hidden></div>
+
+        <div id="scopewrap">
+          <div class="scope" id="scope">
+            <div class="spec">
+              <canvas id="spec" width="1200" height="600" aria-label="Spectrum of Live's output, 20 Hz to 20 kHz, in dBFS"></canvas>
+              <div class="legend"><span><i style="background:var(--band)"></i>now</span><span><i style="background:var(--hold)"></i>peak hold 2 s</span></div>
+              <div class="peakbox">loudest band <b id="peakband">62 Hz · −9.4 dBFS</b></div>
+            </div>
+            <div class="meters">
+              <div class="mh"><span>MASTER</span><span class="clip"><i id="clipled"></i>clip</span></div>
+              <canvas id="meter" width="352" height="464" aria-label="Master level, left and right, in dBFS"></canvas>
+              <div class="readout">
+                <div><span>peak L / R</span><b id="pk" class="num">−3.2 / −3.6</b></div>
+                <div><span>RMS</span><b id="rms" class="num">−14.1</b></div>
+                <div><span>correlation</span><b id="corr" class="num">+0.71</b></div>
+                <div><span>peak hold</span><b id="tph" class="num">−1.8</b></div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid; gap:8px; margin-top:12px">
+            <div class="eyebrow">In words · the six ranges of a mix</div>
+            <div class="words" id="words"></div>
+            <p class="note">The ranges are named the way people talk about a mix, so what you see is what you can say to Claude. Each number is that range's share of the whole over the last second, in dB relative to the mix; 0 dB would be all of it.</p>
+          </div>
+        </div>
+      </main>
+
+      <div class="float" id="float" hidden>
+        <div class="fh"><span class="led live"></span><span>Live · master</span><span class="spacer"></span><span id="fpk">−3.2 dBFS</span><span title="Always on top">▲</span></div>
+        <canvas id="fspec" width="680" height="240"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h2>Design notes for review</h2>
+    <p>The app taps the audio Live sends to the speakers, on this Mac, through macOS's own process-tap API, and draws it. Nothing is routed, no virtual device is installed, and Live keeps playing through whatever output it had. The audio exists only in memory for the length of one analysis window and is never written, kept or sent. Only Live's process is tapped: not the microphone, not the browser, not the system.</p>
+    <div class="cols">
+      <div class="card">
+        <div class="eyebrow">Decisions taken in this prototype</div>
+        <ul>
+          <li><b>Tap Live's process, not the system.</b> Spotify in the background never shows up, and the permission asked for is the narrowest macOS offers.</li>
+          <li><b>Artist units.</b> dBFS with 0 at the top, like Live's own meters; a log frequency axis with the ranges named the way people talk about a mix: sub, bass, low mids, mids, presence, air.</li>
+          <li><b>The scope is the screen.</b> One spectrum, the master meters beside it, the words under it. No per-track lanes here: a tap hears the mix only.</li>
+          <li><b>Listening is visible.</b> A pulsing LED in the sidebar and the menu bar while the tap runs; closing the window or leaving the screen stops it.</li>
+          <li><b>A float window.</b> A small always-on-top copy so the spectrum can sit beside Live's window during a session.</li>
+          <li><b>Runs on the Mac you have.</b> The app still opens on macOS 12 and 13; the Listen screen explains what it needs there instead of the app refusing to launch.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="eyebrow">What the app has to grow</div>
+        <ul>
+          <li>A tap module in the Rust core: find Live's process, create the tap and a private aggregate device, read blocks on the audio thread into a ring buffer.</li>
+          <li>An analysis thread at ~30 frames a second: FFT, log-spaced bands in dB, peak and RMS per channel, correlation, peak hold. One small event per frame to the window.</li>
+          <li>The permission string in the bundle's Info.plist and a signed build, or macOS never shows the prompt.</li>
+          <li>The three tap symbols loaded at runtime so the binary still launches on macOS 12 and 13.</li>
+          <li>The server crate is untouched. Claude does not see this screen.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="eyebrow">Questions for the review</div>
+        <ol>
+          <li><b>Tap Live only, or the whole system?</b> Proposed: Live only.</li>
+          <li><b>Should Claude get these numbers?</b> Proposed: not in this story. Captures already give Claude a measured mix; a live feed would make the app a data source for the server, which is a new architecture.</li>
+          <li><b>Should the six range names join the sound vocabulary</b> so "more sub" and "less low mids" work in <code>shape_sound</code>? Proposed: a separate story; today the vocabulary is parameter words (cutoff, drive, reverb …).</li>
+          <li><b>Minimum macOS.</b> Proposed: keep 12 for the app, gate the screen at 14.4.</li>
+          <li><b>Float window in the first release?</b> Proposed: yes, it is what makes the screen useful during a session.</li>
+          <li><b>Scope view (waveform) too?</b> Proposed: later, as a second view on the same screen.</li>
+          <li><b>Per-track meters from the Remote Script beside the spectrum?</b> Proposed: a separate story; that data comes over the Live socket, not the tap.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  const $ = s => document.querySelector(s);
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const state = { sim: 'listening', float: false, t0: performance.now() };
+
+  // ---------- fake audio: a 126 BPM techno loop, in dB ----------
+  const BANDS = 72, FMIN = 20, FMAX = 20000;
+  const freqs = Array.from({length: BANDS}, (_, i) => FMIN * Math.pow(FMAX / FMIN, i / (BANDS - 1)));
+  const now = new Float32Array(BANDS).fill(-80), hold = new Float32Array(BANDS).fill(-80), holdAt = new Float32Array(BANDS);
+  let pkL = -80, pkR = -80, rmsL = -80, rmsR = -80, tph = -80, corr = 0.7, clip = false;
+  const rnd = () => Math.random();
+  function target(f, t) {
+    const beat = (t / 1000) * 126 / 60;                 // beats since start
+    const kick = Math.exp(-((beat % 1) * 7));           // decays over the beat
+    const hat  = Math.exp(-(((beat + .5) % 1) * 14));   // off-beat hats
+    const bassNote = 43.65 * (Math.floor(beat / 2) % 2 ? 1 : 1.335); // F1 / Bb1
+    let db = -18 - 4.5 * Math.log2(f / 100);                          // pink-ish slope
+    db += 14 * kick * Math.exp(-Math.pow(Math.log2(f / 55), 2) * 3);   // kick body
+    db += 9 * Math.exp(-Math.pow(Math.log2(f / bassNote), 2) * 6);     // bass fundamental
+    db += 4 * Math.exp(-Math.pow(Math.log2(f / (bassNote * 2)), 2) * 6);
+    db += 7 * hat * Math.exp(-Math.pow(Math.log2(f / 9000), 2) * 1.2);  // hats
+    db += 3 * Math.exp(-Math.pow(Math.log2(f / 2400), 2) * 2);         // pad presence
+    if (f > 16000) db -= (f - 16000) / 400;                            // top roll-off
+    return db + (rnd() - .5) * 3;
+  }
+  function step(t) {
+    const silent = state.sim === 'silent';
+    for (let i = 0; i < BANDS; i++) {
+      const tg = silent ? -80 : target(freqs[i], t);
+      now[i] = tg > now[i] ? tg : now[i] + (tg - now[i]) * 0.18;     // fast attack, slower release
+      if (now[i] >= hold[i] || t - holdAt[i] > 2000) { hold[i] = now[i]; holdAt[i] = t; }
+    }
+    const beat = (t / 1000) * 126 / 60, kick = Math.exp(-((beat % 1) * 7));
+    const tl = silent ? -80 : -6 + 4 * kick + (rnd() - .5) * .6, tr = tl - .4 + (rnd() - .5) * .4;
+    pkL = tl > pkL ? tl : pkL + (tl - pkL) * .12; pkR = tr > pkR ? tr : pkR + (tr - pkR) * .12;
+    const rl = silent ? -80 : -14.1 + 1.5 * kick, rr = rl - .3;
+    rmsL += (rl - rmsL) * .1; rmsR += (rr - rmsR) * .1;
+    tph = silent ? -80 : Math.max(tph - .02, Math.max(pkL, pkR) + .9);
+    corr = silent ? 0 : .71 + (rnd() - .5) * .04;
+    clip = !silent && tph > -0.1;
+  }
+
+  // ---------- drawing ----------
+  const scopeInk = () => getComputedStyle(document.documentElement).getPropertyValue('--scope-ink').trim();
+  const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const DBMIN = -72, DBMAX = 0;
+  const x0 = f => Math.log(f / FMIN) / Math.log(FMAX / FMIN);
+  function drawSpec(canvas, full) {
+    const c = canvas.getContext('2d'), W = canvas.width, H = canvas.height;
+    const padL = full ? 44 : 0, padB = full ? 34 : 0, padT = full ? 30 : 6, padR = full ? 14 : 0;
+    const gw = W - padL - padR, gh = H - padT - padB;
+    c.clearRect(0, 0, W, H);
+    c.fillStyle = cssVar('--scope'); c.fillRect(0, 0, W, H);
+    c.strokeStyle = cssVar('--scope-grid'); c.lineWidth = 1; c.fillStyle = scopeInk(); c.font = `${full ? 18 : 12}px ${cssVar('--mono')}`; c.textAlign = 'right';
+    for (let db = DBMAX; db >= DBMIN; db -= 12) {
+      const y = padT + (DBMAX - db) / (DBMAX - DBMIN) * gh;
+      c.beginPath(); c.moveTo(padL, y); c.lineTo(W - padR, y); c.stroke();
+      if (full) c.fillText(db === 0 ? '0' : String(db), padL - 8, y + 6);
+    }
+    c.textAlign = 'center';
+    for (const f of [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]) {
+      const x = padL + x0(f) * gw;
+      c.beginPath(); c.moveTo(x, padT); c.lineTo(x, padT + gh); c.stroke();
+      if (full) c.fillText(f >= 1000 ? (f / 1000) + 'k' : String(f), x, H - 10);
+    }
+    if (full) { c.textAlign = 'left'; c.fillText('dBFS', 6, padT - 10); }
+    const bw = gw / BANDS;
+    let loud = 0;
+    for (let i = 0; i < BANDS; i++) {
+      const v = Math.max(DBMIN, Math.min(DBMAX, now[i])), h = (v - DBMIN) / (DBMAX - DBMIN) * gh;
+      const x = padL + i * bw;
+      c.fillStyle = v > -6 ? cssVar('--band-hot') : cssVar('--band');
+      c.globalAlpha = .92; c.fillRect(x + 1, padT + gh - h, bw - 2, h); c.globalAlpha = 1;
+      const hv = Math.max(DBMIN, Math.min(DBMAX, hold[i])), hy = padT + gh - (hv - DBMIN) / (DBMAX - DBMIN) * gh;
+      c.fillStyle = cssVar('--hold'); c.globalAlpha = .8; c.fillRect(x + 1, hy - 1, bw - 2, 2); c.globalAlpha = 1;
+      if (now[i] > now[loud]) loud = i;
+    }
+    return loud;
+  }
+  function drawMeter(canvas) {
+    const c = canvas.getContext('2d'), W = canvas.width, H = canvas.height;
+    c.clearRect(0, 0, W, H); c.fillStyle = cssVar('--scope'); c.fillRect(0, 0, W, H);
+    const padT = 18, padB = 8, gh = H - padT - padB, lanes = [[pkL, rmsL, 40], [pkR, rmsR, 130]];
+    c.fillStyle = scopeInk(); c.font = `16px ${cssVar('--mono')}`; c.textAlign = 'right';
+    for (let db = 0; db >= -60; db -= 6) {
+      const y = padT + (-db) / 60 * gh;
+      c.fillStyle = cssVar('--scope-grid'); c.fillRect(30, y, 190, 1);
+      if (db % 12 === 0) { c.fillStyle = scopeInk(); c.fillText(String(db), 26 + 220, y + 6); }
+    }
+    for (const [pk, rms, x] of lanes) {
+      const yr = padT + Math.min(60, -rms) / 60 * gh, yp = padT + Math.min(60, -pk) / 60 * gh;
+      c.fillStyle = cssVar('--band'); c.fillRect(x, yr, 64, padT + gh - yr);
+      c.fillStyle = pk > -3 ? cssVar('--band-hot') : cssVar('--band'); c.globalAlpha = .55; c.fillRect(x, yp, 64, padT + gh - yp); c.globalAlpha = 1;
+      c.fillStyle = cssVar('--hold'); c.fillRect(x, yp - 1, 64, 2);
+    }
+    c.fillStyle = scopeInk(); c.textAlign = 'center'; c.fillText('L', 72, 14); c.fillText('R', 162, 14);
+  }
+  const fmt = v => (v <= -79 ? '−∞' : (v > 0 ? '+' : '−') + Math.abs(v).toFixed(1));
+  const rangeOf = [['sub', 20, 60, 'weight you feel'], ['bass', 60, 200, 'the note'], ['low mids', 200, 500, 'warmth, or mud'], ['mids', 500, 2000, 'body'], ['presence', 2000, 6000, 'edge, attack'], ['air', 6000, 20000, 'shine']];
+  function renderWords() {
+    const total = now.reduce((a, v) => a + Math.pow(10, v / 10), 0);
+    $('#words').innerHTML = rangeOf.map(([k, lo, hi, d]) => {
+      let e = 0; for (let i = 0; i < BANDS; i++) if (freqs[i] >= lo && freqs[i] < hi) e += Math.pow(10, now[i] / 10);
+      const rel = total > 0 ? 10 * Math.log10(e / total) : -80;
+      return `<div class="word"><span class="k">${k}</span><span class="v num">${fmt(rel)} dB</span><span class="d">${d}</span></div>`;
+    }).join('');
+  }
+  let frames = 0;
+  function frame(t) {
+    const live = state.sim === 'listening' || state.sim === 'silent';
+    if (live) {
+      step(t - state.t0);
+      const loud = drawSpec($('#spec'), true);
+      drawMeter($('#meter'));
+      if (state.float) drawSpec($('#fspec'), false);
+      if (frames++ % 6 === 0) {
+        const f = freqs[loud];
+        $('#peakband').textContent = `${f >= 1000 ? (f / 1000).toFixed(1) + ' kHz' : Math.round(f) + ' Hz'} · ${fmt(now[loud])} dBFS`;
+        $('#pk').textContent = `${fmt(pkL)} / ${fmt(pkR)}`; $('#rms').textContent = fmt(Math.max(rmsL, rmsR)); $('#corr').textContent = (corr >= 0 ? '+' : '−') + Math.abs(corr).toFixed(2); $('#tph').textContent = fmt(tph);
+        $('#fpk').textContent = `${fmt(Math.max(pkL, pkR))} dBFS`;
+        $('#clipled').classList.toggle('on', clip);
+        renderWords();
+      }
+    }
+    if (reduced) setTimeout(() => requestAnimationFrame(frame), 250); else requestAnimationFrame(frame);
+  }
+
+  // ---------- states ----------
+  const bars = {
+    listening: ['', '<span class="led live"></span>Listening to Live', 'pid 4821 · 48.0 kHz · 256-sample buffer · about 40 ms behind the speakers', '<span class="seg"><button aria-pressed="true">Spectrum</button><button disabled title="Later">Scope</button></span><span class="seg"><button aria-pressed="true">Fast</button><button>Slow</button></span><button class="btn small" data-act="float">Float</button><button class="btn small" data-act="stop">Stop</button>'],
+    silent: ['', '<span class="led live"></span>Listening to Live', 'pid 4821 · 48.0 kHz · Live is open and quiet: press play, or fire a section', '<button class="btn small" data-act="float">Float</button><button class="btn small" data-act="stop">Stop</button>'],
+    idle: ['', '<span class="led"></span>Not listening', 'Live is running. Start to see its output here.', '<button class="btn small primary" data-act="start">Start listening</button>'],
+    ask: ['attn', '<span class="led warn"></span>macOS needs your permission', 'One prompt, once. The app asks for Live\'s audio only, never the microphone.', '<button class="btn small primary" data-act="start">Start listening</button>'],
+    denied: ['down', '<span class="led bad"></span>Hearing only silence', 'Live says it is playing, but nothing arrives. macOS may have the permission off.', '<button class="btn small primary" data-act="settings">Open System Settings</button><button class="btn small" data-act="start">Try again</button>'],
+    nolive: ['attn', '<span class="led warn"></span>Live is not running', 'There is nothing to listen to until Live is open.', '<button class="btn small" disabled>Start listening</button>'],
+    oldmac: ['attn', '<span class="led warn"></span>Needs macOS 14.4 or later', 'This Mac runs macOS 13.6. Everything else in the app works here.', ''],
+  };
+  const gates = {
+    idle: `<div class="gate"><h3>See what Live is putting out</h3><p>The app listens to the audio Live sends to your speakers, on this Mac, and draws it: a spectrum from 20 Hz to 20 kHz and the master level in dBFS. Live keeps playing through the output it has; nothing is routed and nothing is recorded. The sound is analysed in memory and thrown away, about 30 times a second.</p><div class="actions"><button class="btn primary" data-act="start">Start listening</button></div></div>`,
+    ask: `<div class="gate"><h3>macOS will ask once</h3><p>The first time, macOS shows a prompt like the one below. Allowing it lets this app hear Live's output. It does not give access to the microphone or the screen, and you can take it back any time in System Settings › Privacy &amp; Security › Screen &amp; System Audio Recording.</p>
+      <div class="sysprompt"><b>"Ableton Music Maker" would like to record audio from other apps</b><span>To draw a spectrum and meters of what Ableton Live is playing. The audio stays in memory on this Mac and is never saved or sent.</span><div class="row"><button class="btn small">Don't Allow</button><button class="btn small primary" data-act="allow">Allow</button></div></div></div>`,
+    denied: `<div class="gate"><h3>Live is playing, but nothing arrives</h3><p>macOS does not tell an app whether it may hear other apps; it just delivers silence. Live reports that its transport is running, so the likely cause is the permission. Open <b>System Settings › Privacy &amp; Security › Screen &amp; System Audio Recording</b> and switch on <b>Ableton Music Maker</b> under System Audio Recording Only, then try again. Nothing else in the app is affected.</p><div class="actions"><button class="btn primary" data-act="settings">Open System Settings</button><button class="btn" data-act="start">Try again</button></div></div>`,
+    nolive: `<div class="gate"><h3>Open Live first</h3><p>The app listens to Live's own process, so it can only start once Live is running. Everything on the Overview and Setup screens still works.</p></div>`,
+    oldmac: `<div class="gate"><h3>This screen needs macOS 14.4</h3><p>Hearing another app's audio without installing a virtual audio driver is something macOS added in 14.4. This Mac runs 13.6, so the Listen screen is off here. Installing the Remote Script, connecting Claude and the activity log all work as before.</p></div>`,
+  };
+  function render() {
+    const [cls, st, facts, controls] = bars[state.sim];
+    const bar = $('#listenbar'); bar.className = 'listenbar ' + cls;
+    bar.innerHTML = `<span class="state">${st}</span><span class="facts">${facts}</span><span class="spacer"></span>${controls}`;
+    const live = state.sim === 'listening' || state.sim === 'silent';
+    $('#gate').hidden = live; $('#scopewrap').hidden = !live; $('#gate').innerHTML = gates[state.sim] || '';
+    $('#navled').style.visibility = live ? 'visible' : 'hidden'; $('#mblisten').style.display = live ? '' : 'none';
+    if (!live && state.float) { state.float = false; $('#float').hidden = true; $('#floattoggle').setAttribute('aria-pressed', 'false'); }
+  }
+  function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 1800); }
+  function setSim(s) { state.sim = s; $('#sim').value = s; render(); }
+  document.addEventListener('click', e => {
+    const act = e.target.closest('[data-act]'); if (!act) return;
+    const a = act.dataset.act;
+    if (a === 'start') { if (state.sim === 'idle') setSim('ask'); else if (state.sim === 'denied') toast('Still denied (prototype: allow it in the simulate menu)'); else setSim('listening'); }
+    if (a === 'allow') { setSim('listening'); toast('Listening. Live keeps playing as before.'); }
+    if (a === 'stop') { setSim('idle'); toast('Stopped. Nothing was kept.'); }
+    if (a === 'settings') toast('Prototype: would open Privacy & Security › Screen & System Audio Recording');
+    if (a === 'float') { state.float = true; $('#float').hidden = false; $('#floattoggle').setAttribute('aria-pressed', 'true'); toast('Floating: a small window that stays above Live'); }
+    const seg = e.target.closest('.seg button'); if (seg && !seg.disabled) { seg.parentElement.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b === seg)); }
+  });
+  $('#sim').addEventListener('change', e => setSim(e.target.value));
+  $('#floattoggle').addEventListener('click', () => { state.float = !state.float; $('#float').hidden = !state.float; $('#floattoggle').setAttribute('aria-pressed', state.float); });
+  render(); requestAnimationFrame(frame);
+})();
+</script>

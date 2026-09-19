@@ -11,10 +11,11 @@ Routine calls do not.
 |---|---|---|
 | [0001](0001-telemetry-opt-in-by-default.md) | Is telemetry on or off by default? | **Superseded by 0004** — was: both tiers off, opt-in only (2026-09-19). Still describes the code until the removal ships |
 | [0002](0002-rust-server-remote-script-stays-python.md) | Is the server Python or a compiled binary? | **Decided** — a Rust crate on `rmcp`; the Remote Script stays the one Python file because Live loads control surfaces only through its own interpreter (2026-09-19) |
-| [0003](0003-remote-script-bind-address.md) | Which address does the Remote Script bind? | **Open** — `0.0.0.0` today; `127.0.0.1` untested from Docker Desktop |
+| [0003](0003-remote-script-bind-address.md) | Which address does the Remote Script bind? | **Decided** — `127.0.0.1` by default; `bind_host.txt` beside the script overrides it (2026-09-19) |
 | [0004](0004-who-publishes-and-holds-the-data.md) | Who publishes this product and who holds the data? | **Decided** — both tiers are removed; nothing leaves the machine, so nobody holds data. DefoAI UG publishes the fork (2026-09-19) |
 | [0005](0005-mac-app-is-tauri-and-bundles-the-server.md) | Is the Mac app native Swift or Tauri, and does it bundle the server? | **Decided** — Tauri 2 in `app/`, depending on the crate as a library, shipping the server binary as a sidecar (2026-09-19) |
 | [0006](0006-one-artist-surface-raw-layer-marked-advanced.md) | Which tools does the server present, and in what units? | **Decided** — the artist's set (`CORE_TOOLS`) in five groups, dB and bars; the raw layer is served too, as `adv_<name>`, never hidden (2026-09-19) |
+| [0007](0007-app-hears-live-through-a-process-tap.md) | How does the Mac app hear what Live is playing? | **Decided** — a Core Audio process tap of Live's process only; the app's minimum macOS stays 12 (2026-09-19) |
 | [0007](0007-live-main-thread-only-in-slices.md) | Where does the Remote Script run its work, and how long may it hold Live? | **Decided** — one executor on Live's main thread, long work sliced per tick (8 ms while playing), one undo step per mutating command, `main_ms` on every reply and activity line (2026-09-19) |
 
 ## Already settled, recorded where they bind

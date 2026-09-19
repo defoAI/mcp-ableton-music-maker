@@ -437,6 +437,7 @@
     if (screen === 'setup') { renderSetup(); loadClientInfo(); }
     if (screen === 'settings') loadSettings();
     if (screen === 'activity') { renderActivity(); loadCaptures(); }
+    if (window.__listen) window.__listen.onScreen(screen);
   }
   window.__goto = go;
 
