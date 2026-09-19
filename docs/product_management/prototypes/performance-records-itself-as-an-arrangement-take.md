@@ -97,13 +97,12 @@ Now: Verse, bar 10 of 16. Next: Drop at bar 33.
 Fading over 4 bars, stopping on the bar.
 
 Take recorded: bars 129–214 of the Arrangement, 86 bars on 5 tracks.
-Locators mark each section: Intro 129, Verse 137, Drop 161, Break 193, Outro 199.
 Back to Arrangement is on, so the tracks follow the timeline again.
 Press Cmd+S in Live to keep it.
 ```
 
-**Claude:** Done — 86 bars from bar 129, with a locator on each section so you can find the
-drop. Nothing before bar 129 was touched. Save in Live if you want to keep it.
+**Claude:** Done — 86 bars from bar 129. Nothing before bar 129 was touched. Save in Live if
+you want to keep it.
 
 ---
 
@@ -238,9 +237,10 @@ Now: Intro, bar 1 of 8. Next: Verse at bar 9.
 1. **How long is the answer remembered?** Scene 4 remembers "after" for the session. Should
    `replace` ever be remembered, or always be said again? (Proposed: never remembered — the
    Arrangement it would delete is different material each time.)
-2. Scene 3 puts a **locator per section**. That is one `create_locator` per section launch,
-   on Live's main thread, mid-performance (decision 0007, issue #43). Worth the cost, or
-   only at the take's start, or written at `end_performance` from the jump history?
+2. **A locator per section** would make a take navigable, but it is one `create_locator` per
+   section launch on Live's main thread mid-performance (decision 0007, issue #43). Not
+   built for that reason — worth the cost, or written at `end_performance` from the jump
+   history the server already holds?
 3. Should there be a **blank bar between takes**? Scene 4 uses none.
 4. Scene 3 says "Back to Arrangement is on". Should `end_performance` always do that, or
    only when it recorded?

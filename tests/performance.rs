@@ -85,6 +85,7 @@ async fn start(server: &tools::Server) -> CallToolResult {
                 disarm: true,
                 limiter: false,
                 follow_key: false,
+                record: "off".into(),
             },
             tools::start_performance_body,
         )
@@ -816,6 +817,7 @@ async fn start_performance_disarms_and_sets_the_key_in_live() {
                 disarm: true,
                 limiter: false,
                 follow_key: false,
+                record: "off".into(),
             },
             tools::start_performance_body,
         )
@@ -862,6 +864,7 @@ async fn start_performance_disarms_and_sets_the_key_in_live() {
                 disarm: false,
                 limiter: false,
                 follow_key: false,
+                record: "off".into(),
             },
             tools::start_performance_body,
         )
@@ -1350,4 +1353,332 @@ async fn snapshots_variations_and_undo() {
         "{}",
         text_of(&r)
     );
+}
+
+// ── the Arrangement take ────────────────────────────────────────────────────
+// A performance is kept as a take by default. When the Arrangement already
+// holds something, the producer is asked what to do with it, and nothing in
+// Live moves until they answer.
+
+/// The bridge with an Arrangement that already has 128 bars on 5 tracks.
+fn bridge_with_arrangement(bars: i64) -> Arc<FakeBridge> {
+    let b = bridge();
+    b.script(
+        "arrangement_summary",
+        vec![
+            json!({"supported": true, "end_beat": (bars * 4) as f64, "bars": bars,
+                    "clips": bars / 8, "tracks": if bars > 0 { 5 } else { 0 }, "beats_per_bar": 4}),
+        ],
+    );
+    b.script(
+        "start_arrangement_record",
+        vec![
+            json!({"from_beat": 512.0, "from_bar": 129, "replaced_clips": 16,
+                    "replaced_tracks": 5, "record_mode": true}),
+        ],
+    );
+    b.script(
+        "stop_arrangement_record",
+        vec![
+            json!({"clips": 20, "tracks": 5, "end_beat": 856.0, "end_bar": 214,
+                    "from_beat": 512.0, "from_bar": 129, "record_mode": false}),
+        ],
+    );
+    b
+}
+
+async fn start_with(server: &tools::Server, record: &str) -> CallToolResult {
+    server
+        .run(
+            &tools::START_PERFORMANCE,
+            StartPerformanceParams {
+                scene: Some(json!("Intro")),
+                quantization: "1_bar".into(),
+                key: None,
+                tempo: None,
+                disarm: true,
+                limiter: false,
+                follow_key: false,
+                record: record.into(),
+            },
+            tools::start_performance_body,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_full_arrangement_is_asked_about_and_nothing_moves() {
+    let b = bridge_with_arrangement(128);
+    let server = server_with(b.clone());
+    let r = start_with(&server, "ask").await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    let t = text_of(&r);
+    assert!(t.contains("128 bars on 5 tracks"), "{t}");
+    assert!(t.contains("after    record the take from bar 129"), "{t}");
+    assert!(t.contains("replace  delete those 128 bars"), "{t}");
+    assert!(t.contains("off      play without recording"), "{t}");
+    // AC1: the read, and nothing else. No quantization, no fire, no arming.
+    assert_eq!(
+        b.commands(),
+        vec!["get_performance_state", "arrangement_summary"],
+        "a question must arrive before anything in Live has moved"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_arrangement_records_from_bar_one_without_asking() {
+    let b = bridge_with_arrangement(0);
+    b.script(
+        "start_arrangement_record",
+        vec![json!({"from_beat": 0.0, "from_bar": 1, "replaced_clips": 0,
+                    "replaced_tracks": 0, "record_mode": true})],
+    );
+    let server = server_with(b.clone());
+    let r = start_with(&server, "ask").await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let t = text_of(&r);
+    assert!(t.contains("from bar 1"), "{t}");
+    assert!(t.contains("nothing to ask about"), "{t}");
+    let sent = b.sent();
+    let arm = sent
+        .iter()
+        .find(|(c, _)| c == "start_arrangement_record")
+        .expect("armed");
+    assert_eq!(arm.1["from_beat"], json!(0.0));
+    assert_eq!(arm.1["replace"], json!(false));
+}
+
+#[tokio::test]
+async fn after_records_past_what_is_already_there() {
+    let b = bridge_with_arrangement(128);
+    let server = server_with(b.clone());
+    let r = start_with(&server, "after").await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let t = text_of(&r);
+    assert!(t.contains("Recording this take from bar 129"), "{t}");
+    assert!(t.contains("Everything before it is untouched"), "{t}");
+    let sent = b.sent();
+    let arm = sent
+        .iter()
+        .find(|(c, _)| c == "start_arrangement_record")
+        .expect("armed");
+    // AC6/AC9: the bar line after the last clip, and no deletion.
+    assert_eq!(arm.1["from_beat"], json!(512.0));
+    assert_eq!(arm.1["replace"], json!(false));
+    // AC9: the playhead and the arming happen before the fire.
+    let order = b.commands();
+    let armed_at = order.iter().position(|c| c == "start_arrangement_record");
+    let fired_at = order.iter().position(|c| c == "fire_scene");
+    assert!(armed_at < fired_at, "{order:?}");
+}
+
+#[tokio::test]
+async fn replace_deletes_what_is_there_and_says_there_is_no_undo() {
+    let b = bridge_with_arrangement(128);
+    let server = server_with(b.clone());
+    let r = start_with(&server, "replace").await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let t = text_of(&r);
+    assert!(t.contains("Deleted 128 bars"), "{t}");
+    assert!(t.contains("Cmd+Z in Live is the way back"), "{t}");
+    let sent = b.sent();
+    let arm = sent
+        .iter()
+        .find(|(c, _)| c == "start_arrangement_record")
+        .expect("armed");
+    assert_eq!(arm.1["from_beat"], json!(0.0));
+    assert_eq!(arm.1["replace"], json!(true));
+}
+
+#[tokio::test]
+async fn off_records_nothing_at_all() {
+    let b = bridge_with_arrangement(128);
+    let server = server_with(b.clone());
+    let r = start_with(&server, "off").await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let cmds = b.commands();
+    assert!(
+        !cmds.contains(&"arrangement_summary".to_string()),
+        "{cmds:?}"
+    );
+    assert!(
+        !cmds.contains(&"start_arrangement_record".to_string()),
+        "{cmds:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_answer_is_refused_rather_than_guessed() {
+    let b = bridge_with_arrangement(128);
+    let server = server_with(b.clone());
+    let r = start_with(&server, "probably").await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    assert!(b.commands().is_empty(), "{:?}", b.commands());
+}
+
+#[tokio::test]
+async fn the_answer_is_remembered_but_replace_never_is() {
+    // "after" answered once, then a second performance does not ask.
+    let b = bridge_with_arrangement(128);
+    let server = server_with(b.clone());
+    assert!(!is_error(&start_with(&server, "after").await));
+    end_now(&server).await;
+    let r = start_with(&server, "ask").await;
+    assert!(!is_error(&r), "asked again: {}", text_of(&r));
+    assert!(text_of(&r).contains("from bar 129"), "{}", text_of(&r));
+
+    // "replace" is not remembered: the next performance asks again.
+    let b = bridge_with_arrangement(128);
+    let server = server_with(b.clone());
+    assert!(!is_error(&start_with(&server, "replace").await));
+    end_now(&server).await;
+    let r = start_with(&server, "ask").await;
+    assert!(is_error(&r), "replace was remembered: {}", text_of(&r));
+}
+
+#[tokio::test]
+async fn a_live_that_cannot_report_the_arrangement_does_not_record() {
+    let b = bridge();
+    b.script(
+        "arrangement_summary",
+        vec![json!({"supported": false, "end_beat": 0.0, "bars": 0, "clips": 0, "tracks": 0})],
+    );
+    let server = server_with(b.clone());
+    let r = start_with(&server, "ask").await;
+    // AC13: it plays, it just does not record, and it says why.
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let t = text_of(&r);
+    assert!(t.contains("Live 11 or newer"), "{t}");
+    assert!(
+        !b.commands()
+            .contains(&"start_arrangement_record".to_string()),
+        "{:?}",
+        b.commands()
+    );
+}
+
+#[tokio::test]
+async fn a_performance_is_never_blocked_by_a_failed_read() {
+    let b = bridge();
+    // arrangement_summary is left unscripted and the bridge's default answer
+    // carries no "supported", so the take is refused rather than guessed.
+    let server = server_with(b.clone());
+    let r = start_with(&server, "after").await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    assert!(text_of(&r).contains("Not recording"), "{}", text_of(&r));
+}
+
+async fn end_now(server: &tools::Server) -> CallToolResult {
+    server
+        .run(
+            &tools::END_PERFORMANCE,
+            EndPerformanceParams {
+                at: None,
+                fade_bars: None,
+                now: true,
+            },
+            tools::end_performance_body,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn end_performance_stops_the_take_and_reports_the_bars() {
+    let b = bridge_with_arrangement(128);
+    let server = server_with(b.clone());
+    assert!(!is_error(&start_with(&server, "after").await));
+    let r = end_now(&server).await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let t = text_of(&r);
+    assert!(t.contains("Take recorded: bars 129–214"), "{t}");
+    assert!(t.contains("86 bars on 5 tracks"), "{t}");
+    assert!(t.contains("Back to Arrangement is on"), "{t}");
+    let sent = b.sent();
+    let stop = sent
+        .iter()
+        .find(|(c, _)| c == "stop_arrangement_record")
+        .expect("stopped");
+    assert_eq!(stop.1["from_beat"], json!(512.0));
+    assert_eq!(stop.1["back_to_arrangement"], json!(true));
+}
+
+#[tokio::test]
+async fn the_readout_says_a_take_is_recording() {
+    let b = bridge_with_arrangement(128);
+    let server = server_with(b.clone());
+    assert!(!is_error(&start_with(&server, "after").await));
+    let r = server
+        .run(
+            &tools::GET_PERFORMANCE_STATE,
+            tools::GetPerformanceStateParams::default(),
+            tools::get_performance_state_body,
+        )
+        .await;
+    assert!(
+        text_of(&r).contains("into the Arrangement from bar 129"),
+        "{}",
+        text_of(&r)
+    );
+}
+
+#[tokio::test]
+async fn a_take_is_disarmed_when_the_performance_cannot_start() {
+    let b = bridge_with_arrangement(128);
+    let server = server_with(b.clone());
+    // The scene cannot be resolved — a failure after the take is armed.
+    let r = server
+        .run(
+            &tools::START_PERFORMANCE,
+            StartPerformanceParams {
+                scene: Some(json!("No Such Section")),
+                quantization: "1_bar".into(),
+                key: None,
+                tempo: None,
+                disarm: true,
+                limiter: false,
+                follow_key: false,
+                record: "after".into(),
+            },
+            tools::start_performance_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    // AC16: Live is not left recording into a performance that never began.
+    assert!(
+        b.commands()
+            .contains(&"stop_arrangement_record".to_string()),
+        "{:?}",
+        b.commands()
+    );
+}
+
+#[tokio::test]
+async fn a_take_never_touches_what_is_already_in_the_arrangement() {
+    // AC7: the criterion the whole design rests on. An appended take sends
+    // nothing that could shorten, move or delete existing Arrangement clips.
+    let b = bridge_with_arrangement(128);
+    let server = server_with(b.clone());
+    assert!(!is_error(&start_with(&server, "after").await));
+    end_now(&server).await;
+    let destructive = [
+        "delete_arrangement_clip",
+        "delete_arrangement_clips",
+        "duplicate_arrangement_clip",
+        "place_clips",
+        "set_arrangement_clip_name",
+        "delete_clip",
+        "delete_track",
+    ];
+    for c in b.commands() {
+        assert!(
+            !destructive.contains(&c.as_str()),
+            "an appended take sent '{c}'"
+        );
+    }
+    let sent = b.sent();
+    let arm = sent
+        .iter()
+        .find(|(c, _)| c == "start_arrangement_record")
+        .expect("armed");
+    assert_eq!(arm.1["replace"], json!(false), "nothing may be replaced");
 }

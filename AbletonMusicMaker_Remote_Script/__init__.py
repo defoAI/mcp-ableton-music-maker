@@ -60,7 +60,7 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.24.0"
+SCRIPT_VERSION = "1.25.0"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
@@ -171,6 +171,9 @@ SCRIPT_CAPABILITIES = [
     "create_return_track",
     "create_tracks",
     "write_clips",
+    "arrangement_summary",
+    "start_arrangement_record",
+    "stop_arrangement_record",
 ]
 
 def create_instance(c_instance):
@@ -216,6 +219,8 @@ class AbletonMCP(ControlSurface):
         # Performance mode: while on, every response carries a clock and the
         # tick watches which scene row plays (phrases count from there).
         self._performance_mode = False
+        # True while this script armed Live's Arrangement Record for a take.
+        self._arr_recording = False
         self._scene_phrase = {}     # scene index -> bars per phrase
         self._scene_started = {}    # scene index -> bar it last started on
         self._current_scene = None
@@ -441,6 +446,7 @@ class AbletonMCP(ControlSurface):
         "restore_mix", "capture_scene", "duplicate_scene", "set_clip_groove", "set_device_parameter",
         "set_device_parameters", "place_clips", "delete_arrangement_clips",
         "duplicate_arrangement_clip", "create_return_track", "create_tracks", "write_clips",
+        "start_arrangement_record", "stop_arrangement_record",
     ])
 
     def _slice_budget(self):
@@ -710,6 +716,14 @@ class AbletonMCP(ControlSurface):
             result = self._delete_arrangement_clips(
                 params.get("track_index", 0), params.get("indices"),
                 params.get("all", False), params.get("from_beat"), params.get("to_beat"))
+        elif command_type == "arrangement_summary":
+            result = self._arrangement_summary()
+        elif command_type == "start_arrangement_record":
+            result = self._start_arrangement_record(
+                params.get("from_beat", 0.0), params.get("replace", False))
+        elif command_type == "stop_arrangement_record":
+            result = self._stop_arrangement_record(
+                params.get("from_beat"), params.get("back_to_arrangement", True))
         elif command_type == "duplicate_arrangement_clip":
             result = self._duplicate_arrangement_clip(
                 params.get("track_index", 0), params.get("clip_index", 0),
@@ -1928,6 +1942,134 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error duplicating arrangement clip: " + str(e))
             raise
+
+    def _arrangement_summary(self):
+        """What the Arrangement holds, in one pass: the last beat any clip ends
+        on, how many clips there are and how many tracks carry one. Needs
+        track.arrangement_clips (Live 11+); on an older Live it reports
+        supported False and the server records nothing rather than recording
+        over work it cannot see."""
+        try:
+            end = 0.0
+            clips = 0
+            tracks = 0
+            supported = True
+            for track in self._song.tracks:
+                yield None
+                try:
+                    arranged = list(track.arrangement_clips)
+                except Exception:
+                    supported = False
+                    break
+                if not arranged:
+                    continue
+                tracks += 1
+                clips += len(arranged)
+                for clip in arranged:
+                    ends = float(clip.end_time)
+                    if ends > end:
+                        end = ends
+            bpb = self._beats_per_bar()
+            bars = int(math.ceil(end / float(bpb))) if end > 0 else 0
+            yield Done({"supported": supported, "end_beat": end, "bars": bars,
+                        "clips": clips, "tracks": tracks, "beats_per_bar": bpb})
+        except Exception as e:
+            self.log_message("Error reading the arrangement summary: " + str(e))
+            raise
+
+    def _start_arrangement_record(self, from_beat=0.0, replace=False):
+        """Arm Live's Arrangement Record so the performance is written down.
+
+        With replace, every Arrangement clip on every track is deleted first —
+        the producer asked for that by name, having been told how many bars it
+        is. The playhead is set before record_mode, so the first bar played is
+        the first bar of the take. Starting the transport is left to the
+        caller's fire."""
+        try:
+            removed_clips = 0
+            removed_tracks = 0
+            if replace:
+                for track in self._song.tracks:
+                    yield None
+                    try:
+                        arranged = list(track.arrangement_clips)
+                    except Exception:
+                        continue
+                    if not arranged:
+                        continue
+                    removed_tracks += 1
+                    for clip in arranged:
+                        track.delete_clip(clip)
+                        removed_clips += 1
+            start = float(from_beat)
+            if start < 0.0:
+                start = 0.0
+            song = self._song
+            song.current_song_time = start
+            song.record_mode = True
+            self._arr_recording = True
+            self._arm_perf_tick()
+            bpb = self._beats_per_bar()
+            yield Done({"from_beat": start, "from_bar": int(start // bpb) + 1,
+                        "replaced_clips": removed_clips,
+                        "replaced_tracks": removed_tracks,
+                        "record_mode": bool(song.record_mode)})
+        except Exception as e:
+            self.log_message("Error starting the arrangement record: " + str(e))
+            raise
+
+    def _stop_arrangement_record(self, from_beat=None, back_to_arrangement=True):
+        """Disarm Arrangement Record and report the take: the clips that end
+        after the take's first beat, and the tracks carrying them. Also puts
+        the tracks back on the timeline, so the set is not left overridden by
+        the Session clips the performance fired."""
+        try:
+            song = self._song
+            self._clear_record_mode()
+            start = None if from_beat is None else float(from_beat)
+            clips = 0
+            tracks = 0
+            end = 0.0
+            for track in self._song.tracks:
+                yield None
+                try:
+                    arranged = list(track.arrangement_clips)
+                except Exception:
+                    continue
+                hit = 0
+                for clip in arranged:
+                    ends = float(clip.end_time)
+                    if start is None or ends > start + 1e-6:
+                        hit += 1
+                        if ends > end:
+                            end = ends
+                if hit:
+                    tracks += 1
+                    clips += hit
+            if back_to_arrangement:
+                try:
+                    song.back_to_arranger = False
+                except Exception as e:
+                    self.log_message("could not return to the arrangement: " + str(e))
+            bpb = self._beats_per_bar()
+            yield Done({"clips": clips, "tracks": tracks, "end_beat": end,
+                        "end_bar": (int(math.ceil(end / float(bpb))) if end > 0 else 0),
+                        "from_beat": start,
+                        "from_bar": (None if start is None else int(start // bpb) + 1),
+                        "record_mode": bool(self._safe_song_property("record_mode", bool, False))})
+        except Exception as e:
+            self.log_message("Error stopping the arrangement record: " + str(e))
+            raise
+
+    def _clear_record_mode(self):
+        """Take Live out of Arrangement Record, whoever asked. Used by the stop
+        command and by the performance tick when the transport stops, so a
+        half-finished take never leaves the set armed."""
+        self._arr_recording = False
+        try:
+            self._song.record_mode = False
+        except Exception as e:
+            self.log_message("could not clear record_mode: " + str(e))
 
     def _live_notes(self, notes):
         """Note objects as the tuples clip.set_notes takes."""
@@ -4547,6 +4689,8 @@ class AbletonMCP(ControlSurface):
         now = float(song.current_song_time)
         bpb = self._beats_per_bar()
         self._perf_record_step(playing)
+        if self._arr_recording and not playing:
+            self._clear_record_mode()
         if self._performance_mode and playing:
             self._watch_scene_rows()
             self._level_tick(self._bar_position()[0])

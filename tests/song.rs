@@ -136,6 +136,7 @@ fn running_song(
             jump_history: history,
             started_bar: 17,
         }),
+        take: None,
     });
 }
 
@@ -303,7 +304,10 @@ async fn play_song_starts_a_performance_fires_the_first_entry_and_schedules_one_
     let r = server
         .run(
             &tools::PLAY_SONG,
-            PlaySongParams { from: None },
+            PlaySongParams {
+                from: None,
+                record: "off".into(),
+            },
             mcp_ableton_music_maker::sections::play_song_body,
         )
         .await;
@@ -348,7 +352,10 @@ async fn play_song_starts_a_performance_fires_the_first_entry_and_schedules_one_
     let r = server2
         .run(
             &tools::PLAY_SONG,
-            PlaySongParams { from: None },
+            PlaySongParams {
+                from: None,
+                record: "off".into(),
+            },
             mcp_ableton_music_maker::sections::play_song_body,
         )
         .await;
@@ -1072,6 +1079,7 @@ async fn every_section_tool_is_listed_and_a_set_without_suffixes_behaves_as_befo
         cues_cancelled: 0,
         follow_key: false,
         song: None,
+        take: None,
     });
     let r = server
         .run(
@@ -1444,6 +1452,93 @@ async fn fill_drop_and_sweep_transitions_and_the_standalone_retime() {
     assert!(
         is_error(&r) && text_of(&r).contains("to must be half_time or double_time"),
         "{}",
+        text_of(&r)
+    );
+}
+
+#[tokio::test]
+async fn play_song_asks_about_a_full_arrangement_before_a_note_plays() {
+    // AC5: the same question, whichever tool the producer reached for.
+    let b = bridge();
+    b.script(
+        "get_performance_state",
+        vec![
+            state(1, 1, None, true),
+            state(1, 1, None, true),
+            state(1, 1, Some((0, 1)), true),
+            state(1, 1, Some((0, 1)), true),
+        ],
+    );
+    b.script(
+        "arrangement_summary",
+        vec![
+            json!({"supported": true, "end_beat": 512.0, "bars": 128, "clips": 16,
+                    "tracks": 5, "beats_per_bar": 4}),
+        ],
+    );
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::PLAY_SONG,
+            PlaySongParams {
+                from: None,
+                record: "ask".into(),
+            },
+            mcp_ableton_music_maker::sections::play_song_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    let t = text_of(&r);
+    assert!(t.contains("128 bars on 5 tracks"), "{t}");
+    assert!(t.contains("after"), "{t}");
+    assert!(
+        !b.commands().contains(&"fire_scene".to_string()),
+        "the song started anyway: {:?}",
+        b.commands()
+    );
+}
+
+#[tokio::test]
+async fn play_song_records_the_take_when_told_to() {
+    let b = bridge();
+    b.script(
+        "get_performance_state",
+        vec![
+            state(1, 1, None, true),
+            state(1, 1, None, true),
+            state(1, 1, Some((0, 1)), true),
+            state(1, 1, Some((0, 1)), true),
+        ],
+    );
+    b.script(
+        "arrangement_summary",
+        vec![
+            json!({"supported": true, "end_beat": 512.0, "bars": 128, "clips": 16,
+                    "tracks": 5, "beats_per_bar": 4}),
+        ],
+    );
+    b.script(
+        "start_arrangement_record",
+        vec![
+            json!({"from_beat": 512.0, "from_bar": 129, "replaced_clips": 0,
+                    "replaced_tracks": 0, "record_mode": true}),
+        ],
+    );
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::PLAY_SONG,
+            PlaySongParams {
+                from: None,
+                record: "after".into(),
+            },
+            mcp_ableton_music_maker::sections::play_song_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    assert!(
+        text_of(&r).contains("Recording this take from bar 129"),
+        "the take is not in the reply: {}",
         text_of(&r)
     );
 }

@@ -11,7 +11,7 @@ fate of work I already had.
 ## Details
 | Field | Value |
 |-------|-------|
-| Status | `Draft` |
+| Status | `Done` — built and tested 2026-09-19; the open questions that stayed open are listed below and none of them block it |
 | Priority | P1 — the performance layer shipped without it, so every set played through this product so far has been lost the moment it ended |
 | Size | M |
 | Tracker | — |
@@ -147,61 +147,61 @@ and puts the tracks back on the timeline with Back to Arrangement.
 ## Acceptance Criteria
 
 ### Asking, when there is something to ask about
-- [ ] **AC1:** With `record: "ask"` (the default) and a non-empty Arrangement, **no command
+- [x] **AC1:** With `record: "ask"` (the default) and a non-empty Arrangement, **no command
       that starts or changes anything is sent**: the tool returns the question, naming how
       many bars are there and on how many tracks, with `after`, `replace` and `off` as the
       choices. The performance does not start.
-- [ ] **AC2:** With `record: "ask"` and an empty Arrangement, the take records from bar 1 with
+- [x] **AC2:** With `record: "ask"` and an empty Arrangement, the take records from bar 1 with
       no question, and the reply says the Arrangement was empty and how to opt out.
-- [ ] **AC3:** `after`, `replace` and `off` each do what they say, and `off` sends no recording
+- [x] **AC3:** `after`, `replace` and `off` each do what they say, and `off` sends no recording
       command at all.
-- [ ] **AC4:** The answer is remembered for the rest of the session, so a second performance
+- [x] **AC4:** The answer is remembered for the rest of the session, so a second performance
       does not ask again — except `replace`, which is never remembered (Q4).
-- [ ] **AC5:** The question is the same whether it came from `play_song` or
+- [x] **AC5:** The question is the same whether it came from `play_song` or
       `start_performance`.
 
 ### Where the take lands
-- [ ] **AC6:** `after` starts at the next bar line at or after the largest `end_time` across
+- [x] **AC6:** `after` starts at the next bar line at or after the largest `end_time` across
       all tracks, at the set's beats per bar; every track records from that same bar.
-- [ ] **AC7:** With `after`, no existing Arrangement clip on any track is shortened, moved or
+- [x] **AC7:** With `after`, no existing Arrangement clip on any track is shortened, moved or
       deleted. This is the criterion the tests are hardest on.
-- [ ] **AC8:** `replace` deletes the existing Arrangement clips and records from bar 1, and the
+- [x] **AC8:** `replace` deletes the existing Arrangement clips and records from bar 1, and the
       reply says how many bars on how many tracks it deleted and that Cmd+Z in Live is the only
       way back. It is reachable **only** by the producer answering it — never a default, never
       inferred.
-- [ ] **AC9:** Before the first scene fires, the server sets the playhead to the take's start
+- [x] **AC9:** Before the first scene fires, the server sets the playhead to the take's start
       bar and turns on `record_mode`, in that order, so the first bar of the take is the first
       bar played.
 
 ### What the producer is told
-- [ ] **AC10:** The reply that starts a performance says whether it is recording and from which
+- [x] **AC10:** The reply that starts a performance says whether it is recording and from which
       bar, and that the set still has to be saved by hand.
-- [ ] **AC11:** `end_performance` turns `record_mode` off on every path it has (on the bar,
+- [x] **AC11:** `end_performance` turns `record_mode` off on every path it has (on the bar,
       faded, `now` — `src/tools.rs:5231`) and reports the bars the take covers and how many
       tracks it touched.
-- [ ] **AC12:** `get_performance_state`'s readout says a take is recording and from which bar,
+- [x] **AC12:** `get_performance_state`'s readout says a take is recording and from which bar,
       so a fresh conversation can tell.
 
 ### Refusals and compatibility
-- [ ] **AC13:** On a Live without `track.arrangement_clips` (Live 10), nothing is recorded, no
+- [x] **AC13:** On a Live without `track.arrangement_clips` (Live 10), nothing is recorded, no
       question is asked, and the reply says why. The performance runs exactly as it does today.
-- [ ] **AC14:** With `disarm: false`, the reply names each armed track and says Arrangement
+- [x] **AC14:** With `disarm: false`, the reply names each armed track and says Arrangement
       Record captures its input as audio — the one case where a take contains something other
       than what the clips played.
-- [ ] **AC15:** If the Arrangement read fails, the performance still starts, without recording,
+- [x] **AC15:** If the Arrangement read fails, the performance still starts, without recording,
       and says so. A performance is never blocked by the take.
-- [ ] **AC16:** `record_mode` is off whenever no performance is running — including after a
+- [x] **AC16:** `record_mode` is off whenever no performance is running — including after a
       failure between arming and firing.
 
 ### No Regressions
-- [ ] **AC17:** With `record: "off"` every existing performance test passes unchanged: the same
+- [x] **AC17:** With `record: "off"` every existing performance test passes unchanged: the same
       commands, in the same order, from every performance tool.
-- [ ] **AC18:** The guards still hold (`src/tools.rs:4872`) — a running performance still
+- [x] **AC18:** The guards still hold (`src/tools.rs:4872`) — a running performance still
       refuses `stop_playback`, playhead moves, tempo jumps and deleting what plays. The take's
       playhead move happens before the performance starts, which is why it is allowed.
-- [ ] **AC19:** Steering verbs send no extra recording command; the take keeps rolling.
-- [ ] **AC20:** No new tool is served; the tool count is unchanged (decision 0006).
-- [ ] **AC21:** `capture_mix` and `record_clip` behave exactly as they do today.
+- [x] **AC19:** Steering verbs send no extra recording command; the take keeps rolling.
+- [x] **AC20:** No new tool is served; the tool count is unchanged (decision 0006).
+- [x] **AC21:** `capture_mix` and `record_clip` behave exactly as they do today.
 
 ## Affected Files
 
@@ -223,19 +223,19 @@ and puts the tracks back on the timeline with Back to Arrangement.
 
 ## Remote Script compatibility
 
-- [ ] Handlers added to `AbletonMusicMaker_Remote_Script/__init__.py` — no f-strings, no type
+- [x] Handlers added to `AbletonMusicMaker_Remote_Script/__init__.py` — no f-strings, no type
       hints, no third-party imports
-- [ ] `arrangement_summary`, `start_arrangement_record`, `stop_arrangement_record` added to
+- [x] `arrangement_summary`, `start_arrangement_record`, `stop_arrangement_record` added to
       `SCRIPT_CAPABILITIES`
-- [ ] `SCRIPT_VERSION` bumped 1.24.0 → 1.25.0 (`AbletonMusicMaker_Remote_Script/__init__.py:63`)
-- [ ] All three added to `tools::ALL_REMOTE_COMMANDS`
-- [ ] Every call guarded by `require(live, …)`, so an older script degrades to today's
+- [x] `SCRIPT_VERSION` bumped 1.24.0 → 1.25.0 (`AbletonMusicMaker_Remote_Script/__init__.py:63`)
+- [x] All three added to `tools::ALL_REMOTE_COMMANDS`
+- [x] Every call guarded by `require(live, …)`, so an older script degrades to today's
       behaviour rather than erroring
-- [ ] Live version floor: `arrangement_summary` needs `track.arrangement_clips` (Live 11+).
+- [x] Live version floor: `arrangement_summary` needs `track.arrangement_clips` (Live 11+).
       `record_mode` itself is older, but without knowing what the Arrangement holds there is
       neither a safe start bar nor an honest question, so the whole feature is Live 11+ and
       AC13 is what Live 10 gets
-- [ ] `arrangement_summary` iterates every track: a generator that yields between tracks
+- [x] `arrangement_summary` iterates every track: a generator that yields between tracks
       (decision 0007), read timeout (10 s). The two record commands are modifying (15 s,
       `MODIFYING_COMMANDS`)
 
@@ -253,7 +253,8 @@ which is why AC1 asks before anything happens and why `replace` is reachable onl
 |----------------|--------|----|
 | `tests/performance.rs` | a non-empty Arrangement with `record: "ask"` sends **no** command after the read and returns the question; an empty one records from bar 1; each of `after`, `replace`, `off`; the remembered answer on a second performance and `replace` not remembered; the command order (read → playhead → record on → fire); `end_performance` stopping on all three paths; the Live 10 path; the armed-track sentence; a failure between arming and firing leaves `record_mode` off | AC1–AC5, AC9, AC11, AC13–AC16 |
 | `src/performance.rs` unit tests | the start bar from a scripted set of arrangement ends: empty → bar 1, ragged ends → the largest, a non-bar-aligned end → the next bar line, several beats-per-bar | AC6 |
-| `tests/arrangement.rs` | `after` sends no command that shortens, moves or deletes an existing Arrangement clip; `replace` sends `delete_arrangement_clips` and nothing else destructive | AC7, AC8 |
+| `tests/performance.rs` | `after` sends no command that could shorten, move or delete an existing Arrangement clip (the destructive command names are asserted absent), and arms with `replace: false`; `replace` arms with `replace: true` | AC7, AC8 |
+| `tests/song.rs` | `play_song` asks the same question and fires nothing; `play_song {record: "after"}` carries the take line into its reply | AC5 |
 | `src/tools.rs` unit tests | the tool count is unchanged; `record` appears on both tools' schemas with its four values | AC20 |
 
 ## Implementation Notes
@@ -261,7 +262,7 @@ which is why AC1 asks before anything happens and why `replace` is reachable onl
 ### Patterns to Follow
 | Pattern | Where Used | Reuse For |
 |---------|-----------|-----------|
-| A refusal that names the alternative in the message | the performance guards, `src/tools.rs:3830` | the question: it is a reply the model can act on, not an error |
+| A refusal that names the alternative in the message | the performance guards, `src/tools.rs:3830` | the question. It is returned the way every other "this did not happen, here is what to do" is — `CallToolResult::error` — because the performance genuinely did not start |
 | One state read, then one command | the steering verbs, `src/sections.rs:1179` | the read and the arm, before the first fire |
 | Pure bar arithmetic, unit-tested on synthetic state | `src/performance.rs` | the take's start bar |
 | `require(live, cmd)` before the bridge | every tool body | degrade to today's behaviour on an older script |
@@ -298,6 +299,37 @@ for; a default of off would leave it unsolved for everyone who does not know the
 exists.
 
 ## Verification
+
+### What was tested, and how
+
+`cargo test` — 19 suites, all passing, including 13 new tests:
+
+- `src/performance.rs` (unit, pure): the take's start bar for an empty Arrangement, an end
+  already on a bar line, an end a hair under one, a mid-bar end, 3/4, and a nonsensical
+  signature; Live's 1-based bars; every spelling of the `record` answer and the refusal of a
+  word that is not one of them.
+- `tests/performance.rs`: the question and **that only `get_performance_state` and
+  `arrangement_summary` were sent when it is asked** (AC1); an empty Arrangement recording
+  from bar 1 with no question; `after` arming at the right beat and *before* the fire;
+  `replace` arming with the deletion and naming Cmd+Z; `off` sending neither command; an
+  unknown word refused before any round trip; the answer remembered and `replace` not;
+  Live 10; a failed read still playing; `end_performance` stopping the take and reporting
+  bars 129–214; the readout line; a failure after arming disarming Live again; and the AC7
+  assertion that no destructive Arrangement command is ever sent by an appended take.
+- `tests/song.rs`: the same question from `play_song`, with nothing fired.
+
+Every pre-existing test passes unchanged with `record: "off"`, which is AC17.
+
+### Not covered by the suite
+The Remote Script's own clock cannot run here: `arrangement_summary`,
+`start_arrangement_record`, `stop_arrangement_record` and the tick that clears `record_mode`
+when the transport stops are exercised through a scripted bridge, not against Live. The
+manual pass below is what verifies them.
+
+### Known limitation
+`end_performance` stops the take when it is called, not when a scheduled or faded stop
+actually stops the transport, so the last bars of a fade are not in the take. The reply says
+so. Recording them would need a `stop_arrangement_record` cue action in the script.
 
 ### Manual verification steps
 With Live 12 open, the Remote Script reinstalled, Live restarted, and a set whose Arrangement
@@ -348,3 +380,5 @@ already has material:
 | Date | Change |
 |------|--------|
 | 2026-09-19 | Created |
+| 2026-09-19 | Asking replaced the silent append after review: the server does not decide the fate of an arrangement the producer made by hand |
+| 2026-09-19 | Built: Remote Script 1.25.0 (`arrangement_summary`, `start_arrangement_record`, `stop_arrangement_record`, the tick that clears `record_mode` on a stopped transport), `record` on `play_song` and `start_performance`, the take on the performance record and in the readout, 13 new tests. Locators per section (Q7) were not built — the ACs never required them and the main-thread cost is unanswered; the prototype no longer shows them |
