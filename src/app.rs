@@ -51,6 +51,8 @@ pub fn check() -> (Value, bool) {
         "expected_version": info.expected_version,
         "up_to_date": info.up_to_date,
         "capabilities": info.capabilities.len(),
+        "bind_host": info.extra.get("bind_host"),
+        "bind_is_loopback": info.extra.get("bind_is_loopback"),
         "session": session.as_ref().map(|s| json!({
             "tempo": s.get("tempo"),
             "track_count": s.get("track_count"),

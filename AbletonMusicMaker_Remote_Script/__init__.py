@@ -25,11 +25,42 @@ except ImportError:
 
 # Constants for socket communication
 DEFAULT_PORT = 9877
-HOST = "0.0.0.0"
+# Loopback: only programs on this Mac can drive Live through this socket, and
+# the socket has no authentication. A file named bind_host.txt beside this
+# script overrides it with its first non-comment line -- needed only when the
+# MCP server runs on another machine, or in a container that cannot reach the
+# host's loopback. Live must be restarted after changing it.
+DEFAULT_HOST = "127.0.0.1"
+BIND_FILE_NAME = "bind_host.txt"
+
+
+def _configured_host():
+    """The address to bind. Anything missing, unreadable or empty falls back
+    to loopback: a typo must never open the port to the network."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(here, BIND_FILE_NAME)
+        if not os.path.isfile(path):
+            return DEFAULT_HOST
+        handle = open(path, "r")
+        try:
+            lines = handle.read().splitlines()
+        finally:
+            handle.close()
+        for line in lines:
+            value = line.strip()
+            if value and not value.startswith("#"):
+                return value
+    except Exception:
+        pass
+    return DEFAULT_HOST
+
+
+HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.23.0"
+SCRIPT_VERSION = "1.24.0"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
@@ -255,7 +286,7 @@ class AbletonMCP(ControlSurface):
             self.server_thread.daemon = True
             self.server_thread.start()
             
-            self.log_message("Server started on port " + str(DEFAULT_PORT))
+            self.log_message("Server started on " + str(HOST) + ":" + str(DEFAULT_PORT))
         except Exception as e:
             self.log_message("Error starting server: " + str(e))
             self.show_message("AbletonMCP: Error starting server - " + str(e))
@@ -835,6 +866,8 @@ class AbletonMCP(ControlSurface):
             "script_version": SCRIPT_VERSION,
             "protocol_version": PROTOCOL_VERSION,
             "port": DEFAULT_PORT,
+            "bind_host": HOST,
+            "bind_is_loopback": HOST in ("127.0.0.1", "localhost", "::1"),
             "capabilities": list(SCRIPT_CAPABILITIES),
             "snapshot_schema": "ableton_mcp_snapshot_v2",
             "passive_listeners": True,

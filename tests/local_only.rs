@@ -82,3 +82,28 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+/// Decision 0003: the Remote Script listens on this machine only unless a
+/// `bind_host.txt` beside it says otherwise. A default of `0.0.0.0` would put
+/// Live, which has no authentication on the socket, on the LAN.
+#[test]
+fn remote_script_binds_loopback_by_default() {
+    let script = include_str!("../AbletonMusicMaker_Remote_Script/__init__.py");
+    assert!(
+        script.contains("DEFAULT_HOST = \"127.0.0.1\""),
+        "the script's DEFAULT_HOST must be loopback"
+    );
+    assert!(
+        script.contains("HOST = _configured_host()"),
+        "HOST must come from the resolver, not a literal"
+    );
+    for line in script.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        assert!(
+            !(code.starts_with("HOST") && code.contains("0.0.0.0")),
+            "the script must not bind 0.0.0.0 by default: {line}"
+        );
+    }
+    // The escape hatch is documented where someone looking at the port finds it.
+    assert!(script.contains("bind_host.txt"));
+}
