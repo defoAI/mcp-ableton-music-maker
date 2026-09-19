@@ -16,11 +16,12 @@ pub struct VNote {
 
 impl VNote {
     pub fn from_value(v: &Value) -> Option<Self> {
+        let whole = |x: &Value| x.as_i64().or_else(|| x.as_f64().map(|f| f.round() as i64));
         Some(Self {
-            pitch: v.get("pitch")?.as_i64()?,
+            pitch: v.get("pitch").and_then(whole)?,
             start: v.get("start_time")?.as_f64()?,
             duration: v.get("duration").and_then(Value::as_f64).unwrap_or(0.25),
-            velocity: v.get("velocity").and_then(Value::as_i64).unwrap_or(100),
+            velocity: v.get("velocity").and_then(whole).unwrap_or(100),
             mute: v.get("mute").and_then(Value::as_bool).unwrap_or(false),
         })
     }

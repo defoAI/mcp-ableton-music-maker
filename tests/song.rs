@@ -1155,9 +1155,10 @@ async fn a_transition_composes_tempo_retime_and_crossfade_into_the_jump() {
             "set_clip_name",
             "add_notes_to_clip",
             "get_context",
+            "get_performance_state",
             "schedule_cue"
         ],
-        "the retimed copy is written now; the faders are read once"
+        "the retimed copy is written now; the faders are read once; the state is read again after the round trips"
     );
     let sent = b.sent();
     // Kick has no clip in Break's row: a half-time copy of what it plays goes there.
@@ -1171,7 +1172,7 @@ async fn a_transition_composes_tempo_retime_and_crossfade_into_the_jump() {
         2,
         "four quarter notes become two half notes"
     );
-    let steps = sent[7].1["cue"]["steps"].as_array().unwrap().clone();
+    let steps = sent[8].1["cue"]["steps"].as_array().unwrap().clone();
     let describe = |s: &Value| {
         format!(
             "{} {} {}→{}",
@@ -1223,8 +1224,8 @@ async fn a_transition_composes_tempo_retime_and_crossfade_into_the_jump() {
             steps[2]["bar"].as_f64(),
             steps[2]["value"].as_f64()
         ),
-        (Some("set"), Some("volume"), Some(4), Some(39.0), Some(0.0)),
-        "Lead's fader is at 0 before the boundary"
+        (Some("set"), Some("volume"), Some(4), Some(40.0), Some(0.0)),
+        "Lead's fader is at 0 one bar before the boundary"
     );
     assert_eq!(
         (
@@ -1322,6 +1323,7 @@ async fn fill_drop_and_sweep_transitions_and_the_standalone_retime() {
             "create_clip",
             "set_clip_name",
             "add_notes_to_clip",
+            "get_performance_state",
             "schedule_cue"
         ]
     );
@@ -1337,7 +1339,7 @@ async fn fill_drop_and_sweep_transitions_and_the_standalone_retime() {
         16,
         "a bar of 16ths"
     );
-    let steps = sent[6].1["cue"]["steps"].as_array().unwrap().clone();
+    let steps = sent[7].1["cue"]["steps"].as_array().unwrap().clone();
     let of = |action: &str| -> Vec<Value> {
         steps
             .iter()

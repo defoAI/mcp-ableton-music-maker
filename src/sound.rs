@@ -126,11 +126,11 @@ fn aliases(word: &str) -> &'static [&'static str] {
 fn table(class_name: &str, word: &str) -> &'static [&'static str] {
     let class = class_name.to_lowercase();
     if class.contains("vector") || class.contains("wavetable") {
-        // Wavetable
+        // Wavetable (parameter names as Live 12.4 reports them)
         return match word {
-            "cutoff" => &["filter 1 freq"],
-            "resonance" => &["filter 1 res"],
-            "drive" => &["filter 1 drive"],
+            "cutoff" => &["flt 1 freq", "filter 1 freq"],
+            "resonance" => &["flt 1 res", "filter 1 res"],
+            "drive" => &["flt 1 drive", "filter 1 drive"],
             "attack" => &["amp attack"],
             "decay" => &["amp decay"],
             "sustain" => &["amp sustain"],
@@ -141,16 +141,18 @@ fn table(class_name: &str, word: &str) -> &'static [&'static str] {
         };
     }
     if class.contains("ultraanalog") || class == "analog" {
+        // Analog: the amp envelope is AEG1, the filter envelope FEG1
         return match word {
-            "cutoff" => &["f1 freq", "filter 1 freq"],
-            "resonance" => &["f1 res", "filter 1 res"],
-            "drive" => &["f1 drive", "drive"],
-            "attack" => &["ae1 attack", "amp 1 attack"],
-            "decay" => &["ae1 decay", "amp 1 decay"],
-            "sustain" => &["ae1 sustain", "amp 1 sustain"],
-            "release" => &["ae1 release", "amp 1 release"],
-            "detune" => &["osc1 detune", "osc 1 detune", "detune"],
-            "lfo_rate" => &["lfo1 rate", "lfo 1 rate"],
+            "cutoff" => &["f1 freq"],
+            "resonance" => &["f1 resonance"],
+            "drive" => &["f1 drive"],
+            "attack" => &["aeg1 attack"],
+            "decay" => &["aeg1 decay"],
+            "sustain" => &["aeg1 sustain"],
+            "release" => &["aeg1 rel"],
+            "detune" => &["osc1 detune", "unison detune"],
+            "width" => &["unison detune"],
+            "lfo_rate" => &["lfo1 speed", "lfo1 sncrate"],
             _ => &[],
         };
     }
@@ -169,20 +171,16 @@ fn table(class_name: &str, word: &str) -> &'static [&'static str] {
         };
     }
     if class == "drift" {
+        // Drift: Env 1 is the amp envelope, LP Freq the filter
         return match word {
-            "cutoff" => &["filter freq", "filter frequency"],
-            "resonance" => &["filter res"],
-            "attack" => &[
-                "env 2 attack",
-                "amp env attack",
-                "amp attack",
-                "env1 attack",
-            ],
-            "decay" => &["env 2 decay", "amp env decay", "amp decay"],
-            "sustain" => &["env 2 sustain", "amp env sustain", "amp sustain"],
-            "release" => &["env 2 release", "amp env release", "amp release"],
-            "drive" => &["drive"],
-            "detune" => &["osc 2 detune", "detune"],
+            "cutoff" => &["lp freq"],
+            "resonance" => &["lp res"],
+            "attack" => &["env 1 attack"],
+            "decay" => &["env 1 decay"],
+            "sustain" => &["env 1 sustain"],
+            "release" => &["env 1 release"],
+            "detune" => &["osc 2 detune"],
+            "width" => &["spread"],
             "lfo_rate" => &["lfo rate"],
             _ => &[],
         };

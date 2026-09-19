@@ -417,7 +417,9 @@ class AbletonMCP(ControlSurface):
                                  "capture_scene", "duplicate_scene", "set_clip_groove",
                                  "set_device_parameters",
                                  # reads that touch a clip while it records: main thread only
-                                 "capture_status", "list_captures"]:
+                                 "capture_status", "list_captures",
+                                 # output meters read as zero off the main thread
+                                 "get_track_meters"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -612,6 +614,8 @@ class AbletonMCP(ControlSurface):
                                 params.get("slots"))
                         elif command_type == "capture_status":
                             result = self._capture_status(params.get("slot", 0))
+                        elif command_type == "get_track_meters":
+                            result = self._get_track_meters()
                         elif command_type == "list_captures":
                             result = self._list_captures()
                         elif command_type == "ensure_capture_track":
@@ -692,8 +696,6 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_clip_info(
                     params.get("track_index", 0), params.get("clip_index", 0),
                     params.get("arrangement", False))
-            elif command_type == "get_track_meters":
-                response["result"] = self._get_track_meters()
             elif command_type == "get_library_status":
                 response["result"] = self._get_library_status()
             elif command_type == "get_clip_automation":
@@ -3176,6 +3178,11 @@ class AbletonMCP(ControlSurface):
         started = int(self._scene_started[idx])
         if bar is None:
             bar, _, _ = self._bar_position()
+        if started > bar:
+            # Fired while the transport was stopped: Live restarted from the
+            # start marker, so count phrases from the bar it actually began.
+            started = 1 + ((bar - 1) // bars) * bars
+            self._scene_started[idx] = started
         k = max(1, (bar - started) // bars + 1)
         return {"scene_index": idx, "started_bar": started, "bars": bars,
                 "ends_bar": started + k * bars, "default": idx not in self._scene_phrase}
@@ -3420,7 +3427,10 @@ class AbletonMCP(ControlSurface):
             try:
                 names = [n for n in dir(pool) if not n.startswith("_")]
                 out["pool_functions"] = [n for n in names if callable(getattr(pool, n, None))]
-                out["can_add"] = any(("add" in n.lower() or "create" in n.lower()) for n in out["pool_functions"])
+                # Live 12.4.6 offers only listeners here (add_grooves_listener):
+                # there is no way to add a groove to the pool through the API.
+                out["can_add"] = any(("add" in n.lower() or "create" in n.lower()) and "listener" not in n.lower()
+                                     for n in out["pool_functions"])
             except Exception:
                 pass
             return out

@@ -24,8 +24,11 @@ fn state() -> Value {
     })
 }
 
+/// Notes as Live reports them: velocities are floats, and every note
+/// carries its expression fields and id.
 fn sixteenths() -> Value {
-    json!({"notes": (0..16).map(|i| json!({"pitch": 60 + (i % 3), "start_time": i as f64 * 0.25, "duration": 0.2, "velocity": 100, "mute": false})).collect::<Vec<_>>()})
+    json!({"notes": (0..16).map(|i| json!({"pitch": 60 + (i % 3), "start_time": i as f64 * 0.25, "duration": 0.2, "velocity": 100.0, "mute": false,
+        "probability": 1.0, "velocity_deviation": 0.0, "release_velocity": 64.0, "note_id": i + 1})).collect::<Vec<_>>()})
 }
 
 fn bridge() -> Arc<FakeBridge> {
@@ -240,8 +243,29 @@ async fn humanize_and_swing_rewrite_notes_describe_the_feel_and_undo() {
         )
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
-    let restored = b.sent().last().unwrap().1["notes"].clone();
-    assert_eq!(restored, sixteenths()["notes"]);
+    let restored = b.sent().last().unwrap().1["notes"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        restored.len(),
+        16,
+        "Live's own note shape writes back as it was read"
+    );
+    for (i, n) in restored.iter().enumerate() {
+        assert_eq!(
+            n["velocity"].as_f64(),
+            Some(100.0),
+            "a float velocity survives the round trip"
+        );
+        assert_eq!(
+            n["note_id"],
+            json!(i + 1),
+            "ids and expression fields travel untouched"
+        );
+        assert_eq!(n["release_velocity"], 64.0);
+        assert_eq!(n["start_time"].as_f64(), Some(i as f64 * 0.25));
+    }
 
     // swing_notes: odd 16ths delayed by half a step, the reply in note values.
     let r = server

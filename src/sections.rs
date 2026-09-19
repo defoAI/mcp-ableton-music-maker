@@ -1312,7 +1312,14 @@ fn steer(live: &LiveState, m: Move) -> ToolResult {
     )?;
     let mut state = state;
     let transition = match m.transition {
-        Some(t) => crate::transition::expand(live, &mut state, &secs, &target, landing.bar, t)?,
+        Some(t) => {
+            let tr = crate::transition::expand(live, &mut state, &secs, &target, landing.bar, t)?;
+            // The rewrites took round trips: check the cue against where the
+            // set is now, not where it was before them.
+            state = read_perf_state(live)?;
+            tr.apply_to(&mut state);
+            tr
+        }
         None => crate::transition::Transition::default(),
     };
     let transition_lines = transition.lines;

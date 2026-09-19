@@ -23,6 +23,17 @@ pub struct Transition {
     pub lines: Vec<String>,
     /// A drop with nothing kept is silence on purpose
     pub allow_silence: bool,
+    /// Clips written into the set by the transition, as (track, slot)
+    pub written: Vec<(i64, i64)>,
+}
+
+impl Transition {
+    /// A fresh state read after the rewrites must know the clips they made.
+    pub fn apply_to(&self, state: &mut PerfState) {
+        for (t, s) in &self.written {
+            note_new_clip(state, *t, *s);
+        }
+    }
 }
 
 const KNOWN: &[&str] = &["tempo", "retime", "crossfade", "fill", "drop", "sweep"];
@@ -275,7 +286,11 @@ fn retime(
         let length = length_of(&notes, length, bpb);
         let varied = vary(&notes, &to, seed, length, bpb)?;
         let values: Vec<Value> = varied.iter().map(|n| n.to_value()).collect();
-        let new_name = format!("{name} ({to})");
+        let new_name = if name.ends_with(&format!("({to})")) {
+            name.clone()
+        } else {
+            format!("{name} ({to})")
+        };
         if in_row {
             live.vary_undo
                 .lock()
@@ -313,6 +328,7 @@ fn retime(
     }
     for ti in written {
         note_new_clip(state, ti, target.index);
+        out.written.push((ti, target.index));
     }
     out.lines.push(format!(
         "{:<12} {} retimed to {} in {}'s row (clips {} written now, seed {seed}{})",
@@ -380,7 +396,9 @@ fn crossfade(
                 .and_then(|t| t.get("volume").and_then(Value::as_f64))
                 .unwrap_or(0.85)
         };
-        let next_bar = state.next_bar().min(bar);
+        // The incoming faders go to 0 one bar before the boundary (the
+        // transition's own round trips may have used up the next bar).
+        let next_bar = (bar - 1).max(state.next_bar()).min(bar);
         for which in &ins {
             let t = state.track_by(which)?;
             let level = volume_of(t.index);
@@ -535,6 +553,7 @@ fn fill(
         },
     )?;
     note_new_clip(state, t.index, slot);
+    out.written.push((t.index, slot));
     out.steps.push(CueStep {
         at: Some(CueTime::Bar {
             bar: fire_bar as f64,

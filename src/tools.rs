@@ -345,18 +345,35 @@ params!(CreateAudioClipParams {
 #[schemars(inline)]
 pub struct Note {
     /// MIDI pitch 0-127
+    #[serde(deserialize_with = "int_or_float")]
     pub pitch: i64,
     /// Start position in beats
     pub start_time: f64,
     /// Length in beats
     pub duration: f64,
     /// Velocity 1-127
+    #[serde(deserialize_with = "int_or_float")]
     pub velocity: i64,
     /// Optional; defaults to false. Leave it out unless the note is muted.
     #[serde(default)]
     pub mute: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// Live reports velocities (and, on some versions, pitches) as floats;
+/// notes read with get_clip_notes must write back unchanged.
+fn int_or_float<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+    let v = Value::deserialize(d)?;
+    match v {
+        Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f.round() as i64))
+            .ok_or_else(|| serde::de::Error::custom("not a whole number")),
+        other => Err(serde::de::Error::custom(format!(
+            "expected a number, got {other}"
+        ))),
+    }
 }
 
 params!(AddNotesParams {
@@ -3623,18 +3640,10 @@ pub fn set_scene_body(live: &LiveState, p: &SetSceneParams) -> ToolResult {
     ))
 }
 
+/// The loudest of a track's meters as the script reports them (`left`,
+/// `right`, `level`, the `output_meter_` prefix stripped).
 fn meter_level(v: &Value) -> f64 {
-    let mut best = 0.0f64;
-    if let Some(o) = v.as_object() {
-        for (k, x) in o {
-            if k.starts_with("output_meter") {
-                if let Some(f) = x.as_f64() {
-                    best = best.max(f);
-                }
-            }
-        }
-    }
-    best
+    meter_peak(v)
 }
 
 pub fn listen_body(live: &LiveState, p: &ListenParams) -> ToolResult {

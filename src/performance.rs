@@ -667,9 +667,10 @@ fn clock_line_with(clock: &Value, plan_cue_id: Option<i64>) -> String {
     }
     if let Some(c) = clock.get("next_cue").filter(|c| c.is_object()) {
         let id = c.get("cue_id").and_then(Value::as_i64).unwrap_or(0);
+        let label = c.get("label").and_then(Value::as_str).unwrap_or("");
         s.push_str(&format!(
             " · {}: bar {} {} (cue {id})",
-            if plan_cue_id == Some(id) {
+            if plan_cue_id == Some(id) && label.starts_with("fire scene") {
                 "next jump"
             } else {
                 "next cue"
@@ -678,7 +679,7 @@ fn clock_line_with(clock: &Value, plan_cue_id: Option<i64>) -> String {
                 .and_then(Value::as_f64)
                 .map(fmt_bar)
                 .unwrap_or_else(|| "?".into()),
-            c.get("label").and_then(Value::as_str).unwrap_or(""),
+            label,
         ));
     }
     s

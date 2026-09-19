@@ -269,7 +269,9 @@ pub fn document(
         name: name.to_string(),
         exported_at,
         live_version: s(context, "live_version"),
-        tempo: f(&session, "tempo").or_else(|| f(&ctx_session, "tempo")),
+        tempo: f(&session, "tempo")
+            .or_else(|| f(&ctx_session, "tempo"))
+            .map(|t| (t * 100.0).round() / 100.0),
         signature: match (
             session.get("signature_numerator").and_then(Value::as_i64),
             session.get("signature_denominator").and_then(Value::as_i64),

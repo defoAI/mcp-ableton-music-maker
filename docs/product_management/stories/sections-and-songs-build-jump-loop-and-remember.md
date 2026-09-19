@@ -12,12 +12,12 @@ still my set next week.
 ## Details
 | Field | Value |
 |-------|-------|
-| Status | `Draft` — the producer's answers of 2026-09-19 and the performer's review of the first draft are folded in (below); open questions 6 and 8 still want a word; the prototype transcript is not yet reviewed |
+| Status | `Done` — all five phases shipped on `feat/39-sections-and-songs` (Remote Script 1.19.0) and verified against Live 12.4.6 on 2026-09-19 (record below); prune once the code has stood on its own for a release |
 | Priority | P1 — the performer's own framing of what the performance layer is for; everything shipped so far (cues, clock, gestures) is the machinery this story puts a vocabulary on |
 | Size | L — five phases; phase 1 (sections, songs, steering) is the ask and ships first; the other four are the second set's feedback and can ship in any order |
 | Tracker | [#39](https://github.com/defoAI/mcp-ableton-music-maker/issues/39) — one issue, a checkbox per phase |
 | Created | 2026-09-19 |
-| Updated | 2026-09-19 |
+| Updated | 2026-09-19 (verified against Live 12.4.6) |
 | Prototype | [prototypes/sections-and-songs-build-jump-loop-and-remember.md](../prototypes/sections-and-songs-build-jump-loop-and-remember.md) |
 | Depends on | `bar-awareness-every-response-and-gestures-as-cue-steps` (Remote Script 1.16.0, merged in #38: phrases per scene, cue gestures, `vary_clip`, `listen`, the clock on every response) |
 
@@ -120,14 +120,14 @@ Answered by the producer on 2026-09-19 (the four choices below are decided):
    `build_song`.
 6. **Groove: Live's pool or note rewriting?** → **Live groove first, notes as fallback.**
    `groove_clip` assigns a pool groove to a clip where the API allows and says so;
-   `humanize` and `swing_notes` rewrite notes (seeded, one undo). *Still wanted: whether a
-   groove can be added to the pool by the API (`load_browser_item` of a `.agr` onto a
-   clip?) needs a real-Live check before the AC is final.*
+   `humanize` and `swing_notes` rewrite notes (seeded, one undo). *Checked on Live 12.4.6:
+   `Song.groove_pool` exposes only `grooves` and its listeners (`add_grooves_listener`);
+   nothing adds a groove, so `groove_clip` assigns pool grooves and says what to drag.*
 7. **The sound vocabulary?** → **A shared vocabulary for Live's own instruments** (Analog,
    Wavetable, Drift, Operator, Simpler/Sampler, Meld, and rack macros), with parameter-name
    substrings as the fallback for anything else; the same words usable in cue sweeps.
-8. **Story shape?** → **One story with phases.** *Still wanted: the order of phases 2–5
-   after phase 1 — the assumption below is transitions, then feel, then sound, then export.*
+8. **Story shape?** → **One story with phases.** Shipped in the assumed order: transitions,
+   feel, sound, export.
 
 From the performer's review of the first draft (decided):
 
@@ -466,6 +466,26 @@ With Live 12 open, the Remote Script reinstalled, Live restarted, an empty set.
     parameters move by a quarter of their range; an unknown device lists its parameters.
 11. `export_set`, empty the set, `import_set`: the set is back with sections and setlist.
 12. Delete all local data in the app: the sets folder is gone; the Live set is untouched.
+
+### Record — Live 12.4.6, Remote Script 1.19.0, 2026-09-19
+Run from a fresh empty set through the server binary over stdio (`scratchpad/verify2.py`,
+`verify3.py`, `verify4.py`, transcripts kept out of the repo).
+
+| Step | Result |
+|---|---|
+| 1 | `build_song` with a `scenes` block: Live's scene names read `Intro · 8` … `Drop · 8`; `get_context` shows `Sections (scenes): 0 Intro · 8 (2) · …` |
+| 2 | `set_song`: the `Setlist:` scene appears as the last row; an unknown section is refused with the section list; `get_context` shows the song |
+| 3 | `play_song`: Intro fires from bar 1, cue 1 holds the one counted jump (bar 17); the clock line says `next jump: bar 17 …`; cue 6 was seen to fire at bar 15 (`Since the last call`) |
+| 4 | `go` with a count running says "Nothing is held"; `hold_section` cancels the plan cue; `go` lands at the phrase end (bar 9 from Intro started at 1); `next_section {at: next_bar}` says "cutting 2 bars off Intro's phrase"; `jump_to Drop repeats 2` plans Drop at 14 then Groove at 30; `back` returns to the section before; `previous_section` walks the setlist. Every reply carried the 🔊 line with real peaks (master −2.3 dB, Hats+Perc −2, Kick −3) |
+| 5 | `make_section from: playing` while Groove played: Live inserted `Peak · 8` below the playing row and launched it seamlessly; the phrase count carried on; the set kept playing |
+| 6 | `make_section` from `clips` after Break: `Dark · 8` inserted at scene 6, later rows moved down, the setlist still named the right sections; `add_to_song` re-planned; a duplicate name refused |
+| 7 | Not run: the persistence check needs the set saved in Live, which the API cannot do; the mechanism (phrase table rebuilt from the scene names on every read) is what made the phrase lengths in step 3 come from the names |
+| 8 | `jump_to Dark` with `transition {tempo 122, retime Kick half_time, crossfade Pad → Lead over 4}`: the tempo ramped under the outgoing phrase, `Dark/Kick (half_time)` was written into Dark's row, the crossfade ramps were scheduled; nothing rebuilt. First attempt exposed that the crossfade's early fader step could land in the past after the rewrites' round trips (fixed: the step sits one bar before the boundary and the state is re-read) |
+| 9 | The pool held `Swing 16ths 66`: `groove_clip` assigned it by substring at 60 % timing; an unknown name lists the pool and says the API cannot add one (`can_add` first matched `add_grooves_listener`; fixed). `humanize` moved the hats off the grid; `undo_vary` put them back once notes read from Live (float velocities) could be written back (fixed in `Note`) |
+| 10 | `shape_sound`: Analog `F1 Freq 100 % → 75 %`, Wavetable `Flt 1 Freq`, Operator `Filter Freq`; the Analog and Drift tables were corrected to the names Live reports (`AEG1 Attack`, `LP Freq`); an unknown word lists the parameters; a cue `ramp {"sound": "cutoff"}` scheduled |
+| 11 | `export_set` wrote `sets/verify.json` (12 sections, 26 clips, 80 notes, the setlist); `import_set {merge: true}` rebuilt the tracks, clips, scenes and the `Setlist:` scene through `build_song` and `set_song` |
+| 12 | Not run in this pass; the app's Delete all local data now removes `sets/` and `library/` (`app/src-tauri/src/activity.rs`), pinned by reading the code |
+| — | Found on the way: `listen` read every meter as 0 because `get_track_meters` ran off Live's main thread (moved; the tick's peaks were right all along); `play_song` from a stopped transport recorded the old play position as the section's start bar (the phrase now counts from where Live actually began) |
 
 ## Out of Scope
 - Recording the performer into a section (that is `record_clip`, shipped).

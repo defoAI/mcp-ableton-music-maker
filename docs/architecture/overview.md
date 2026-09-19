@@ -92,6 +92,34 @@ script is loaded and up to date. Both are for CI and the Mac app.
   it sends; `AbletonConnection::exchange` keeps it in the per-call trace and `run_blocking`
   renders it as the last line of every tool result. Zero round trips. Launch commands read
   the transport *after* they fire and report the bar the launch lands on.
+- **Sections and songs** (`src/song.rs`, `src/sections.rs`) put a vocabulary on the performance
+  layer without a state machine in the script. A section is a scene row named
+  `<name> · <bars>`; the script parses the names into its phrase table on every state read and
+  on every clock, so a Live restart loses nothing. The song is the setlist written into the
+  name of the `Setlist:` scene. `play_song` fires the first entry and hands every counted jump
+  to the script as one cue; each steering verb (`go`, `next_section`, `previous_section`,
+  `back`, `jump_to`) is one state read and one `schedule_cue` whose `replaces` field retires
+  the old plan in the same round trip, and `hold_section` is a `cancel_cue`. The server keeps
+  only the cursor (which entry, the plan cue id, the jump history) in the performance record
+  and re-derives the position from the row that plays. A move lands at the end of the playing
+  section's phrase (`phrase.ends_bar`, counted from the bar the row was fired on) unless told
+  `next_bar`, and then the reply says what it cuts. `make_section` is Live's own
+  capture-and-insert-scene (`capture_scene`, which launches the copy and carries the phrase
+  count over), `duplicate_scene` plus per-track rewrites, or `create_scene` plus clips.
+  Transitions (`src/transition.rs`) are composed on the server into the cue primitives above
+  (ramps, sets, fires, stops) and note rewrites written into the target row before the jump.
+- **Levels ride with the clock.** The script's tick keeps the master and per-track meter peaks
+  for the current and last bar and the master's peak per scene row; they travel as `levels` on
+  the `clock` envelope and the state, `run_blocking` renders the 🔊 line under the ⏱ line, and
+  a jump into a row that ran more than 3 dB hotter warns before the mix clips.
+- **The sound vocabulary** (`src/sound.rs`) is a table, not a guess: a word is resolved at call
+  time against the device's rack macros by name, then candidate parameter names per Live
+  instrument, then aliases and the word itself; `shape_sound` writes several words through one
+  `set_device_parameters`, and a cue ramp takes a word the same way.
+- **Set memory is on request.** `export_set` (`src/sets.rs`) reads one session snapshot and one
+  context into a rebuildable document under `state_dir()/sets/` and nothing else creates that
+  folder; `import_set` rebuilds through `build_song`, `set_scale` and `set_song`. The Live set
+  (its scene names) stays the memory.
 - **The library index.** `src/library.rs` pages the script's browser walk in the background
   after the handshake (one-second pages so tool calls interleave on the shared socket),
   keeps it under `state_dir()/library/` and answers `search_browser` and every internal
@@ -146,8 +174,8 @@ turns the file off. A write failure is logged to stderr once and never fails the
 
 ## Where the server writes (`src/state.rs`)
 
-`ABLETON_MCP_STATE_DIR`, else `~/.ableton-music-maker/`, with `activity/` and `sessions/`
-under it. Nothing else. There is no upload path: no HTTP client in the dependency tree (CI
+`ABLETON_MCP_STATE_DIR`, else `~/.ableton-music-maker/`, with `activity/`, `sessions/`,
+`library/` and, only after an explicit `export_set`, `sets/` under it. Nothing else. There is no upload path: no HTTP client in the dependency tree (CI
 fails if one appears), no telemetry, no dataset — `tests/local_only.rs` is the policy and
 [decision 0004](../decisions/0004-who-publishes-and-holds-the-data.md) the reason.
 
@@ -162,6 +190,7 @@ Code and Cursor, and derives everything it shows from files the server writes:
 | Screen | Reads |
 |---|---|
 | Overview: the chain client → server → Live | live heartbeats (a dead pid is deleted on sight) and one `check` against Live every 10 s while open |
+| Delete all local data | removes the activity and session files, the library index and the set exports |
 | Activity | the session's `.jsonl`, re-read every 2 s; tokens are `ceil(chars / 4)`, labelled *est.* |
 | Setup | Library.cfg discovery for the script path and its `SCRIPT_VERSION`; `check`; the client config |
 | Settings | its own `settings.json`; the switches that concern the server are written into the client config's `env` block, because only the environment reaches a client-started server |
