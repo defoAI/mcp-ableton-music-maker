@@ -15,6 +15,7 @@
 //! - [`handshake`]    Remote Script version / capability negotiation
 //! - [`tools`]        the MCP server and all tools
 //! - [`notes`]        compact note forms (csv, step strings, patterns, tiling)
+//! - [`audio`]        reads the WAV/AIFF Live recorded for a capture and measures it
 //! - [`activity`]     the local activity log (one JSON line per tool call)
 //! - [`state`]        where the server writes on this machine
 //! - [`install`]      the Remote Script installer
@@ -26,6 +27,7 @@
 
 pub mod activity;
 pub mod app;
+pub mod audio;
 pub mod connection;
 pub mod handshake;
 pub mod install;

@@ -109,6 +109,7 @@
        tests/arrangement.rs       — clips, placements, snapshot, track creation
        tests/mixer.rs             — mixer, sends, colours, drum pads, deletion
        tests/orchestration.rs     — search, clip settings, meters, automation, batch, build_song
+       tests/capture.rs           — capture_mix flow, timeout guard, measure_capture
        tests/local_only.rs        — no upload path
        tests/activity.rs          — the activity log defaults
        tests/stdio_integration.rs — end-to-end over stdio

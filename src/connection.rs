@@ -150,6 +150,9 @@ const MODIFYING_COMMANDS: &[&str] = &[
     "set_clip_loop",
     "set_clip_launch",
     "set_clip_automation",
+    "ensure_capture_track",
+    "start_capture",
+    "stop_capture",
 ];
 
 /// Socket budget per command. Importing a large audio file can keep Live's

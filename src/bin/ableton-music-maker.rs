@@ -19,6 +19,9 @@ struct Cli {
     /// Changes nothing in the set.
     #[arg(long)]
     check: bool,
+    /// List the captures on Live's Capture track as JSON and exit.
+    #[arg(long)]
+    captures: bool,
 }
 
 fn init_logging() {
@@ -41,6 +44,19 @@ async fn main() {
             serde_json::to_string_pretty(&mcp_ableton_music_maker::app::status())
                 .unwrap_or_default()
         );
+        return;
+    }
+    if cli.captures {
+        let out = tokio::task::spawn_blocking(mcp_ableton_music_maker::app::captures)
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        match out {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
+            Err(e) => {
+                println!("{}", serde_json::json!({"error": e}));
+                std::process::exit(1);
+            }
+        }
         return;
     }
     if cli.check {

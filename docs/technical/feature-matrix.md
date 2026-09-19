@@ -43,6 +43,8 @@ table is a copy for orientation.
 | Automation | `set_clip_automation`, `get_clip_automation` | same names | device parameter or mixer target; points or a ramp; steps at `resolution`; Session and Arrangement clips |
 | Listening | `get_track_meters` | `get_track_meters` | one reading of every output meter |
 | | `play_and_measure` | `set_current_song_time` + `start_playback` + `get_track_meters`×N + `stop_playback` | peak per track over a played stretch; names silent tracks |
+| Capture | `capture_mix` | `ensure_capture_track` + `start_capture` + `capture_status`×N + `stop_capture` + `set_clip_name` | records `bars` bars of the master into the Capture track (Resampling, muted, armed), reads the WAV/AIFF Live wrote, reports peak, RMS per bar, silent bars, clipping, stereo correlation. **Live 11+** |
+| | `list_captures`, `measure_capture` | `list_captures`, `capture_status` | the captures on the Capture track; re-measure one without playing |
 | Orchestration | `batch` | any | ordered steps, stop at first failure, `$last_track` |
 | | `build_song` | many | one document → tracks, instruments, clips, placements, locators; validated before the first command; `dry_run` |
 | Arrangement | `switch_to_arrangement_view` | `switch_to_arrangement_view` | |

@@ -5,6 +5,7 @@ use mcp_ableton_music_maker::connection::{LiveBridge, LiveError, LiveResult, Liv
 use mcp_ableton_music_maker::tools::Server;
 use rmcp::model::CallToolResult;
 use serde_json::{json, Value};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// Stand-in for the Live bridge. Records every command sent and returns a
@@ -15,6 +16,9 @@ pub struct FakeBridge {
     /// Fail every command from the Nth one on (0-based), to test partial
     /// progress in multi-command bodies.
     pub fail_from: Mutex<Option<(usize, LiveError)>>,
+    /// Per-command response sequences; the last one repeats. Commands not
+    /// scripted get `response`.
+    pub scripted: Mutex<HashMap<String, VecDeque<Value>>>,
 }
 
 impl FakeBridge {
@@ -23,7 +27,16 @@ impl FakeBridge {
             response: Mutex::new(Ok(response)),
             sent: Mutex::new(Vec::new()),
             fail_from: Mutex::new(None),
+            scripted: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Answer `command` with these responses in order; the last one repeats.
+    pub fn script(&self, command: &str, responses: Vec<Value>) {
+        self.scripted
+            .lock()
+            .unwrap()
+            .insert(command.to_string(), responses.into());
     }
 
     pub fn failing(error: LiveError) -> Arc<Self> {
@@ -31,6 +44,7 @@ impl FakeBridge {
             response: Mutex::new(Err(error)),
             sent: Mutex::new(Vec::new()),
             fail_from: Mutex::new(None),
+            scripted: Mutex::new(HashMap::new()),
         })
     }
 
@@ -64,6 +78,14 @@ impl LiveBridge for FakeBridge {
         if let Some((from, err)) = self.fail_from.lock().unwrap().as_ref() {
             if n >= *from {
                 return Err(err.clone());
+            }
+        }
+        if let Some(queue) = self.scripted.lock().unwrap().get_mut(command_type) {
+            if queue.len() > 1 {
+                return Ok(queue.pop_front().unwrap());
+            }
+            if let Some(last) = queue.front() {
+                return Ok(last.clone());
             }
         }
         self.response.lock().unwrap().clone()

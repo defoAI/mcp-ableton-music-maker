@@ -62,6 +62,31 @@ pub fn check() -> (Value, bool) {
     (report, ok)
 }
 
+/// The captures on the Capture track, for the app and `--captures`. Connects
+/// to Live once; an unreachable Live is an error string, not a panic.
+pub fn captures() -> Result<Value, String> {
+    let (host, port) = live_address();
+    let live = LiveState::with_activity(
+        Arc::new(AbletonConnection::new(host, port)),
+        crate::activity::Activity::disabled(),
+    );
+    let info = live.script.handshake(live.bridge.as_ref());
+    if info.script_version.is_none() {
+        return Err(info.error.unwrap_or_else(|| "Live not reachable".into()));
+    }
+    if !live.script.has_capability("list_captures") {
+        return Err(format!(
+            "the loaded Remote Script ({}) has no captures; reinstall and restart Live",
+            info.script_version.unwrap_or_default()
+        ));
+    }
+    let r = live
+        .send_command("list_captures", None)
+        .map_err(|e| e.to_string());
+    live.bridge.disconnect();
+    r
+}
+
 /// The heartbeat file for this process: `<sessions_dir>/<pid>.json`.
 fn heartbeat_path() -> PathBuf {
     crate::state::sessions_dir().join(format!("{}.json", std::process::id()))

@@ -59,6 +59,14 @@
         <tbody id="rows"></tbody>
       </table></div></div>
       <div class="detail" id="detail" hidden></div>
+      <div>
+        <div class="eyebrow">Captures</div>
+        <div class="tablewrap"><div class="tscroll"><table>
+          <thead><tr><th>Slot</th><th>Name</th><th class="r">Beats</th><th>File</th><th></th></tr></thead>
+          <tbody id="captures"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+        </table></div></div>
+        <p class="note">Captures are clips Live recorded into its own project folder through the Capture track. The app plays them in place and never deletes them.</p>
+      </div>
       <p class="note">Tokens are estimated from the size of what the tool received and returned, about four characters per token. The model's own context is not visible to the server, so this is the cost each call adds, not a bill.</p>
     </section>
 
@@ -89,7 +97,7 @@
         <div class="srow"><span class="l">Running servers</span><span class="mono" id="data-sessions">—</span><span class="h"><span class="path" id="data-sessions-path"></span> — which client started a server, and when. Removed when it exits.</span></div>
         <div class="srow"><span class="l">Remote Script</span><span class="mono" id="data-script">—</span><span class="h"><span class="path" id="data-script-path"></span> — left alone by the button below.</span></div>
         <div class="srow"><span class="l">Nothing is uploaded</span><span class="pill off">No upload path exists</span><span class="h">The server and this app have no network code except the connection to Live. <a href="#" data-open="https://github.com/defoAI/mcp-ableton-music-maker/blob/main/TERMS.md">Terms &amp; data use</a></span></div>
-        <div class="srow"><span class="l">Delete all local data</span><button class="btn small" id="deletedata">Delete…</button><span class="h">Removes the activity log and heartbeats. Keeps the Remote Script and your client config.</span></div>
+        <div class="srow"><span class="l">Delete all local data</span><button class="btn small" id="deletedata">Delete…</button><span class="h">Removes the activity log and heartbeats. Keeps the Remote Script, your client config, and the captures in Live's project folder.</span></div>
       </div>
       <div class="group">
         <h3>General</h3>

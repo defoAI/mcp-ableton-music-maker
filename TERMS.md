@@ -29,6 +29,16 @@ log is yours to delete.
 
 In the Docker image every path above sits under `/state`, the only writable volume.
 
+## Captures
+
+When Claude is asked to capture a section, the server records it **inside Live**: a Capture
+track whose input is Resampling records a clip of the master, exactly as if you had pressed
+record. The audio lands where Live puts its recordings, in your project's `Samples/Recorded`
+folder. The server reads that file once to measure it (peak, RMS per bar, silence, clipping,
+stereo correlation), writes nothing, and the Mac app plays it in place. Captures are your
+project's files: nothing here copies, uploads or deletes them, and "Delete all local data"
+leaves them alone.
+
 ## Deleting it
 
 Delete the `~/.ableton-music-maker` folder, or use **Delete all local data** in the Mac
