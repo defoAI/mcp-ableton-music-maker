@@ -90,7 +90,12 @@ pub fn clear(id: &str) -> Result<Value, String> {
 /// every client config alone.
 pub fn delete_all(_app: &AppHandle) -> Result<Value, String> {
     let mut removed = 0;
-    for dir in [state::activity_dir(), state::sessions_dir()] {
+    for dir in [
+        state::activity_dir(),
+        state::sessions_dir(),
+        state::library_dir(),
+        state::sets_dir(),
+    ] {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 if std::fs::remove_file(entry.path()).is_ok() {
@@ -98,6 +103,11 @@ pub fn delete_all(_app: &AppHandle) -> Result<Value, String> {
                 }
             }
         }
+    }
+    // The set exports and the library index are whole folders the server
+    // recreates on demand; remove them so nothing of yours is left behind.
+    for dir in [state::library_dir(), state::sets_dir()] {
+        let _ = std::fs::remove_dir(&dir);
     }
     Ok(json!({"removed": removed}))
 }

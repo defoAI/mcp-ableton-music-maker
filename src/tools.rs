@@ -831,6 +831,8 @@ pub const RESTORE_MIX: ToolSpec = ToolSpec::new("restore_mix");
 pub const PANIC: ToolSpec = ToolSpec::new("panic");
 pub const RETIME_CLIP: ToolSpec = ToolSpec::new("retime_clip");
 pub const SHAPE_SOUND: ToolSpec = ToolSpec::new("shape_sound");
+pub const EXPORT_SET: ToolSpec = ToolSpec::new("export_set");
+pub const IMPORT_SET: ToolSpec = ToolSpec::new("import_set");
 pub const GROOVE_CLIP: ToolSpec = ToolSpec::new("groove_clip");
 pub const GROOVE_AMOUNT: ToolSpec = ToolSpec::new("groove_amount");
 pub const HUMANIZE: ToolSpec = ToolSpec::new("humanize");
@@ -5091,6 +5093,8 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "panic" => (PanicParams, panic_body),
         "retime_clip" => (RetimeClipParams, retime_clip_body),
         "shape_sound" => (ShapeSoundParams, shape_sound_body),
+        "export_set" => (crate::sets::ExportSetParams, crate::sets::export_set_body),
+        "import_set" => (crate::sets::ImportSetParams, crate::sets::import_set_body),
         "groove_clip" => (GrooveClipParams, groove_clip_body),
         "groove_amount" => (GrooveAmountParams, groove_amount_body),
         "humanize" => (HumanizeParams, humanize_body),
@@ -6518,6 +6522,33 @@ impl Server {
         self.run(&BACK, p, crate::sections::back_body).await
     }
 
+    /// Write the whole set as a rebuildable document under the server's
+    /// sets folder (tracks with every device by name and instruments by
+    /// browser URI, Session clips with their notes, mixer and sends,
+    /// sections with phrase lengths, the setlist, tempo, signature and key).
+    /// Only on request: nothing exports on its own. The file holds your
+    /// notes and names; delete it from the folder or with "Delete all local
+    /// data". The Live set stays the memory (save it in Live).
+    #[tool(name = "export_set")]
+    async fn export_set(
+        &self,
+        Parameters(p): Parameters<crate::sets::ExportSetParams>,
+    ) -> CallToolResult {
+        self.run(&EXPORT_SET, p, crate::sets::export_set_body).await
+    }
+
+    /// Rebuild an exported set through build_song and set_song: validates
+    /// the document, refuses a set that already has tracks unless merge:
+    /// true, sets the key, writes the setlist. Audio clips are named, not
+    /// rebuilt. dry_run describes the document without touching Live.
+    #[tool(name = "import_set")]
+    async fn import_set(
+        &self,
+        Parameters(p): Parameters<crate::sets::ImportSetParams>,
+    ) -> CallToolResult {
+        self.run(&IMPORT_SET, p, crate::sets::import_set_body).await
+    }
+
     /// Shape a sound in words: cutoff, resonance, attack, decay, sustain,
     /// release, drive, detune, width, lfo_rate, reverb, delay, each a
     /// fraction 0–1 of the parameter's range or "±N%" of where it sits. The
@@ -6668,7 +6699,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 92);
+        assert_eq!(tools.len(), 94);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();

@@ -23,6 +23,7 @@ to anything but Live.
 | **Activity log** — one line per tool call: the tool's name, which Live commands it sent, how long it took, whether it succeeded, the error text if not, and the *size* of what went in and out | `~/.ableton-music-maker/activity/<session>.jsonl` | On | `ABLETON_MCP_ACTIVITY=false`, or the switch in the Mac app |
 | **Payloads** — the parameters and results themselves, which contain your MIDI notes and the names you give tracks and clips | same files | **Off** | `ABLETON_MCP_ACTIVITY_PAYLOADS=true` turns it on; leave it unset to keep it off |
 | **Heartbeat** — that a server is running, which client started it, and the versions involved | `~/.ableton-music-maker/sessions/<pid>.json` | On | Removed automatically when the server exits |
+| **Set exports** — a whole set as a document: your track and clip names, every MIDI note, mixer values, sections and setlist | `~/.ableton-music-maker/sets/<name>.json` | **Only when you ask** (`export_set`) | Delete the file or the folder, or "Delete all local data" |
 
 Error text can contain a name you typed (a track called "Nick's bass", say). That is why the
 log is yours to delete.
@@ -48,6 +49,18 @@ default, as one JSON file per Live library under `~/.ableton-music-maker/library
 new server process is ready at once. `ABLETON_MCP_LIBRARY_INDEX=false` keeps it in memory
 only. "Delete all local data" removes the folder; it is rebuilt in the background when the
 server next talks to Live.
+
+## Set exports
+
+When Claude is asked to export a set, the server writes one JSON file under
+`~/.ableton-music-maker/sets/`: the tracks with their device names and instrument URIs,
+every Session clip with its notes, the mixer and sends, the sections and the setlist, tempo,
+signature and key. That is your music, not metadata, which is why it is written only on an
+explicit `export_set` call and never on its own; nothing else the server does creates the
+folder. `import_set` reads it back into an empty set. The Live set itself is the memory
+(sections and the setlist are scene names, kept by Live's own Save); an export is a backup
+you asked for. Delete the file, the folder, or use "Delete all local data" in the Mac app,
+which removes the exports along with the library index.
 
 ## Deleting it
 

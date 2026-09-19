@@ -24,6 +24,7 @@
 //! - [`sections`]     the section and song tools: make_section, set_song, play_song, the steering verbs
 //! - [`transition`]   a jump's transition (tempo, retime, crossfade, fill, drop, sweep) as cue primitives
 //! - [`sound`]        the sound vocabulary: words → a device's rack macros, the instrument table, or a parameter name (pure)
+//! - [`sets`]         set memory on request: export_set writes a rebuildable document under the state dir, import_set rebuilds it
 //! - [`activity`]     the local activity log (one JSON line per tool call)
 //! - [`state`]        where the server writes on this machine
 //! - [`install`]      the Remote Script installer
@@ -44,6 +45,7 @@ pub mod library;
 pub mod notes;
 pub mod performance;
 pub mod sections;
+pub mod sets;
 pub mod song;
 pub mod sound;
 pub mod state;
