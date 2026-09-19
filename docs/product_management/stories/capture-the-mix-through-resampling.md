@@ -8,7 +8,7 @@
 ## Details
 | Field | Value |
 |-------|-------|
-| Status | `Ready` |
+| Status | `In Progress` — phases 1 and 2 built; awaiting the real-Live pass |
 | Priority | P1 — the artist's session ended with "I never heard the track"; `play_and_measure` reports levels, not sound |
 | Size | L — three phases below; the Live-side capture ships first and is useful alone |
 | Tracker | [#26](https://github.com/defoAI/mcp-ableton-music-maker/issues/26) |
@@ -116,75 +116,75 @@ measure_capture: Re-read the levels of an existing capture (slot index) without 
 ## Acceptance Criteria
 
 ### Remote Script (Phase 1)
-- [ ] **AC1 — `ensure_capture_track`.** Returns the index of the track named `Capture`,
+- [x] **AC1 — `ensure_capture_track`.** Returns the index of the track named `Capture`,
       creating it as an audio track at the end if absent; sets its input routing type to
       the one whose display name is `Resampling` (error naming the available types if none
       matches), monitoring Off, mute on, arm on. Idempotent: a second call changes nothing
       and returns the same index.
-- [ ] **AC2 — `start_capture(start, bars, name)`.** Refuses if a capture is already
+- [x] **AC2 — `start_capture(start, bars, name)`.** Refuses if a capture is already
       recording. Finds the first empty slot on the Capture track (error if none of the
       slots is free and says how many captures to delete). Moves the playhead to
       `start - 1` beat, starts the transport, and on the tick after the playhead has
       landed (the #25 pattern) fires the slot with `record_length = bars × beats per bar`
       and `launch_quantization` none, then names the clip `"<name> @ <start>"`. Answers
       the socket from that tick with `{slot, started_at, record_length}`.
-- [ ] **AC3 — `capture_status(slot)`.** Returns `{is_recording, has_clip, file_path,
+- [x] **AC3 — `capture_status(slot)`.** Returns `{is_recording, has_clip, file_path,
       length, name}` for the slot; `file_path` is present once recording has finished.
-- [ ] **AC4 — `stop_capture(slot)`.** Stops the transport and the slot if still recording;
+- [x] **AC4 — `stop_capture(slot)`.** Stops the transport and the slot if still recording;
       used by the server on timeout so a failed capture never leaves Live recording.
-- [ ] **AC5 — `list_captures`.** Every clip on the Capture track: slot, name, length in
+- [x] **AC5 — `list_captures`.** Every clip on the Capture track: slot, name, length in
       beats, file path, plus the levels stored in the clip name's suffix when measured
       (`… | -6.1 dBFS`). Empty list, not an error, when there is no Capture track.
-- [ ] **AC6 — Live compatibility.** `ClipSlot.fire(record_length, launch_quantization)`
+- [x] **AC6 — Live compatibility.** `ClipSlot.fire(record_length, launch_quantization)`
       needs Live 11+; on Live 10 the command errors with "captures need Live 11 or newer"
       and the capability list omits the capture commands so the tools refuse cleanly.
-- [ ] **AC7 — Script hygiene.** No f-strings, type hints or imports beyond Live's; the
+- [x] **AC7 — Script hygiene.** No f-strings, type hints or imports beyond Live's; the
       four commands added to `SCRIPT_CAPABILITIES`; `SCRIPT_VERSION` bumped;
       `tools::ALL_REMOTE_COMMANDS` updated; the cross-check test passes.
 
 ### Server (Phase 1)
-- [ ] **AC8 — `capture_mix` body.** `ensure_capture_track` → `start_capture` → poll
+- [x] **AC8 — `capture_mix` body.** `ensure_capture_track` → `start_capture` → poll
       `capture_status` every 250 ms until `has_clip && !is_recording` or the budget
       (`bars` at the set's tempo plus 5 s, max 90 s) → on timeout `stop_capture` and an
       error that says the capture was stopped → read the file → measure → name the clip
       with the peak → result text. Socket budget for `start_capture` and `stop_capture`
       is the modifying default; `capture_status` is a read.
-- [ ] **AC9 — Reader.** `src/audio.rs` reads PCM WAV (via `hound`) and AIFF (own chunk
+- [x] **AC9 — Reader.** `src/audio.rs` reads PCM WAV (via `hound`) and AIFF (own chunk
       reader) at 16, 24 and 32-bit integer and 32-bit float, mono or stereo, into `f32`
       channels; unsupported formats error with the format name; a file under 0.1 s errors
       as "empty capture".
-- [ ] **AC10 — Measurements.** `peak_dbfs`, `rms_dbfs` (integrated), `rms_per_bar`
+- [x] **AC10 — Measurements.** `peak_dbfs`, `rms_dbfs` (integrated), `rms_per_bar`
       (from the set's tempo and the clip's length, bars of `signature_numerator` beats),
       `silent_bars` (RMS below −60 dBFS), `clipped_samples` (|x| ≥ 0.999), `stereo
       correlation` (−1…1; "mono" below 0.1 width note), `duration_s`. Golden tests on
       synthetic buffers: a 0 dBFS square wave, silence, a −20 dBFS sine, a left-only
       signal.
-- [ ] **AC11 — Result text.** One block: the clip name and slot, the file path, then the
+- [x] **AC11 — Result text.** One block: the clip name and slot, the file path, then the
       numbers with a one-line reading (e.g. "bars 5–8 are 4 dB quieter than 1–4", "left
       only", "3 clipped samples"). Under 900 characters for 8 bars.
-- [ ] **AC12 — `list_captures` and `measure_capture` tools** as described.
-- [ ] **AC13 — No new network, no new writes.** `tests/local_only.rs` still passes; the
+- [x] **AC12 — `list_captures` and `measure_capture` tools** as described.
+- [x] **AC13 — No new network, no new writes.** `tests/local_only.rs` still passes; the
       server reads Live's file and writes nothing but the activity line.
 
 ### App (Phase 2)
-- [ ] **AC14 — Captures screen.** A "Captures" section on the Activity screen (or its own
+- [x] **AC14 — Captures screen.** A "Captures" section on the Activity screen (or its own
       screen): every capture from `list_captures` via the sidecar's `--captures` flag, with
       name, start, bars, peak/RMS, a Play button (plays the file in place through the
       WebView audio element or `afplay`), and Reveal in Finder.
-- [ ] **AC15 — The app never deletes audio.** "Delete all local data" leaves captures alone
+- [x] **AC15 — The app never deletes audio.** "Delete all local data" leaves captures alone
       and the Your Data screen says so.
 
 ### Documents (Phase 1)
-- [ ] **AC16:** `TERMS.md` gains a "Captures" paragraph (Live's own recordings, in the
+- [x] **AC16:** `TERMS.md` gains a "Captures" paragraph (Live's own recordings, in the
       project folder, not touched by the app's delete). README tool table, feature matrix,
       architecture note (a "capture" paragraph next to `play_and_measure`) and the
       source-of-truth snapshot updated in the same PR.
 
 ### No Regressions
-- [ ] **AC17:** `play_and_measure` unchanged; every existing tool behaves identically.
-- [ ] **AC18:** A set with no Capture track and no free audio tracks (Live Intro's track
+- [x] **AC17:** `play_and_measure` unchanged; every existing tool behaves identically.
+- [x] **AC18:** A set with no Capture track and no free audio tracks (Live Intro's track
       limit) gets a clear error, and nothing in the set changes.
-- [ ] **AC19:** A capture never leaves the transport running or the slot recording, even
+- [x] **AC19:** A capture never leaves the transport running or the slot recording, even
       when the server is killed mid-capture: `stop_capture` runs from a `Drop` guard in the
       body, and the script's `start_capture` uses a fixed `record_length`, so Live stops
       the recording by itself even if nothing else arrives.
@@ -300,3 +300,4 @@ Manual, on Live 12 with a saved set: the verification steps below.
 | Date | Change |
 |------|--------|
 | 2026-09-19 | Created from the "I never heard the track" feedback and the resampling route |
+| 2026-09-19 | Phases 1 and 2 implemented (Remote Script 1.11.0, `src/audio.rs`, `tests/capture.rs`, app Captures section); real-Live verification pending |

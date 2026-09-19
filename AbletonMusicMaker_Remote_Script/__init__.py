@@ -9,6 +9,12 @@ import threading
 import time
 import traceback
 
+# Live's own module: quantization constants for fixed-length recording.
+try:
+    import Live
+except ImportError:  # outside Live (tests, tooling) the module does not exist
+    Live = None
+
 # Change queue import for Python 2
 try:
     import Queue as queue  # Python 2
@@ -21,7 +27,7 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.2"
+SCRIPT_VERSION = "1.11.0"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
@@ -78,6 +84,11 @@ SCRIPT_CAPABILITIES = [
     "set_clip_automation",
     "get_clip_automation",
     "get_library_status",
+    "ensure_capture_track",
+    "start_capture",
+    "capture_status",
+    "stop_capture",
+    "list_captures",
 ]
 
 def create_instance(c_instance):
@@ -328,7 +339,8 @@ class AbletonMCP(ControlSurface):
                                  "create_locator",
                                  "set_track_mixer", "set_send", "set_track_color", "set_clip_color",
                                  "delete_arrangement_clip", "delete_locator",
-                                 "set_clip_loop", "set_clip_launch", "set_clip_automation"]:
+                                 "set_clip_loop", "set_clip_launch", "set_clip_automation",
+                                 "ensure_capture_track", "start_capture", "stop_capture"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -459,6 +471,14 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "set_clip_launch":
                             result = self._set_clip_launch(
                                 params.get("track_index", 0), params.get("clip_index", 0), params)
+                        elif command_type == "ensure_capture_track":
+                            result = self._ensure_capture_track()
+                        elif command_type == "start_capture":
+                            result = self._start_capture(
+                                params.get("start", 0.0), params.get("bars", 8),
+                                params.get("name", "capture"), response_queue)
+                        elif command_type == "stop_capture":
+                            result = self._stop_capture(params.get("slot"))
                         elif command_type == "set_clip_automation":
                             result = self._set_clip_automation(
                                 params.get("track_index", 0), params.get("clip_index", 0),
@@ -533,6 +553,10 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_track_meters()
             elif command_type == "get_library_status":
                 response["result"] = self._get_library_status()
+            elif command_type == "capture_status":
+                response["result"] = self._capture_status(params.get("slot", 0))
+            elif command_type == "list_captures":
+                response["result"] = self._list_captures()
             elif command_type == "get_clip_automation":
                 response["result"] = self._get_clip_automation(
                     params.get("track_index", 0), params.get("clip_index", 0),
@@ -1732,6 +1756,222 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error reading library status: " + str(e))
+            raise
+
+    # ── Capture: record the master through a Resampling track ────────────────
+
+    CAPTURE_TRACK_NAME = "Capture"
+
+    def _find_capture_track(self):
+        for i, t in enumerate(self._song.tracks):
+            try:
+                if t.name == self.CAPTURE_TRACK_NAME and t.has_audio_input:
+                    return i, t
+            except Exception:
+                continue
+        return None, None
+
+    def _ensure_capture_track(self):
+        """The Capture track: audio, input Resampling, monitoring off, muted, armed."""
+        try:
+            index, track = self._find_capture_track()
+            created = False
+            if track is None:
+                self._song.create_audio_track(-1)
+                index = len(self._song.tracks) - 1
+                track = self._song.tracks[index]
+                track.name = self.CAPTURE_TRACK_NAME
+                created = True
+            chosen = None
+            names = []
+            for rt in track.available_input_routing_types:
+                names.append(str(rt.display_name))
+                if str(rt.display_name).lower() == "resampling":
+                    chosen = rt
+            if chosen is None:
+                raise ValueError("no Resampling input on this track; inputs are: %s" % ", ".join(names))
+            if str(getattr(track.input_routing_type, "display_name", "")).lower() != "resampling":
+                track.input_routing_type = chosen
+            try:
+                track.current_monitoring_state = 2  # Off
+            except Exception as e:
+                self.log_message("monitoring state not set: " + str(e))
+            track.mute = True
+            if getattr(track, "can_be_armed", False):
+                track.arm = True
+            return {
+                "index": index,
+                "created": created,
+                "input": str(getattr(track.input_routing_type, "display_name", "?")),
+                "slots": len(track.clip_slots),
+            }
+        except Exception as e:
+            self.log_message("Error ensuring capture track: " + str(e))
+            raise
+
+    def _recording_capture(self, track):
+        for i, slot in enumerate(track.clip_slots):
+            try:
+                if slot.has_clip and slot.clip.is_recording:
+                    return i, slot
+            except Exception:
+                continue
+        return None, None
+
+    def _start_capture(self, start, bars, name, response_queue=None):
+        """Play from just before `start` and record `bars` bars of the master
+        into the first free slot of the Capture track. The fire happens on a
+        later tick (the playhead move is asynchronous) with beat quantization,
+        so the recording begins exactly at `start`."""
+        try:
+            song = self._song
+            index, track = self._find_capture_track()
+            if track is None:
+                raise ValueError("no Capture track; call ensure_capture_track first")
+            rec_index, _ = self._recording_capture(track)
+            if rec_index is not None:
+                raise ValueError("a capture is already recording in slot %d ('%s')" % (
+                    rec_index, track.clip_slots[rec_index].clip.name))
+            slot_index = None
+            for i, slot in enumerate(track.clip_slots):
+                if not slot.has_clip:
+                    slot_index = i
+                    break
+            if slot_index is None:
+                raise ValueError("every slot of the Capture track holds a capture; delete one (delete_clip on track %d) first" % index)
+            slot = track.clip_slots[slot_index]
+            bars = int(bars)
+            if bars < 1 or bars > 64:
+                raise ValueError("bars must be between 1 and 64")
+            beats_per_bar = int(song.signature_numerator)
+            record_length = float(bars * beats_per_bar)
+            start = float(start)
+            preroll = 1.0 if float(song.tempo) <= 160.0 else 2.0
+            if Live is None:
+                raise RuntimeError("captures need Live's own Python (Live 11 or newer)")
+            quant = Live.Song.Quantization.q_beat
+            self._pending_capture = {"slot": slot_index, "name": str(name or "capture"),
+                                     "start": start, "bars": bars}
+            # Fixed-length Session recording needs Live 11+; probe the signature.
+            try:
+                slot.fire.__call__  # noqa
+            except Exception:
+                raise RuntimeError("captures need Live 11 or newer")
+            if song.is_playing:
+                song.stop_playing()
+            song.current_song_time = max(0.0, start - preroll)
+
+            def finish():
+                try:
+                    song.start_playing()
+                    slot.fire(record_length=record_length, launch_quantization=quant)
+                    result = {"slot": slot_index, "record_length": record_length,
+                              "preroll_beats": preroll, "beats_per_bar": beats_per_bar,
+                              "tempo": float(song.tempo), "started_at": start}
+                    if response_queue is not None:
+                        response_queue.put({"status": "success", "result": result})
+                except TypeError as e:
+                    msg = "captures need Live 11 or newer (fixed-length recording): " + str(e)
+                    self.log_message(msg)
+                    if response_queue is not None:
+                        response_queue.put({"status": "error", "message": msg})
+                except Exception as e:
+                    self.log_message("Error starting capture: " + str(e))
+                    if response_queue is not None:
+                        response_queue.put({"status": "error", "message": str(e)})
+
+            if response_queue is None:
+                finish()
+                return {"slot": slot_index, "record_length": record_length}
+            self.schedule_message(2, finish)
+            return DEFERRED
+        except Exception as e:
+            self.log_message("Error starting capture: " + str(e))
+            raise
+
+    def _capture_status(self, slot_index):
+        try:
+            index, track = self._find_capture_track()
+            if track is None:
+                raise ValueError("no Capture track")
+            slot_index = int(slot_index)
+            if slot_index < 0 or slot_index >= len(track.clip_slots):
+                raise IndexError("slot out of range")
+            slot = track.clip_slots[slot_index]
+            info = {"slot": slot_index, "track_index": index, "has_clip": bool(slot.has_clip),
+                    "is_recording": False, "is_playing": bool(self._song.is_playing)}
+            if slot.has_clip:
+                clip = slot.clip
+                info["is_recording"] = bool(getattr(clip, "is_recording", False))
+                pending = getattr(self, "_pending_capture", None)
+                if pending and pending.get("slot") == slot_index:
+                    wanted = "%s @ %s" % (pending["name"], self._fmt_beat(pending["start"]))
+                    try:
+                        if clip.name != wanted:
+                            clip.name = wanted
+                    except Exception:
+                        pass
+                info["name"] = clip.name
+                info["length"] = float(clip.length)
+                if not info["is_recording"]:
+                    info["file_path"] = self._safe_attr(clip, "file_path", str, None)
+                    if getattr(self, "_pending_capture", None) and self._pending_capture.get("slot") == slot_index:
+                        self._pending_capture = None
+            return info
+        except Exception as e:
+            self.log_message("Error reading capture status: " + str(e))
+            raise
+
+    def _fmt_beat(self, v):
+        v = float(v)
+        return str(int(v)) if v == int(v) else str(v)
+
+    def _stop_capture(self, slot_index=None):
+        """Stop the transport, and the slot if it is still recording."""
+        try:
+            song = self._song
+            index, track = self._find_capture_track()
+            stopped_slot = None
+            if track is not None:
+                slots = [int(slot_index)] if slot_index is not None else range(len(track.clip_slots))
+                for i in slots:
+                    if i < 0 or i >= len(track.clip_slots):
+                        continue
+                    slot = track.clip_slots[i]
+                    try:
+                        if slot.has_clip and slot.clip.is_recording:
+                            slot.stop()
+                            stopped_slot = i
+                    except Exception:
+                        pass
+            if song.is_playing:
+                song.stop_playing()
+            self._pending_capture = None
+            return {"stopped_slot": stopped_slot, "is_playing": bool(song.is_playing)}
+        except Exception as e:
+            self.log_message("Error stopping capture: " + str(e))
+            raise
+
+    def _list_captures(self):
+        try:
+            index, track = self._find_capture_track()
+            if track is None:
+                return {"track_index": None, "captures": []}
+            out = []
+            for i, slot in enumerate(track.clip_slots):
+                if not slot.has_clip:
+                    continue
+                clip = slot.clip
+                out.append({
+                    "slot": i,
+                    "name": clip.name,
+                    "length": float(clip.length),
+                    "is_recording": bool(getattr(clip, "is_recording", False)),
+                    "file_path": self._safe_attr(clip, "file_path", str, None),
+                })
+            return {"track_index": index, "captures": out}
+        except Exception as e:
+            self.log_message("Error listing captures: " + str(e))
             raise
 
     def _clip_at(self, track_index, clip_index, arrangement=False):

@@ -69,6 +69,11 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "set_clip_automation",
     "get_clip_automation",
     "get_library_status",
+    "ensure_capture_track",
+    "start_capture",
+    "capture_status",
+    "stop_capture",
+    "list_captures",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -131,6 +136,12 @@ fn track_kind() -> String {
 }
 fn quarter_beat() -> f64 {
     0.25
+}
+fn eight() -> i64 {
+    8
+}
+fn capture_name() -> String {
+    "capture".to_string()
 }
 fn all_categories() -> String {
     "all".to_string()
@@ -622,6 +633,18 @@ params!(BuildSongParams {
     /// Validate and describe the plan without touching Live (default false)
     dry_run: bool = "bool::default",
 });
+params!(CaptureMixParams {
+    /// Beat to start capturing from (a bar boundary, e.g. 128 for bar 33 in 4/4)
+    start: f64,
+    /// How many bars to capture (default 8, max 64)
+    bars: i64 = "eight",
+    /// A name for the capture, e.g. "drop" — the clip is called "<name> @ <start>"
+    name: String = "capture_name",
+});
+params!(MeasureCaptureParams {
+    /// Slot index on the Capture track, as list_captures shows
+    slot: i64,
+});
 params!(CreateLocatorParams {
     /// The locator label (e.g. "Chorus", "Verse 1", "Drop")
     name: String,
@@ -680,6 +703,9 @@ pub const GET_CLIP_AUTOMATION: ToolSpec = ToolSpec::new("get_clip_automation");
 pub const BATCH: ToolSpec = ToolSpec::new("batch");
 pub const BUILD_SONG: ToolSpec = ToolSpec::new("build_song");
 pub const GET_LIBRARY_STATUS: ToolSpec = ToolSpec::new("get_library_status");
+pub const CAPTURE_MIX: ToolSpec = ToolSpec::new("capture_mix");
+pub const LIST_CAPTURES: ToolSpec = ToolSpec::new("list_captures");
+pub const MEASURE_CAPTURE: ToolSpec = ToolSpec::new("measure_capture");
 
 // ── Tool bodies ─────────────────────────────────────────────────────────────
 
@@ -2066,6 +2092,243 @@ pub fn get_clip_automation_body(live: &LiveState, p: &GetClipAutomationParams) -
     .map_err(|e| live_err("read the automation", e))
 }
 
+// ── Capture: record the master and measure it ───────────────────────────────
+
+/// Tempo and beats per bar from the set, with Live's defaults as fallback.
+fn tempo_and_meter(live: &LiveState) -> (f64, f64) {
+    match live.send_command("get_session_info", None) {
+        Ok(s) => (
+            s.get("tempo").and_then(Value::as_f64).unwrap_or(120.0),
+            s.get("signature_numerator")
+                .and_then(Value::as_f64)
+                .unwrap_or(4.0),
+        ),
+        Err(_) => (120.0, 4.0),
+    }
+}
+
+/// Stops the transport and the recording slot if the body leaves early.
+struct CaptureGuard<'a> {
+    live: &'a LiveState,
+    slot: i64,
+    armed: bool,
+}
+
+impl Drop for CaptureGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self
+                .live
+                .send_command("stop_capture", Some(json!({"slot": self.slot})));
+        }
+    }
+}
+
+fn capture_text(
+    name: &str,
+    slot: i64,
+    path: &str,
+    m: &crate::audio::Measurements,
+    bars: i64,
+    tempo: f64,
+) -> String {
+    let bars_txt: Vec<String> = m.rms_per_bar.iter().map(|v| format!("{v:.1}")).collect();
+    let mut out = format!(
+        "Captured '{name}' (Capture track, slot {slot}) — {bars} bars at {tempo:.0} BPM, {:.1} s, {}\n{path}\npeak {:.1} dBFS · RMS {:.1} dBFS{}\nRMS per bar: {}\nReading: {}.\n",
+        m.duration_s,
+        match m.channels { 1 => "mono".to_string(), 2 => "stereo".to_string(), n => format!("{n} channels") },
+        m.peak_dbfs,
+        m.rms_dbfs,
+        m.stereo_correlation.map(|c| format!(" · stereo correlation {c:.2}")).unwrap_or_default(),
+        bars_txt.join(" "),
+        crate::audio::reading(m)
+    );
+    if path.contains("Live Recordings") || path.contains("Untitled") {
+        out.push_str("This set is unsaved, so Live recorded into a temporary project folder; the file moves when you save the set.\n");
+    }
+    out.push_str(&format!(
+        "Play it in Live by firing Capture slot {slot}. Nothing else in the set changed."
+    ));
+    out
+}
+
+pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
+    for cmd in [
+        "ensure_capture_track",
+        "start_capture",
+        "capture_status",
+        "stop_capture",
+    ] {
+        require(live, cmd)?;
+    }
+    if !(1..=64).contains(&p.bars) {
+        return Err(format!("bars must be between 1 and 64, got {}", p.bars));
+    }
+    if p.start < 0.0 {
+        return Err("start must be 0 or later".into());
+    }
+    let (tempo, beats_per_bar) = tempo_and_meter(live);
+    let seconds_per_bar = 60.0 / tempo * beats_per_bar;
+    let ensured = live
+        .send_command("ensure_capture_track", None)
+        .map_err(|e| live_err("prepare the Capture track", e))?;
+    let track_index = ensured.get("index").and_then(Value::as_i64).unwrap_or(-1);
+    let created = ensured
+        .get("created")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let started = live
+        .send_command(
+            "start_capture",
+            Some(json!({"start": p.start, "bars": p.bars, "name": p.name})),
+        )
+        .map_err(|e| live_err("start the capture", e))?;
+    let slot = started.get("slot").and_then(Value::as_i64).unwrap_or(0);
+    let mut guard = CaptureGuard {
+        live,
+        slot,
+        armed: true,
+    };
+    let preroll_beats = started
+        .get("preroll_beats")
+        .and_then(Value::as_f64)
+        .unwrap_or(2.0);
+    let budget = (p.bars as f64 * seconds_per_bar + preroll_beats * 60.0 / tempo + 5.0).min(90.0);
+    let deadline = Instant::now() + std::time::Duration::from_secs_f64(budget);
+    let status = loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let s = live
+            .send_command("capture_status", Some(json!({"slot": slot})))
+            .map_err(|e| live_err("read the capture status", e))?;
+        let has_clip = s.get("has_clip").and_then(Value::as_bool).unwrap_or(false);
+        let recording = s
+            .get("is_recording")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let file = s.get("file_path").and_then(Value::as_str).unwrap_or("");
+        if has_clip && !recording && !file.is_empty() {
+            break s;
+        }
+        if Instant::now() > deadline {
+            return Err(format!(
+                "The capture did not finish within {budget:.0} s (recording: {recording}, clip: {has_clip}); it was stopped and nothing else changed."
+            ));
+        }
+    };
+    // Recording is done: stop the transport ourselves and disarm the guard.
+    let _ = live.send_command("stop_capture", Some(json!({"slot": slot})));
+    guard.armed = false;
+    let path = status
+        .get("file_path")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let audio = crate::audio::read_file(std::path::Path::new(&path))?;
+    let m = crate::audio::measure(&audio, seconds_per_bar);
+    let clip_name = format!(
+        "{} @ {} | {:.1} dBFS",
+        p.name,
+        beat(Some(&json!(p.start))),
+        m.peak_dbfs
+    );
+    if live.script.has_capability("set_clip_name") && track_index >= 0 {
+        let _ = live.send_command(
+            "set_clip_name",
+            Some(json!({"track_index": track_index, "clip_index": slot, "name": clip_name})),
+        );
+    }
+    let mut text = String::new();
+    if created {
+        text.push_str(&format!(
+            "Created the Capture track at index {track_index} (audio, input Resampling, monitoring off, muted, armed).\n"
+        ));
+    }
+    text.push_str(&capture_text(
+        &format!("{} @ {}", p.name, beat(Some(&json!(p.start)))),
+        slot,
+        &path,
+        &m,
+        p.bars,
+        tempo,
+    ));
+    Ok(text)
+}
+
+pub fn list_captures_body(live: &LiveState, _p: &Empty) -> ToolResult {
+    require(live, "list_captures")?;
+    let r = live
+        .send_command("list_captures", None)
+        .map_err(|e| live_err("list the captures", e))?;
+    let caps = r
+        .get("captures")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if caps.is_empty() {
+        return Ok(
+            "No captures yet. capture_mix records a stretch of the arrangement and measures it."
+                .into(),
+        );
+    }
+    let mut out = format!("Captures on the Capture track ({}):\n", caps.len());
+    for c in &caps {
+        out.push_str(&format!(
+            "  slot {}  {}  {} beats{}  {}\n",
+            get_display(c, "slot", "?"),
+            get_display(c, "name", "?"),
+            beat(c.get("length")),
+            if c.get("is_recording").and_then(Value::as_bool) == Some(true) {
+                " (recording)"
+            } else {
+                ""
+            },
+            get_display(c, "file_path", "no file yet")
+        ));
+    }
+    out.push_str("measure_capture(slot) re-reads one; fire the slot in Live to hear it.");
+    Ok(out)
+}
+
+pub fn measure_capture_body(live: &LiveState, p: &MeasureCaptureParams) -> ToolResult {
+    require(live, "capture_status")?;
+    let status = live
+        .send_command("capture_status", Some(json!({"slot": p.slot})))
+        .map_err(|e| live_err("read the capture", e))?;
+    if status.get("has_clip").and_then(Value::as_bool) != Some(true) {
+        return Err(format!(
+            "Slot {} of the Capture track holds no capture.",
+            p.slot
+        ));
+    }
+    if status.get("is_recording").and_then(Value::as_bool) == Some(true) {
+        return Err(format!("Slot {} is still recording.", p.slot));
+    }
+    let path = status
+        .get("file_path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if path.is_empty() {
+        return Err(format!(
+            "Slot {} has no audio file (a MIDI clip, or Live has not written it yet).",
+            p.slot
+        ));
+    }
+    let (tempo, beats_per_bar) = tempo_and_meter(live);
+    let seconds_per_bar = 60.0 / tempo * beats_per_bar;
+    let audio = crate::audio::read_file(std::path::Path::new(path))?;
+    let m = crate::audio::measure(&audio, seconds_per_bar);
+    let length = status.get("length").and_then(Value::as_f64).unwrap_or(0.0);
+    let bars = (length / beats_per_bar).round().max(1.0) as i64;
+    Ok(capture_text(
+        &get_display(&status, "name", "capture"),
+        p.slot,
+        path,
+        &m,
+        bars,
+        tempo,
+    ))
+}
+
 // ── Batch and build_song ─────────────────────────────────────────────────────
 
 macro_rules! named_tools {
@@ -2133,6 +2396,9 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "set_clip_automation" => (SetClipAutomationParams, set_clip_automation_body),
         "get_clip_automation" => (GetClipAutomationParams, get_clip_automation_body),
         "get_library_status" => (Empty, get_library_status_body),
+        "capture_mix" => (CaptureMixParams, capture_mix_body),
+        "list_captures" => (Empty, list_captures_body),
+        "measure_capture" => (MeasureCaptureParams, measure_capture_body),
     )
 }
 
@@ -3028,6 +3294,34 @@ impl Server {
             .await
     }
 
+    /// Hear the result as numbers: record `bars` bars of the arrangement
+    /// from `start` through a Capture track (created once, input
+    /// Resampling, muted), then report the clip and its levels — peak dBFS,
+    /// RMS, RMS per bar, silent bars, clipped samples, stereo correlation —
+    /// with a one-line reading. The clip stays in the Capture track's slot,
+    /// named "<name> @ <start>", so the producer can play it; the file path
+    /// is returned for the app. Nothing else in the set changes. One capture
+    /// at a time; 1–64 bars.
+    #[tool(name = "capture_mix")]
+    async fn capture_mix(&self, Parameters(p): Parameters<CaptureMixParams>) -> CallToolResult {
+        self.run(&CAPTURE_MIX, p, capture_mix_body).await
+    }
+
+    /// The captures on the Capture track: slot, name, length, file path.
+    #[tool(name = "list_captures")]
+    async fn list_captures(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+        self.run(&LIST_CAPTURES, p, list_captures_body).await
+    }
+
+    /// Re-read the levels of an existing capture by slot, without playing.
+    #[tool(name = "measure_capture")]
+    async fn measure_capture(
+        &self,
+        Parameters(p): Parameters<MeasureCaptureParams>,
+    ) -> CallToolResult {
+        self.run(&MEASURE_CAPTURE, p, measure_capture_body).await
+    }
+
     #[tool(name = "batch")]
     async fn batch(&self, Parameters(p): Parameters<BatchParams>) -> CallToolResult {
         self.run(&BATCH, p, batch_body).await
@@ -3094,7 +3388,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 49);
+        assert_eq!(tools.len(), 52);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();

@@ -71,6 +71,11 @@ script is loaded and up to date. Both are for CI and the Mac app.
 - **Orchestration bodies** (`batch`, `build_song`, `play_and_measure`) call other bodies
   through `run_named` (a name → params → body table) or directly; they never bypass
   `require`, and the activity line for the one tool call lists every command that went out.
+- **Capture** (`capture_mix`) is the only path out of Live: the script records the master
+  through a Resampling track as a fixed-length Session clip (fired on the tick after the
+  playhead lands, the same two-phase pattern as locators), the server polls until the clip
+  has a file, stops the transport (a `Drop` guard stops it on any early exit), and
+  `src/audio.rs` reads the WAV or AIFF Live wrote and measures it. Nothing is copied.
 - **`require(live, cmd)`** is the capability check: the command must be in the script's
   advertised `SCRIPT_CAPABILITIES`. A missing or outdated script produces one clear "run the
   installer, then restart Live" error instead of a half-working session. A unit test

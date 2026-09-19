@@ -88,6 +88,38 @@ fn configure_client(app: AppHandle, kind: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn list_captures(app: AppHandle) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        settings::apply_env(&settings::load(&app));
+        mcp_ableton_music_maker::app::captures()
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Play an audio file Live recorded, in place, with the system player.
+#[tauri::command]
+fn play_file(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).is_file() {
+        return Err(format!("{path} is not there any more"));
+    }
+    std::process::Command::new("afplay")
+        .arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(err)
+}
+
+#[tauri::command]
+fn reveal_file(path: String) -> Result<(), String> {
+    std::process::Command::new("open")
+        .args(["-R", &path])
+        .spawn()
+        .map(|_| ())
+        .map_err(err)
+}
+
+#[tauri::command]
 fn remove_legacy_client(app: AppHandle) -> Result<Value, String> {
     clients::remove_legacy(&app)
 }
@@ -155,6 +187,9 @@ pub fn run() {
             client_config,
             configure_client,
             remove_legacy_client,
+            list_captures,
+            play_file,
+            reveal_file,
             activity_sessions,
             activity_lines,
             clear_session,

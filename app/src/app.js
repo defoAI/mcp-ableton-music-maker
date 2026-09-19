@@ -331,6 +331,25 @@
     } catch (e) { state.lines = []; renderActivity(); }
   }
 
+  async function loadCaptures() {
+    const body = $('#captures');
+    try {
+      const r = await invoke('list_captures');
+      const caps = r.captures || [];
+      body.innerHTML = caps.length
+        ? caps.map((c) => `<tr>
+            <td class="mono num">${c.slot}</td>
+            <td>${esc(c.name)}${c.is_recording ? ' <span class="pill off">recording</span>' : ''}</td>
+            <td class="r mono num">${c.length}</td>
+            <td class="path">${esc(c.file_path || '—')}</td>
+            <td>${c.file_path ? `<button class="btn small" data-play="${esc(c.file_path)}">Play</button> <button class="btn small" data-reveal="${esc(c.file_path)}">Reveal</button>` : ''}</td>
+          </tr>`).join('')
+        : '<tr><td colspan="5" class="empty">No captures yet. Ask Claude to capture a section.</td></tr>';
+    } catch (e) {
+      body.innerHTML = `<tr><td colspan="5" class="empty">${esc(String(e))}</td></tr>`;
+    }
+  }
+
   async function loadClientInfo() {
     try { state.clientInfo = await invoke('client_config', { kind: state.client }); } catch (e) { state.clientInfo = { kind: state.client, error: String(e) }; }
     renderSetup();
@@ -417,7 +436,7 @@
     document.querySelectorAll('.nav button').forEach((b) => { if (b.dataset.go === screen) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
     if (screen === 'setup') { renderSetup(); loadClientInfo(); }
     if (screen === 'settings') loadSettings();
-    if (screen === 'activity') renderActivity();
+    if (screen === 'activity') { renderActivity(); loadCaptures(); }
   }
   window.__goto = go;
 
@@ -426,6 +445,8 @@
   // ── wiring ────────────────────────────────────────────────────────────────
   document.addEventListener('click', (e) => {
     const open = e.target.closest('[data-open]'); if (open) { e.preventDefault(); invoke('open_external', { target: open.dataset.open }); return; }
+    const play = e.target.closest('[data-play]'); if (play) { invoke('play_file', { path: play.dataset.play }).then(() => toast('Playing'), (err) => toast(String(err))); return; }
+    const reveal = e.target.closest('[data-reveal]'); if (reveal) { invoke('reveal_file', { path: reveal.dataset.reveal }); return; }
     const goBtn = e.target.closest('[data-go]'); if (goBtn) { go(goBtn.dataset.go); return; }
     const chip = e.target.closest('.chip'); if (chip) { state.filter = chip.dataset.filter; document.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', c === chip)); renderActivity(); return; }
     const row = e.target.closest('tbody tr[data-i]'); if (row) { state.selected = +row.dataset.i; if (state.screen === 'overview') go('activity'); renderActivity(); return; }
