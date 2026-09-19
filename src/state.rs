@@ -27,3 +27,8 @@ pub fn activity_dir() -> PathBuf {
 pub fn sessions_dir() -> PathBuf {
     state_dir().join("sessions")
 }
+
+/// One `<library-key>.json` per Live library: the browser index; see [`crate::library`].
+pub fn library_dir() -> PathBuf {
+    state_dir().join("library")
+}

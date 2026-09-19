@@ -10,7 +10,7 @@ on the bar without the music ever stopping,
 ## Details
 | Field | Value |
 |-------|-------|
-| Status | `Draft` — open questions 1, 2, 4 and 7 need the producer's answer; the prototype transcript is not yet reviewed |
+| Status | `In Progress` — phases 1–3 built against the assumed answers below; awaiting the real-Live pass and the producer's answers to open questions 1, 2, 4 and 7 |
 | Priority | P1 — the first use of the product that is a performance rather than a session; it is what "drive Live" means to a performer |
 | Size | L — three phases below; phase 1 alone makes a bar-accurate performance possible |
 | Tracker | none yet — an issue is opened when the story is `Ready` |
@@ -478,3 +478,6 @@ With Live 12 open, the Remote Script reinstalled, Live restarted, an empty set.
 | Date | Change |
 |------|--------|
 | 2026-09-19 | Created from "go live with Ableton via the MCP and play songs and make arrangements on the fly" |
+| 2026-09-19 | Built end to end (Remote Script 1.13.0: nine commands and the tick clock; `src/performance.rs`; ten tools; guards; `tests/performance.rs`); real-Live verification pending |
+| 2026-09-19 | First real-Live session's feedback folded in (Remote Script 1.14.0): nested schemas inlined so the model sees note and cue forms; `build_song` searches plain instrument words and copies clips into `slots`; `start_performance` disarms and sets the key in Live; `keep_track_playing` (stop buttons off) replaces clip copies; nested Drum Racks found |
+| 2026-09-19 | `get_context` (one round trip, Remote Script 1.15.0) and MCP instructions at `initialize`, so an agent knows the build → hear → perform workflow out of the box |

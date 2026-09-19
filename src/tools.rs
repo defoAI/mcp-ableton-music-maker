@@ -5,8 +5,9 @@
 //! so tests can drive them with a fake bridge; the `#[tool]` methods only
 //! bind a body to its [`ToolSpec`] and hand both to [`Server::run`].
 
-use crate::connection::{self, LiveError, LiveState};
+use crate::connection::{self, LiveError, LiveState, Performance};
 use crate::notes::NotesInput;
+use crate::performance::{self as perf, CueParams, PerfState};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, InitializeRequestParams, InitializeResult};
@@ -78,6 +79,24 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "delete_track",
     "back_to_arrangement",
     "set_arrangement_loop",
+    "get_performance_state",
+    "set_launch_quantization",
+    "create_scene",
+    "fire_scene",
+    "stop_all_clips",
+    "set_crossfader",
+    "record_clip",
+    "schedule_cue",
+    "cancel_cue",
+    "set_scale",
+    "set_slot_stop_buttons",
+    "get_context",
+    "set_performance_mode",
+    "set_scene",
+    "start_live_capture",
+    "snapshot_mix",
+    "restore_mix",
+    "get_browser_index",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -165,6 +184,7 @@ fn hundred_ms() -> i64 {
 
 /// What to automate: a device parameter, or a mixer control.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct AutomationTarget {
     /// Index into the track's device chain (with parameter_index)
     #[serde(default)]
@@ -182,6 +202,7 @@ pub struct AutomationTarget {
 
 /// One automation breakpoint: the parameter reaches `value` at `time` beats.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct AutomationPoint {
     pub time: f64,
     pub value: f64,
@@ -189,6 +210,7 @@ pub struct AutomationPoint {
 
 /// A ramp in one line: from `from` at `start` to `to` at `start + over`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct Ramp {
     pub from: f64,
     pub to: f64,
@@ -294,6 +316,7 @@ params!(CreateAudioClipParams {
 /// One MIDI note. Extra fields (note_id, probability, ...) are forwarded to
 /// Live untouched, so notes read with get_clip_notes round-trip.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct Note {
     /// MIDI pitch 0-127
     pub pitch: i64,
@@ -449,11 +472,17 @@ params!(DeleteLocatorParams {
 });
 params!(SearchBrowserParams {
     /// Words that must all appear in the item's name or folder path, e.g. "analog bass" or "techno kit"
-    query: String,
+    query: String = "String::new",
+    /// Several searches in one call, e.g. ["analog bass", "techno kit", "evolving pad"]
+    queries: Vec<String> = "no_queries",
     /// "all" (instruments, sounds, drums, audio and MIDI effects) or one of: instruments, sounds, drums, audio_effects, midi_effects, samples, packs, user_library
     category: String = "all_categories",
-    /// Most hits to return (default 30, max 200)
+    /// Most hits to return per query (default 30, max 200)
     limit: i64 = "thirty",
+    /// One best hit per query, ready to load
+    best: bool = "bool::default",
+    /// Drop the server's library index and walk the browser again (after installing packs)
+    refresh: bool = "bool::default",
 });
 params!(ClipRefParams {
     /// Track that owns the clip
@@ -540,11 +569,13 @@ params!(GetClipAutomationParams {
 });
 /// One step of a batch: a tool name and its arguments.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct BatchStep {
     /// Any Live-facing tool name, e.g. "create_clip"
     pub tool: String,
     /// That tool's arguments. Inside integer fields the string "$last_track"
-    /// becomes the index of the most recent track created in this batch.
+    /// becomes the index of the most recent track created in this batch and
+    /// "$last_clip" the slot of the most recent create_clip (also inside cue steps).
     #[serde(default)]
     pub args: Value,
 }
@@ -557,6 +588,7 @@ params!(BatchParams {
 
 /// A track in a build_song document.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct SongTrack {
     /// Track name; clips and placements refer to it
     pub name: String,
@@ -587,24 +619,30 @@ fn midi_kind() -> String {
 
 /// A Session clip in a build_song document, with its notes in any compact form.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct SongClip {
     /// A track name from `tracks`, or an existing track's index as a string ("2")
     pub track: String,
-    /// Session slot (default 0)
+    /// Session slot (default 0; with `slots` given and this omitted, the clip goes only into `slots`)
     #[serde(default)]
-    pub slot: i64,
+    pub slot: Option<i64>,
     /// Clip name
     #[serde(default)]
     pub name: String,
     /// Length in beats (default 4)
     #[serde(default = "four")]
     pub length: f64,
+    /// Extra slots that get a copy of this clip (e.g. [1, 2]), so every scene
+    /// row plays it and a scene launch never stops the track
+    #[serde(default)]
+    pub slots: Vec<i64>,
     #[serde(flatten)]
     pub notes: NotesInput,
 }
 
 /// Where a clip goes in the Arrangement.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct SongPlacement {
     pub track: String,
     #[serde(default)]
@@ -622,14 +660,30 @@ pub struct SongPlacement {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
 pub struct SongLocator {
     pub name: String,
     pub time: f64,
 }
 
+/// A scene row in a build_song document: name, tempo, phrase length.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
+pub struct SongScene {
+    pub name: String,
+    #[serde(default)]
+    pub tempo: Option<f64>,
+    /// Bars per phrase for cues ("next_phrase"); default 16
+    #[serde(default)]
+    pub phrase_bars: Option<i64>,
+}
+
 params!(BuildSongParams {
     /// Tempo in BPM (optional)
     tempo: Option<f64>,
+    /// Scenes (rows) to name in order: row 0 gets scenes[0]; rows that do not exist yet are created
+    #[serde(default)]
+    scenes: Vec<SongScene>,
     /// Tracks to create, in order
     #[serde(default)]
     tracks: Vec<SongTrack>,
@@ -729,6 +783,26 @@ pub const MEASURE_CAPTURE: ToolSpec = ToolSpec::new("measure_capture");
 pub const DELETE_TRACK: ToolSpec = ToolSpec::new("delete_track");
 pub const BACK_TO_ARRANGEMENT: ToolSpec = ToolSpec::new("back_to_arrangement");
 pub const SET_ARRANGEMENT_LOOP: ToolSpec = ToolSpec::new("set_arrangement_loop");
+pub const START_PERFORMANCE: ToolSpec = ToolSpec::new("start_performance");
+pub const GET_PERFORMANCE_STATE: ToolSpec = ToolSpec::new("get_performance_state");
+pub const CUE: ToolSpec = ToolSpec::new("cue");
+pub const CANCEL_CUE: ToolSpec = ToolSpec::new("cancel_cue");
+pub const FIRE_SCENE: ToolSpec = ToolSpec::new("fire_scene");
+pub const CREATE_SCENE: ToolSpec = ToolSpec::new("create_scene");
+pub const RECORD_CLIP: ToolSpec = ToolSpec::new("record_clip");
+pub const SET_LAUNCH_QUANTIZATION: ToolSpec = ToolSpec::new("set_launch_quantization");
+pub const SET_CROSSFADER: ToolSpec = ToolSpec::new("set_crossfader");
+pub const END_PERFORMANCE: ToolSpec = ToolSpec::new("end_performance");
+pub const KEEP_TRACK_PLAYING: ToolSpec = ToolSpec::new("keep_track_playing");
+pub const GET_CONTEXT: ToolSpec = ToolSpec::new("get_context");
+pub const SET_SCENE: ToolSpec = ToolSpec::new("set_scene");
+pub const LISTEN: ToolSpec = ToolSpec::new("listen");
+pub const VARY_CLIP: ToolSpec = ToolSpec::new("vary_clip");
+pub const UNDO_VARY: ToolSpec = ToolSpec::new("undo_vary");
+pub const FOLLOW_KEY: ToolSpec = ToolSpec::new("follow_key");
+pub const SNAPSHOT_MIX: ToolSpec = ToolSpec::new("snapshot_mix");
+pub const RESTORE_MIX: ToolSpec = ToolSpec::new("restore_mix");
+pub const PANIC: ToolSpec = ToolSpec::new("panic");
 
 // ── Tool bodies ─────────────────────────────────────────────────────────────
 
@@ -1146,6 +1220,7 @@ pub fn set_arrangement_clip_name_body(live: &LiveState, p: &SetClipNameParams) -
 }
 
 pub fn set_tempo_body(live: &LiveState, p: &SetTempoParams) -> ToolResult {
+    guard_performance(live, "set_tempo", "would jump the tempo mid-bar; ramp it with cue {\"steps\": [{\"from\": \"next_bar\", \"bars\": 8, \"ramp\": {\"tempo\": N}}]} instead")?;
     require(live, "set_tempo")?;
     live.send_command("set_tempo", Some(json!({"tempo": p.tempo})))
         .map_err(|e| live_err("set tempo", e))?;
@@ -1182,17 +1257,116 @@ pub fn load_instrument_or_effect_body(live: &LiveState, p: &LoadInstrumentParams
     }
 }
 
-pub fn fire_clip_body(live: &LiveState, p: &ClipParams) -> ToolResult {
+pub fn fire_clip_body(live: &LiveState, p: &FireClipParams) -> ToolResult {
     require(live, "fire_clip")?;
-    live.send_command(
-        "fire_clip",
-        Some(json!({"track_index": p.track_index, "clip_index": p.clip_index})),
-    )
-    .map_err(|e| live_err("fire clip", e))?;
+    if let Some(text) = defer_if_too_close(
+        live,
+        p.no_later_than,
+        json!({"action": "fire_clip", "track_index": p.track_index, "clip_index": p.clip_index}),
+        &format!("fire track {}/slot {}", p.track_index, p.clip_index),
+    )? {
+        return Ok(text);
+    }
+    let r = live
+        .send_command(
+            "fire_clip",
+            Some(json!({"track_index": p.track_index, "clip_index": p.clip_index})),
+        )
+        .map_err(|e| live_err("fire clip", e))?;
     Ok(format!(
-        "Started playing clip at track {}, slot {}",
-        p.track_index, p.clip_index
+        "Fired track {}, slot {}{}",
+        p.track_index,
+        p.clip_index,
+        landing_text(live, &r)
     ))
+}
+
+/// " — lands on bar 40 (issued at 39.3)" from the Remote Script's own reading
+/// after the fire; says so when the bar line passed while the call was in flight.
+fn landing_text(live: &LiveState, r: &Value) -> String {
+    let Some(lands) = r.get("lands_on_bar").and_then(Value::as_i64) else {
+        return String::new();
+    };
+    let issued = format!(
+        "{}.{}",
+        r.get("issued_at_bar").and_then(Value::as_i64).unwrap_or(0),
+        r.get("issued_at_beat_in_bar")
+            .and_then(Value::as_i64)
+            .unwrap_or(1)
+    );
+    let expected = live
+        .last_clock()
+        .filter(|(age, _)| *age < 5.0)
+        .and_then(|(_, c)| c.get("bar").and_then(Value::as_i64))
+        .map(|b| b + 1);
+    match expected {
+        Some(e) if lands > e => format!(
+            " — lands on bar {lands}, not {e}: the call arrived at {issued}, after the bar line (round trip {:.2} s). For certainty, cue it.",
+            live.round_trip_s()
+        ),
+        _ => format!(" — lands on bar {lands} (issued at {issued})."),
+    }
+}
+
+/// `no_later_than`: when the bar is closer than the measured round trip plus
+/// a margin, schedule a one-step cue for the next certain bar instead of
+/// gambling; returns the text to reply with in that case.
+fn defer_if_too_close(
+    live: &LiveState,
+    no_later_than: Option<i64>,
+    mut step: Value,
+    what: &str,
+) -> Result<Option<String>, String> {
+    let Some(target) = no_later_than else {
+        return Ok(None);
+    };
+    let Some((age, clock)) = live.last_clock() else {
+        return Ok(None);
+    };
+    let bar = clock.get("bar").and_then(Value::as_i64).unwrap_or(0);
+    let bib = clock
+        .get("beat_in_bar")
+        .and_then(Value::as_i64)
+        .unwrap_or(1);
+    let next_bar = bar + 1;
+    if next_bar < target {
+        return Ok(None);
+    }
+    if next_bar > target {
+        return Err(format!(
+            "bar {target} has passed (it is bar {bar}.{bib}); fire without no_later_than, or cue the next bar."
+        ));
+    }
+    let secs = clock
+        .get("seconds_to_next_bar")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+        - age;
+    let rt = live.round_trip_s();
+    if secs > rt + 0.15 {
+        return Ok(None);
+    }
+    require(live, "schedule_cue")?;
+    let bpb = clock
+        .get("beats_per_bar")
+        .and_then(Value::as_f64)
+        .unwrap_or(4.0);
+    step["beat"] = json!(target as f64 * bpb);
+    step["bar"] = json!(target + 1);
+    step["label"] = json!(what);
+    let sent = live
+        .send_command(
+            "schedule_cue",
+            Some(json!({"cue": {"name": format!("{what} (no later than)"), "steps": [step]}})),
+        )
+        .map_err(|e| live_err("schedule the launch", e))?;
+    let id = sent.get("id").and_then(Value::as_i64).unwrap_or(0);
+    Ok(Some(format!(
+        "Not fired: bar {target} is {:.1} s away and the round trip is {rt:.2} s, so the launch might land on {}. Scheduled as cue {id} for bar {} instead (the earliest certain bar); cancel_cue {id} to drop it.",
+        secs.max(0.0),
+        target + 1,
+        target + 1
+    )))
 }
 
 pub fn stop_clip_body(live: &LiveState, p: &ClipParams) -> ToolResult {
@@ -1210,6 +1384,7 @@ pub fn stop_clip_body(live: &LiveState, p: &ClipParams) -> ToolResult {
 
 pub fn delete_clip_body(live: &LiveState, p: &ClipParams) -> ToolResult {
     require(live, "delete_clip")?;
+    guard_delete(live, p.track_index, Some(p.clip_index))?;
     live.send_command(
         "delete_clip",
         Some(json!({"track_index": p.track_index, "clip_index": p.clip_index})),
@@ -1225,6 +1400,7 @@ pub fn start_playback_body(live: &LiveState, _p: &Empty) -> ToolResult {
 }
 
 pub fn stop_playback_body(live: &LiveState, _p: &Empty) -> ToolResult {
+    guard_performance(live, "stop_playback", "would cut the audio mid-bar")?;
     live.send_command("stop_playback", None)
         .map_err(|e| live_err("stop playback", e))?;
     Ok("Stopped playback".to_string())
@@ -1382,12 +1558,22 @@ pub fn load_drum_kit_body(live: &LiveState, p: &LoadDrumKitParams) -> ToolResult
 }
 
 pub fn switch_to_arrangement_view_body(live: &LiveState, _p: &Empty) -> ToolResult {
+    guard_performance(
+        live,
+        "switch_to_arrangement_view",
+        "would leave the Session view the set is played from",
+    )?;
     live.send_command("switch_to_arrangement_view", None)
         .map_err(|e| live_err("switch to arrangement view", e))?;
     Ok("Switched to Arrangement view".to_string())
 }
 
 pub fn set_arrangement_time_body(live: &LiveState, p: &ArrangementTimeParams) -> ToolResult {
+    guard_performance(
+        live,
+        "set_arrangement_time",
+        "would move the playhead under the playing clips",
+    )?;
     require(live, "set_current_song_time")?;
     let r = live
         .send_command("set_current_song_time", Some(json!({"time": p.time})))
@@ -1841,7 +2027,153 @@ pub fn delete_locator_body(live: &LiveState, p: &DeleteLocatorParams) -> ToolRes
 
 // ── Search, clip settings, meters, automation ───────────────────────────────
 
+/// Search hits from the server's library index when it is complete, else
+/// from the Remote Script (merged with whatever the index has so far).
+fn find_items(
+    live: &LiveState,
+    query: &str,
+    category: &str,
+    limit: usize,
+) -> Result<Vec<crate::library::Item>, String> {
+    let ix = live.library.snapshot();
+    let walked = crate::library::WALKED_CATEGORIES.contains(&category);
+    if let Some(ix) = ix.as_ref().filter(|ix| ix.complete && walked) {
+        return Ok(crate::library::search(ix, query, category, limit)
+            .into_iter()
+            .cloned()
+            .collect());
+    }
+    require(live, "search_browser")?;
+    let r = live
+        .send_command(
+            "search_browser",
+            Some(json!({"query": query, "category": category, "limit": limit})),
+        )
+        .map_err(|e| browser_error("search the browser", e))?;
+    let mut items: Vec<crate::library::Item> = r
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(ix) = ix.as_ref().filter(|_| walked) {
+        for hit in crate::library::search(ix, query, category, limit) {
+            if !items.iter().any(|i| i.uri == hit.uri) {
+                items.push(hit.clone());
+            }
+        }
+        items.truncate(limit);
+    }
+    Ok(items)
+}
+
 pub fn search_browser_body(live: &LiveState, p: &SearchBrowserParams) -> ToolResult {
+    if p.refresh {
+        live.library.clear();
+        if let Ok(path) = std::env::var("ABLETON_MCP_STATE_DIR").map(std::path::PathBuf::from) {
+            let _ = std::fs::remove_dir_all(path.join("library"));
+        } else {
+            let _ = std::fs::remove_dir_all(crate::state::library_dir());
+        }
+    }
+    let mut queries: Vec<String> = p
+        .queries
+        .iter()
+        .map(|q| q.trim().to_string())
+        .filter(|q| !q.is_empty())
+        .collect();
+    if !p.query.trim().is_empty() {
+        queries.insert(0, p.query.trim().to_string());
+    }
+    if queries.is_empty() {
+        if p.refresh {
+            return Ok(format!(
+                "Library index dropped; it is walked again in the background. {}",
+                live.library.status_line()
+            ));
+        }
+        return Err(
+            "Give a query, e.g. \"analog bass\" or \"techno kit\", or queries: [\"…\", \"…\"]."
+                .into(),
+        );
+    }
+    let limit = if p.best {
+        1
+    } else {
+        p.limit.clamp(1, 200) as usize
+    };
+    let ix = live.library.snapshot();
+    let from_index = ix.as_ref().is_some_and(|ix| ix.complete)
+        && crate::library::WALKED_CATEGORIES.contains(&p.category.as_str());
+    let mut out = if from_index {
+        format!("From the {}:\n", live.library.status_line())
+    } else if let Some(ix) = ix.as_ref() {
+        format!(
+            "From Live plus the library index ({} items so far, walking):\n",
+            ix.items.len()
+        )
+    } else {
+        String::new()
+    };
+    if queries.len() == 1 && !p.best {
+        let q = &queries[0];
+        let items = find_items(live, q, &p.category, limit)?;
+        if items.is_empty() {
+            return Ok(format!(
+                "{out}Nothing in the {} browser matches \"{q}\". Try fewer or different words, or another category.",
+                p.category
+            ));
+        }
+        out.push_str(&format!(
+            "{} match{} for \"{q}\" ({}):\n",
+            items.len(),
+            if items.len() == 1 { "" } else { "es" },
+            p.category
+        ));
+        for item in &items {
+            out.push_str(&format!(
+                "  {} — {}\n    uri: {}\n",
+                item.name, item.path, item.uri
+            ));
+        }
+        out.push_str("Load one with load_instrument_or_effect(track_index, uri), or give build_song the words.");
+        return Ok(out);
+    }
+    let width = queries.iter().map(String::len).max().unwrap_or(8).min(40);
+    for q in &queries {
+        let items = find_items(live, q, &p.category, limit)?;
+        match items.first() {
+            Some(item) if p.best => out.push_str(&format!(
+                "  {q:<width$} → '{}'  {}  ({})\n",
+                item.name, item.uri, item.path
+            )),
+            Some(_) => {
+                out.push_str(&format!("  {q}:\n"));
+                for item in &items {
+                    out.push_str(&format!(
+                        "    {} — {}  uri: {}\n",
+                        item.name, item.path, item.uri
+                    ));
+                }
+            }
+            None => out.push_str(&format!(
+                "  {q:<width$} → nothing{}\n",
+                if from_index {
+                    ""
+                } else {
+                    " yet; more may appear when the walk completes"
+                }
+            )),
+        }
+    }
+    out.push_str("Use the URIs in build_song `instrument` or load_instrument_or_effect; or give build_song the words and it resolves them the same way.");
+    Ok(out)
+}
+
+pub fn search_browser_body_legacy(live: &LiveState, p: &SearchBrowserParams) -> ToolResult {
     require(live, "search_browser")?;
     if p.query.trim().is_empty() {
         return Err("Give a query, e.g. \"analog bass\" or \"techno kit\".".into());
@@ -2134,6 +2466,11 @@ pub fn get_track_meters_body(live: &LiveState, _p: &Empty) -> ToolResult {
 /// Play a stretch of the set, sample the meters while it plays, and report
 /// each track's peak. Nothing in the set changes.
 pub fn play_and_measure_body(live: &LiveState, p: &PlayAndMeasureParams) -> ToolResult {
+    guard_performance(
+        live,
+        "play_and_measure",
+        "would stop and move the transport; read get_track_meters while it plays instead",
+    )?;
     require(live, "get_track_meters")?;
     require(live, "start_playback")?;
     require(live, "stop_playback")?;
@@ -2346,6 +2683,7 @@ fn capture_text(
 }
 
 pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
+    guard_performance(live, "capture_mix", "would stop and move the transport")?;
     for cmd in [
         "ensure_capture_track",
         "start_capture",
@@ -2526,6 +2864,7 @@ pub fn measure_capture_body(live: &LiveState, p: &MeasureCaptureParams) -> ToolR
 
 pub fn delete_track_body(live: &LiveState, p: &TrackParams) -> ToolResult {
     require(live, "delete_track")?;
+    guard_delete(live, p.track_index, None)?;
     let r = live
         .send_command("delete_track", Some(json!({"track_index": p.track_index})))
         .map_err(|e| live_err("delete the track", e))?;
@@ -2538,6 +2877,11 @@ pub fn delete_track_body(live: &LiveState, p: &TrackParams) -> ToolResult {
 }
 
 pub fn back_to_arrangement_body(live: &LiveState, _p: &Empty) -> ToolResult {
+    guard_performance(
+        live,
+        "back_to_arrangement",
+        "would stop every Session clip in favour of the timeline",
+    )?;
     require(live, "back_to_arrangement")?;
     live.send_command("back_to_arrangement", None)
         .map_err(|e| live_err("return to the arrangement", e))?;
@@ -2585,6 +2929,1410 @@ macro_rules! named_tools {
     };
 }
 
+// ── Performance ─────────────────────────────────────────────────────────────
+//
+// Claude plans, Live executes. start_performance turns on the guards below;
+// cue hands a resolved timeline to the Remote Script, which runs it on its
+// own clock; get_performance_state is how Claude sees where the set is.
+
+fn one_bar_q() -> String {
+    "1_bar".to_string()
+}
+
+params!(StartPerformanceParams {
+    /// Scene to fire first, by name or index (optional: keeps whatever plays)
+    scene: Option<Value>,
+    /// Global launch quantization: "1_bar" (default), "2_bars", "4_bars", "8_bars", "1/2", "1/4" … or "none"
+    quantization: String = "one_bar_q",
+    /// The key, e.g. "F minor", when the set does not carry one (Live 12's scale setting is read automatically)
+    key: Option<String>,
+    /// Tempo to set before starting; only applied while the transport is stopped (ramp it in a cue otherwise)
+    tempo: Option<f64>,
+    /// Disarm every armed track first (default true): Live arms new MIDI tracks by itself, and an armed track with an empty slot records on a scene launch
+    disarm: bool = "yes",
+    /// Load Live's Limiter on the master (ceiling −0.3 dB) as a safety net
+    limiter: bool = "bool::default",
+    /// After every record_clip, estimate the key of what was played and re-key the other MIDI clips to it
+    follow_key: bool = "bool::default",
+});
+params!(GetContextParams {
+    /// Also read the browser inventory (instruments, effects, packs); slower, so off by default
+    include_library: bool = "bool::default",
+    /// Return the raw JSON instead of the readout
+    json: bool = "bool::default",
+});
+params!(KeepTrackPlayingParams {
+    /// Track name or index
+    track: Value,
+    /// true (default) removes the stop buttons from the track's empty slots so scene launches leave it playing; false puts them back
+    keep: bool = "yes",
+});
+params!(CancelCueParams {
+    /// The cue id from the cue result or get_performance_state
+    id: i64,
+});
+params!(FireSceneParams {
+    /// Scene name or index
+    scene: Value,
+    /// The bar the launch must not miss: when that bar is closer than the round trip, a cue is scheduled for the next certain bar instead
+    no_later_than: Option<i64>,
+});
+params!(FireClipParams {
+    /// The index of the track containing the clip
+    track_index: i64,
+    /// The index of the clip slot containing the clip
+    clip_index: i64,
+    /// The bar the launch must not miss: when that bar is closer than the round trip, a cue is scheduled for the next certain bar instead
+    no_later_than: Option<i64>,
+});
+params!(GetPerformanceStateParams {
+    /// Add the next 32 bars: every cue step and phrase boundary
+    bar_map: bool = "bool::default",
+});
+params!(SetSceneParams {
+    /// Scene name or index
+    scene: Value,
+    /// New name
+    name: Option<String>,
+    /// Scene tempo (Live 11+)
+    tempo: Option<f64>,
+    /// Bars per phrase for "next_phrase" cues (default 16)
+    phrase_bars: Option<i64>,
+});
+params!(ListenParams {
+    /// Bars to listen for (default 1, max 16), from the next bar line
+    bars: f64 = "one",
+    /// Record the bars through the Capture track (never touches the transport) and add RMS and low/mid/high balance
+    capture: bool = "bool::default",
+});
+params!(VaryClipParams {
+    /// Track name or index
+    track: Value,
+    /// Session slot of the clip to vary
+    clip: i64,
+    /// "fill_last_bar", "ghost_notes", "invert_chords", "thin", "half_time" or "double_time"
+    variation: String,
+    /// Seed: the same seed gives the same variation (default 1)
+    seed: u64 = "one_u64",
+    /// Write the variation into this slot instead of in place (a new clip)
+    to_slot: Option<i64>,
+});
+params!(UndoVaryParams {
+    /// Track name or index
+    track: Value,
+    /// Session slot varied in place
+    clip: i64,
+});
+params!(FollowKeyParams {
+    /// Track name or index holding the recording (record_clip's track)
+    track: Value,
+    /// Its slot
+    clip: i64,
+});
+params!(RestoreMixParams {
+    /// Snapshot id from snapshot_mix
+    id: i64,
+});
+params!(PanicParams {
+    /// Tracks to keep, by name or index
+    keep: Vec<Value> = "no_keep",
+    /// Bars to fade over (default 1)
+    bars: f64 = "one",
+});
+params!(CreateSceneParams {
+    /// Where to insert the scene (-1 = at the end)
+    index: i64 = "minus_one",
+    /// Scene name
+    name: Option<String>,
+    /// A scene tempo (Live 11+); the scene sets it when fired
+    tempo: Option<f64>,
+    /// Bars per phrase for "next_phrase" cues (default 16)
+    phrase_bars: Option<i64>,
+});
+params!(RecordClipParams {
+    /// Track name or index (a MIDI or audio track that can be armed)
+    track: Value,
+    /// Bars to record (default 4, max 64); the clip loops when done
+    bars: i64 = "four_i",
+    /// Clip name (default "take")
+    name: Option<String>,
+    /// The bar the recording must start on at the latest; a cue is scheduled when the bar is too close
+    no_later_than: Option<i64>,
+});
+fn one_u64() -> u64 {
+    1
+}
+fn no_queries() -> Vec<String> {
+    Vec::new()
+}
+fn no_keep() -> Vec<Value> {
+    Vec::new()
+}
+params!(SetLaunchQuantizationParams {
+    /// "none", "8_bars", "4_bars", "2_bars", "1_bar", "1/2", "1/2t", "1/4", "1/4t", "1/8", "1/8t", "1/16", "1/16t" or "1/32"
+    quantization: String,
+});
+
+/// One track's crossfader side.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(inline)]
+pub struct CrossfadeAssign {
+    /// Track name or index
+    pub track: Value,
+    /// "A", "B" or "none"
+    pub side: String,
+}
+params!(SetCrossfaderParams {
+    /// Crossfader position: 0 = A, 1 = B
+    value: Option<f64>,
+    /// Tracks to assign to a side
+    assign: Vec<CrossfadeAssign> = "no_assign",
+});
+params!(EndPerformanceParams {
+    /// Stop on a bar: "next_bar", {"bar": N} or {"bars_after": k} (the default is next_bar)
+    at: Option<perf::CueTime>,
+    /// Fade the master to silence over this many bars from the next bar, then stop
+    fade_bars: Option<f64>,
+    /// Stop immediately, mid-bar
+    now: bool = "bool::default",
+});
+
+fn four_i() -> i64 {
+    4
+}
+fn no_assign() -> Vec<CrossfadeAssign> {
+    Vec::new()
+}
+
+fn read_perf_state(live: &LiveState) -> Result<PerfState, String> {
+    require(live, "get_performance_state")?;
+    let v = live
+        .send_command("get_performance_state", None)
+        .map_err(|e| live_err("read the performance state", e))?;
+    PerfState::from_value(&v)
+}
+
+fn performance_running(live: &LiveState) -> Option<Performance> {
+    live.performance
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+const END_OPTIONS: &str = "Use end_performance {\"at\": \"next_bar\"} to stop on the bar, end_performance {\"fade_bars\": 8} to fade the master and stop, or end_performance {\"now\": true} if you really mean now.";
+
+/// The guard every transport-touching tool calls first: while a performance
+/// runs, the call is refused with the on-the-bar alternative in the message.
+fn guard_performance(live: &LiveState, tool: &str, harm: &str) -> Result<(), String> {
+    match performance_running(live) {
+        Some(p) => Err(format!(
+            "A performance is running (since bar {}, started {}). {tool} {harm}. {END_OPTIONS}",
+            p.start_bar,
+            p.started_at.format("%H:%M:%S")
+        )),
+        None => Ok(()),
+    }
+}
+
+/// delete_track / delete_clip: allowed during a performance only when the
+/// target is neither playing nor queued.
+fn guard_delete(live: &LiveState, track_index: i64, clip_index: Option<i64>) -> Result<(), String> {
+    if performance_running(live).is_none() {
+        return Ok(());
+    }
+    let state = read_perf_state(live)?;
+    if let Some(t) = state.tracks.iter().find(|t| t.index == track_index) {
+        let hits = |i: i64| i >= 0 && clip_index.is_none_or(|c| c == i);
+        if hits(t.playing_slot_index) || hits(t.fired_slot_index) || t.is_recording {
+            let what = match clip_index {
+                Some(c) => format!("slot {c} on '{}'", t.name),
+                None => format!("track '{}'", t.name),
+            };
+            return Err(format!(
+                "A performance is running and {what} is playing or queued. Stop it on the bar first (a cue with stop_clip, or fire another scene), then delete."
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn key_line(state: &PerfState, given: Option<&String>) -> (Option<String>, String) {
+    match (given.filter(|k| !k.trim().is_empty()), state.key_from_set()) {
+        (Some(k), _) => (Some(k.trim().to_string()), format!("key {}", k.trim())),
+        (None, Some(k)) => (Some(k.clone()), format!("key {k} (from your set's scale)")),
+        _ => (
+            None,
+            "key not set (tell me the key, or set the scale in Live 12)".into(),
+        ),
+    }
+}
+
+pub fn get_context_body(live: &LiveState, p: &GetContextParams) -> ToolResult {
+    require(live, "get_context")?;
+    let ctx = live
+        .send_command(
+            "get_context",
+            Some(json!({"include_library": p.include_library})),
+        )
+        .map_err(|e| live_err("read the set", e))?;
+    if p.json {
+        return Ok(pretty(&ctx));
+    }
+    let since = performance_running(live).map(|r| {
+        (
+            r.start_bar,
+            (chrono::Local::now() - r.started_at).num_milliseconds() as f64 / 1000.0,
+        )
+    });
+    let text = crate::context::context_text(&ctx, since);
+    Ok(text.replace(
+        crate::context::FOOTER,
+        &format!(
+            "{} · round trip {:.2} s\n{}",
+            live.library.status_line(),
+            live.round_trip_s(),
+            crate::context::FOOTER
+        ),
+    ))
+}
+
+pub fn set_scene_body(live: &LiveState, p: &SetSceneParams) -> ToolResult {
+    require(live, "set_scene")?;
+    if p.name.is_none() && p.tempo.is_none() && p.phrase_bars.is_none() {
+        return Err("Give name, tempo and/or phrase_bars.".into());
+    }
+    let state = read_perf_state(live)?;
+    let scene = state.scene_by(&p.scene)?;
+    let r = live
+        .send_command(
+            "set_scene",
+            Some(json!({"index": scene.index, "name": p.name, "tempo": p.tempo, "phrase_bars": p.phrase_bars})),
+        )
+        .map_err(|e| live_err("set the scene", e))?;
+    Ok(format!(
+        "Scene {} '{}': phrase {} bars{}{}.",
+        scene.index,
+        get_display(&r, "name", ""),
+        get_display(&r, "phrase_bars", "16"),
+        if r.get("phrase_default") == Some(&json!(true)) {
+            " (default)"
+        } else {
+            ""
+        },
+        r.get("tempo")
+            .and_then(Value::as_f64)
+            .filter(|t| *t > 0.0)
+            .map(|t| format!(", tempo {t}"))
+            .unwrap_or_default()
+    ))
+}
+
+fn meter_level(v: &Value) -> f64 {
+    let mut best = 0.0f64;
+    if let Some(o) = v.as_object() {
+        for (k, x) in o {
+            if k.starts_with("output_meter") {
+                if let Some(f) = x.as_f64() {
+                    best = best.max(f);
+                }
+            }
+        }
+    }
+    best
+}
+
+pub fn listen_body(live: &LiveState, p: &ListenParams) -> ToolResult {
+    require(live, "get_track_meters")?;
+    if !(0.25..=16.0).contains(&p.bars) {
+        return Err(format!("bars must be between 0.25 and 16, got {}", p.bars));
+    }
+    let state = read_perf_state(live)?;
+    if !state.is_playing {
+        return Err("Nothing is playing; listen needs the transport running.".into());
+    }
+    let bar_s = state.seconds_per_beat() * state.beats_per_bar();
+    let start_bar = state.next_bar();
+    if p.capture {
+        for c in ["start_live_capture", "capture_status"] {
+            require(live, c)?;
+        }
+        let started = live
+            .send_command(
+                "start_live_capture",
+                Some(json!({"bars": p.bars.ceil() as i64, "name": "listen"})),
+            )
+            .map_err(|e| live_err("start the live capture", e))?;
+        let slot = started.get("slot").and_then(Value::as_i64).unwrap_or(0);
+        let budget = state.seconds_to_next_bar() + p.bars.ceil() * bar_s + 6.0;
+        let deadline = Instant::now() + std::time::Duration::from_secs_f64(budget.min(120.0));
+        let status = loop {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            let s = live
+                .send_command("capture_status", Some(json!({"slot": slot})))
+                .map_err(|e| live_err("read the capture status", e))?;
+            let has_clip = s.get("has_clip").and_then(Value::as_bool).unwrap_or(false);
+            let recording = s
+                .get("is_recording")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let file = s.get("file_path").and_then(Value::as_str).unwrap_or("");
+            if has_clip && !recording && !file.is_empty() {
+                break s;
+            }
+            if Instant::now() > deadline {
+                return Err(format!("The live capture did not finish within {budget:.0} s; the transport was never touched."));
+            }
+        };
+        let path = status
+            .get("file_path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let audio = crate::audio::read_file(std::path::Path::new(&path))?;
+        let m = crate::audio::measure(&audio, bar_s);
+        let bands = crate::audio::band_balance(&audio);
+        let lands = started
+            .get("lands_on_bar")
+            .and_then(Value::as_i64)
+            .unwrap_or(start_bar);
+        return Ok(format!(
+            "Listened by recording {} bar{} from bar {lands} (Capture slot {slot}, {:.1} s):\n  peak {:.1} dBFS · RMS {:.1} dBFS · low {:.0}% · mid {:.0}% · high {:.0}%{}{}\nRMS per bar: {}\nThe clip stays on the Capture track; the transport was never touched.",
+            p.bars.ceil() as i64,
+            if p.bars.ceil() as i64 == 1 { "" } else { "s" },
+            m.duration_s,
+            m.peak_dbfs,
+            m.rms_dbfs,
+            bands.low * 100.0,
+            bands.mid * 100.0,
+            bands.high * 100.0,
+            if m.clipped_samples > 0 { format!(" · {} clipped samples", m.clipped_samples) } else { String::new() },
+            match m.stereo_correlation { Some(c) if c < 0.1 => " · very wide/mono-unsafe".to_string(), _ => String::new() },
+            m.rms_per_bar.iter().map(|x| format!("{x:.1}")).collect::<Vec<_>>().join(" ")
+        ));
+    }
+    let wait = state.seconds_to_next_bar().clamp(0.0, 10.0);
+    std::thread::sleep(std::time::Duration::from_secs_f64(wait));
+    let deadline = Instant::now() + std::time::Duration::from_secs_f64(p.bars * bar_s);
+    let mut peaks: BTreeMap<String, (f64, f64, usize)> = BTreeMap::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut readings = 0usize;
+    loop {
+        let r = live
+            .send_command("get_track_meters", None)
+            .map_err(|e| live_err("read the meters", e))?;
+        readings += 1;
+        let mut entries: Vec<(String, f64)> = Vec::new();
+        for key in ["tracks", "returns"] {
+            if let Some(a) = r.get(key).and_then(Value::as_array) {
+                for t in a {
+                    entries.push((get_display(t, "name", "?"), meter_level(t)));
+                }
+            }
+        }
+        if let Some(m) = r.get("master") {
+            entries.push(("Master".into(), meter_level(m)));
+        }
+        for (name, level) in entries {
+            if !order.contains(&name) {
+                order.push(name.clone());
+            }
+            let e = peaks.entry(name).or_insert((0.0, 0.0, 0));
+            e.0 = e.0.max(level);
+            e.1 += level;
+            e.2 += 1;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let width = order
+        .iter()
+        .map(String::len)
+        .max()
+        .unwrap_or(6)
+        .clamp(6, 24);
+    let mut out = format!(
+        "Listened for {} bar{} from bar {start_bar} ({:.1} s, {readings} meter readings):\n",
+        p.bars,
+        if p.bars == 1.0 { "" } else { "s" },
+        p.bars * bar_s
+    );
+    for name in &order {
+        let (peak, sum, n) = peaks[name];
+        let avg = if n > 0 { sum / n as f64 } else { 0.0 };
+        let flag = if name == "Master" && peak > 0.944 {
+            "   ← within 0.5 dB of clipping"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "  {name:<width$} peak {peak:.2}  avg {avg:.2}{flag}\n"
+        ));
+    }
+    out.push_str("Levels are Live's output meters (0–1), not audio; listen {\"capture\": true} records the bars through the Capture track (the transport is never touched) and adds RMS and low/mid/high balance.");
+    Ok(out)
+}
+
+fn clip_notes(live: &LiveState, track_index: i64, clip_index: i64) -> Result<Vec<Value>, String> {
+    require(live, "get_clip_notes")?;
+    let r = live
+        .send_command(
+            "get_clip_notes",
+            Some(json!({"track_index": track_index, "clip_index": clip_index})),
+        )
+        .map_err(|e| live_err("read the clip's notes", e))?;
+    Ok(r.get("notes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default())
+}
+
+fn write_notes(
+    live: &LiveState,
+    track_index: i64,
+    clip_index: i64,
+    notes: &[Value],
+) -> Result<(), String> {
+    run_named(
+        live,
+        "add_notes_to_clip",
+        json!({"track_index": track_index, "clip_index": clip_index, "notes": notes, "clear": true}),
+    )
+    .map(|_| ())
+}
+
+pub fn vary_clip_body(live: &LiveState, p: &VaryClipParams) -> ToolResult {
+    if !crate::variation::VARIATIONS.contains(&p.variation.as_str()) {
+        return Err(format!(
+            "variation must be one of {}",
+            crate::variation::VARIATIONS.join(", ")
+        ));
+    }
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    if !track.slots_with_clips.contains(&p.clip) {
+        return Err(format!("slot {} on '{}' holds no clip", p.clip, track.name));
+    }
+    let raw = clip_notes(live, track.index, p.clip)?;
+    let notes: Vec<crate::variation::VNote> = raw
+        .iter()
+        .filter_map(crate::variation::VNote::from_value)
+        .collect();
+    if notes.is_empty() {
+        return Err(format!(
+            "'{}' slot {} has no notes to vary",
+            track.name, p.clip
+        ));
+    }
+    require(live, "get_clip_info")?;
+    let info = live
+        .send_command(
+            "get_clip_info",
+            Some(json!({"track_index": track.index, "clip_index": p.clip, "arrangement": false})),
+        )
+        .map_err(|e| live_err("read the clip", e))?;
+    let length = info
+        .get("length")
+        .and_then(Value::as_f64)
+        .filter(|l| *l > 0.0)
+        .unwrap_or_else(|| {
+            notes
+                .iter()
+                .map(|n| n.start + n.duration)
+                .fold(0.0, f64::max)
+                .ceil()
+                .max(1.0)
+        });
+    let varied =
+        crate::variation::vary(&notes, &p.variation, p.seed, length, state.beats_per_bar())?;
+    let values: Vec<Value> = varied.iter().map(|n| n.to_value()).collect();
+    match p.to_slot {
+        Some(slot) => {
+            if track.slots_with_clips.contains(&slot) {
+                return Err(format!(
+                    "slot {slot} on '{}' already holds a clip; pick an empty slot or vary in place",
+                    track.name
+                ));
+            }
+            let input: NotesInput =
+                serde_json::from_value(json!({"notes": values})).map_err(|e| e.to_string())?;
+            create_clip_body(
+                live,
+                &CreateClipParams {
+                    track_index: track.index,
+                    clip_index: slot,
+                    length,
+                    name: format!("{} ({})", get_display(&info, "name", "clip"), p.variation),
+                    input,
+                },
+            )?;
+            Ok(format!(
+                "Varied '{}' slot {} → slot {slot} ({}, seed {}): {} notes → {}. Fire slot {slot} to hear it; the original is untouched.",
+                track.name, p.clip, p.variation, p.seed, notes.len(), varied.len()
+            ))
+        }
+        None => {
+            live.vary_undo
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert((track.index, p.clip), raw.clone());
+            write_notes(live, track.index, p.clip, &values)?;
+            Ok(format!(
+                "Varied '{}' slot {} in place ({}, seed {}): {} notes → {}. undo_vary restores the previous notes.",
+                track.name, p.clip, p.variation, p.seed, notes.len(), varied.len()
+            ))
+        }
+    }
+}
+
+pub fn undo_vary_body(live: &LiveState, p: &UndoVaryParams) -> ToolResult {
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    let previous = live
+        .vary_undo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(track.index, p.clip))
+        .ok_or_else(|| {
+            format!(
+                "nothing to undo on '{}' slot {} (one level, in-place variations only)",
+                track.name, p.clip
+            )
+        })?;
+    write_notes(live, track.index, p.clip, &previous)?;
+    Ok(format!(
+        "Restored '{}' slot {} to its {} notes from before vary_clip.",
+        track.name,
+        p.clip,
+        previous.len()
+    ))
+}
+
+pub fn follow_key_body(live: &LiveState, p: &FollowKeyParams) -> ToolResult {
+    let state = read_perf_state(live)?;
+    let source = state.track_by(&p.track)?;
+    let raw = clip_notes(live, source.index, p.clip)?;
+    let notes: Vec<crate::variation::VNote> = raw
+        .iter()
+        .filter_map(crate::variation::VNote::from_value)
+        .collect();
+    let Some((root, mode, confidence)) = crate::variation::estimate_key(&notes) else {
+        return Err(format!(
+            "'{}' slot {} has no notes to read a key from",
+            source.name, p.clip
+        ));
+    };
+    let key_name = format!("{} {mode}", crate::variation::PITCH_CLASSES[root as usize]);
+    let mut lines = vec![format!(
+        "Recording on '{}' slot {}: {} notes, {key_name} likely ({:.0}% sure).",
+        source.name,
+        p.clip,
+        notes.len(),
+        confidence * 100.0
+    )];
+    let from_root = state
+        .root_note
+        .or_else(|| {
+            performance_running(live)
+                .and_then(|r| r.key)
+                .and_then(|k| perf::parse_key(&k))
+                .map(|k| k.0)
+        })
+        .unwrap_or(root);
+    let interval = crate::variation::transpose_interval(from_root, root);
+    if live.script.has_capability("set_scale") {
+        let _ = live.send_command(
+            "set_scale",
+            Some(json!({"root_note": root, "scale_name": mode})),
+        );
+        lines.push(format!("Live's scale set to {key_name}."));
+    }
+    if let Some(pf) = live
+        .performance
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        pf.key = Some(key_name.clone());
+    }
+    if interval == 0 {
+        lines.push("The other clips are already in that key; nothing transposed.".into());
+        return Ok(lines.join("\n"));
+    }
+    let mut moved = 0;
+    for t in &state.tracks {
+        for slot in &t.slots_with_clips {
+            if t.index == source.index && *slot == p.clip {
+                continue;
+            }
+            let notes = match clip_notes(live, t.index, *slot) {
+                Ok(n) if !n.is_empty() => n,
+                _ => continue,
+            };
+            let shifted: Vec<Value> = notes
+                .iter()
+                .map(|n| {
+                    let mut m = n.clone();
+                    if let Some(pch) = n.get("pitch").and_then(Value::as_i64) {
+                        m["pitch"] = json!((pch + interval).clamp(0, 127));
+                    }
+                    m
+                })
+                .collect();
+            if write_notes(live, t.index, *slot, &shifted).is_ok() {
+                moved += 1;
+            }
+        }
+    }
+    lines.push(format!(
+        "Transposed {moved} MIDI clip{} by {interval:+} semitone{} to {key_name}.",
+        if moved == 1 { "" } else { "s" },
+        if interval.abs() == 1 { "" } else { "s" }
+    ));
+    Ok(lines.join("\n"))
+}
+
+pub fn snapshot_mix_body(live: &LiveState, _p: &Empty) -> ToolResult {
+    require(live, "snapshot_mix")?;
+    let r = live
+        .send_command("snapshot_mix", None)
+        .map_err(|e| live_err("take the mix snapshot", e))?;
+    Ok(format!(
+        "Mix snapshot {} taken at beat {} ({} tracks, {} returns, master: volume, pan, sends, mute). restore_mix {{\"id\": {}}} or a cue step {{\"gesture\": {{\"restore_mix\": {{\"snapshot\": {}}}}}}} brings it back on the bar.",
+        get_display(&r, "id", "?"),
+        beat(r.get("beat")),
+        get_display(&r, "tracks", "?"),
+        get_display(&r, "returns", "?"),
+        get_display(&r, "id", "?"),
+        get_display(&r, "id", "?")
+    ))
+}
+
+pub fn restore_mix_body(live: &LiveState, p: &RestoreMixParams) -> ToolResult {
+    require(live, "restore_mix")?;
+    let r = live
+        .send_command("restore_mix", Some(json!({"id": p.id})))
+        .map_err(|e| live_err("restore the mix", e))?;
+    Ok(format!(
+        "Mix snapshot {} restored on {} tracks, returns and master.",
+        p.id,
+        get_display(&r, "restored", "?")
+    ))
+}
+
+pub fn panic_body(live: &LiveState, p: &PanicParams) -> ToolResult {
+    require(live, "schedule_cue")?;
+    let state = read_perf_state(live)?;
+    let params = CueParams {
+        name: Some("panic".into()),
+        allow_silence: true,
+        steps: vec![perf::CueStep {
+            at: Some(perf::CueTime::Named("now".into())),
+            gesture: Some(json!({"panic": {"keep": p.keep, "bars": p.bars}})),
+            ..Default::default()
+        }],
+    };
+    let resolved = perf::resolve_cue(&state, &params)?;
+    let sent = live
+        .send_command(
+            "schedule_cue",
+            Some(json!({"cue": {"name": "panic", "steps": resolved.steps}})),
+        )
+        .map_err(|e| live_err("schedule the panic", e))?;
+    Ok(format!(
+        "Panic (cue {}): {}",
+        sent.get("id").and_then(Value::as_i64).unwrap_or(0),
+        resolved.lines.join("; ")
+    ))
+}
+
+pub fn keep_track_playing_body(live: &LiveState, p: &KeepTrackPlayingParams) -> ToolResult {
+    require(live, "set_slot_stop_buttons")?;
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    let r = live
+        .send_command(
+            "set_slot_stop_buttons",
+            Some(json!({"track_index": track.index, "has_stop_button": !p.keep})),
+        )
+        .map_err(|e| live_err("change the slot stop buttons", e))?;
+    let n = r.get("slots").and_then(Value::as_array).map_or(0, Vec::len);
+    Ok(if p.keep {
+        format!(
+            "{} keeps playing through scene launches: stop buttons removed from its {n} empty slot{}. A clip in a row still replaces it; keep: false restores the stop buttons.",
+            track.name,
+            if n == 1 { "" } else { "s" }
+        )
+    } else {
+        format!(
+            "{}: stop buttons back on its {n} empty slot{}; scene launches stop it again.",
+            track.name,
+            if n == 1 { "" } else { "s" }
+        )
+    })
+}
+
+pub fn start_performance_body(live: &LiveState, p: &StartPerformanceParams) -> ToolResult {
+    for c in [
+        "get_performance_state",
+        "set_launch_quantization",
+        "fire_scene",
+        "start_playback",
+        "schedule_cue",
+    ] {
+        require(live, c)?;
+    }
+    if let Some(running) = performance_running(live) {
+        return Err(format!(
+            "A performance is already running (since bar {}, started {}). cue and get_performance_state work now; end_performance ends it.",
+            running.start_bar,
+            running.started_at.format("%H:%M:%S")
+        ));
+    }
+    let mut q = p.quantization.trim().to_lowercase();
+    if q == "bar" || q == "1 bar" {
+        q = "1_bar".into();
+    }
+    if !perf::GLOBAL_QUANTIZATIONS.contains(&q.as_str()) {
+        return Err(format!(
+            "quantization must be one of {}",
+            perf::GLOBAL_QUANTIZATIONS.join(", ")
+        ));
+    }
+    let before = read_perf_state(live)?;
+    let mut notes: Vec<String> = Vec::new();
+    live.send_command("set_launch_quantization", Some(json!({"name": q})))
+        .map_err(|e| live_err("set the launch quantization", e))?;
+    if live.script.has_capability("set_performance_mode") {
+        live.send_command("set_performance_mode", Some(json!({"on": true})))
+            .map_err(|e| live_err("turn on performance mode", e))?;
+    }
+    if p.limiter {
+        match find_items(live, "limiter", "audio_effects", 1) {
+            Ok(hits) if !hits.is_empty() => {
+                match live.send_command(
+                    "load_browser_item",
+                    Some(json!({"track_index": 0, "kind": "master", "item_uri": hits[0].uri})),
+                ) {
+                    Ok(_) => notes.push(format!("Loaded '{}' on the master as a safety net (set its ceiling to −0.3 dB if it is not).", hits[0].name)),
+                    Err(e) => notes.push(format!("Could not load a limiter on the master: {e}")),
+                }
+            }
+            _ => notes
+                .push("No Limiter in this Live's browser; the master has no safety net.".into()),
+        }
+    }
+    if p.disarm {
+        let armed: Vec<&perf::TrackState> = before
+            .tracks
+            .iter()
+            .filter(|t| t.arm && !t.is_recording)
+            .collect();
+        if !armed.is_empty() && live.script.has_capability("set_track_mixer") {
+            let mut names = Vec::new();
+            for t in armed {
+                if live
+                    .send_command(
+                        "set_track_mixer",
+                        Some(json!({"track_index": t.index, "kind": "track", "arm": false})),
+                    )
+                    .is_ok()
+                {
+                    names.push(t.name.clone());
+                }
+            }
+            if !names.is_empty() {
+                notes.push(format!(
+                    "Disarmed {} (an armed track records on a scene launch; record_clip arms one on purpose).",
+                    names.join(", ")
+                ));
+            }
+        }
+    }
+    let mut key_set_in_live: Option<String> = None;
+    if let Some(k) = p.key.as_ref().filter(|k| !k.trim().is_empty()) {
+        match perf::parse_key(k) {
+            Some((root, scale)) if live.script.has_capability("set_scale") => {
+                match live.send_command(
+                    "set_scale",
+                    Some(json!({"root_note": root, "scale_name": scale})),
+                ) {
+                    Ok(r) => {
+                        key_set_in_live = Some(format!(
+                            "{} {}",
+                            get_display(&r, "root_note_name", perf::PITCH_CLASSES[root as usize]),
+                            get_display(&r, "scale_name", &scale)
+                        ));
+                    }
+                    Err(e) => notes.push(format!(
+                        "Key noted as '{}' but not set in Live: {e}",
+                        k.trim()
+                    )),
+                }
+            }
+            Some(_) => {}
+            None => notes.push(format!(
+                "Key '{}' not understood (say e.g. \"D minor\"); kept as given.",
+                k.trim()
+            )),
+        }
+    }
+    if let Some(t) = p.tempo {
+        if !before.is_playing {
+            require(live, "set_tempo")?;
+            live.send_command("set_tempo", Some(json!({"tempo": t})))
+                .map_err(|e| live_err("set the tempo", e))?;
+        } else if (t - before.tempo).abs() > 0.01 {
+            notes.push(format!(
+                "Tempo left at {} BPM: the set is already playing, so ramp it in a cue rather than jump.",
+                perf_num(before.tempo)
+            ));
+        }
+    }
+    let mut fired: Option<(String, usize)> = None;
+    if let Some(which) = &p.scene {
+        let scene = before.scene_by(which)?;
+        let r = live
+            .send_command("fire_scene", Some(json!({"scene_index": scene.index})))
+            .map_err(|e| live_err("fire the scene", e))?;
+        let clips = r.get("clips").and_then(Value::as_array).map_or(0, Vec::len);
+        let would_record = join_names(r.get("would_record"));
+        if !would_record.is_empty() {
+            notes.push(format!(
+                "{would_record}: armed with an empty slot in '{}' — Live records into it if Start Recording on Scene Launch is on.",
+                scene.name
+            ));
+        }
+        fired = Some((scene.name.clone(), clips));
+    } else if !before.is_playing {
+        live.send_command("start_playback", None)
+            .map_err(|e| live_err("start playback", e))?;
+    }
+    let after = read_perf_state(live)?;
+    let (key, key_text) = match key_set_in_live {
+        Some(k) => (Some(k.clone()), format!("key {k} (set in Live)")),
+        None => key_line(&after, p.key.as_ref()),
+    };
+    let started = Performance {
+        started_at: chrono::Local::now(),
+        start_bar: after.bar,
+        start_beat: after.beat,
+        key: key.clone(),
+        quantization: q.clone(),
+        cues_scheduled: 0,
+        cues_cancelled: 0,
+        follow_key: p.follow_key,
+    };
+    *live.performance.lock().unwrap_or_else(|e| e.into_inner()) = Some(started.clone());
+    let mut text = format!(
+        "Performance started at {}.\n",
+        started.started_at.format("%H:%M:%S")
+    );
+    match fired {
+        Some((name, clips)) => {
+            text.push_str(&format!(
+            "Playing scene '{name}' ({clips} clip{}) from bar {} · {} BPM · {}/{} · {key_text}\n",
+            if clips == 1 { "" } else { "s" },
+            if before.is_playing { after.next_bar() } else { after.bar },
+            perf_num(after.tempo),
+            after.signature_numerator,
+            after.signature_denominator
+        ))
+        }
+        None => {
+            let playing = after
+                .tracks
+                .iter()
+                .filter(|t| t.playing_slot_index >= 0)
+                .count();
+            text.push_str(&format!(
+                "{} from bar {} · {} BPM · {}/{} · {key_text}\n",
+                if playing > 0 {
+                    format!(
+                        "Playing ({playing} clip{} already running)",
+                        if playing == 1 { "" } else { "s" }
+                    )
+                } else {
+                    "Transport running, nothing playing yet (fire_scene or cue to begin)"
+                        .to_string()
+                },
+                after.bar,
+                perf_num(after.tempo),
+                after.signature_numerator,
+                after.signature_denominator
+            ));
+        }
+    }
+    text.push_str(&format!(
+        "Launch quantization is {}: everything you or I fire lands on the next {}.\n",
+        quant_words(&q),
+        if q == "1_bar" {
+            "bar".to_string()
+        } else {
+            quant_words(&q)
+        }
+    ));
+    text.push_str("While the performance runs I will not stop the transport, move the playhead, jump the tempo, or delete anything that is playing; those calls are refused until end_performance.\n");
+    for n in notes {
+        text.push_str(&n);
+        text.push('\n');
+    }
+    if p.follow_key {
+        text.push_str("follow_key is on: after every record_clip the other MIDI clips are re-keyed to what you played.\n");
+    }
+    text.push_str("Every result now ends with the clock line (bar, next bar, phrase, next cue). State: get_performance_state. Timed moves: cue.");
+    Ok(text)
+}
+
+fn perf_num(v: f64) -> String {
+    if v.fract() == 0.0 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v:.1}")
+    }
+}
+
+fn quant_words(q: &str) -> String {
+    match q {
+        "1_bar" => "1 bar".into(),
+        "2_bars" => "2 bars".into(),
+        "4_bars" => "4 bars".into(),
+        "8_bars" => "8 bars".into(),
+        other => other.to_string(),
+    }
+}
+
+pub fn get_performance_state_body(live: &LiveState, p: &GetPerformanceStateParams) -> ToolResult {
+    let state = read_perf_state(live)?;
+    let running = performance_running(live);
+    let auto_follow = running.as_ref().is_some_and(|r| r.follow_key);
+    let mut followed = String::new();
+    if auto_follow {
+        followed = follow_after_recordings(live, &state.events);
+    }
+    let since = running.as_ref().map(|r| {
+        (
+            r.start_bar,
+            (chrono::Local::now() - r.started_at).num_milliseconds() as f64 / 1000.0,
+        )
+    });
+    let key = running
+        .as_ref()
+        .and_then(|r| r.key.clone())
+        .or_else(|| state.key_from_set());
+    let mut text = perf::state_text(&state, since, key.as_deref());
+    if p.bar_map {
+        text.push('\n');
+        text.push_str(&perf::bar_map_text(&state, state.bar, 32));
+    }
+    text.push_str(&format!("\nround trip {:.2} s", live.round_trip_s()));
+    if !followed.is_empty() {
+        text.push('\n');
+        text.push_str(&followed);
+    }
+    if running.is_some() && !state.is_playing {
+        text.push_str("\nThe transport is stopped (outside this server, or by end_performance's cue). The guards are still on: fire_scene or start a cue to resume, or end_performance to lift them.");
+    }
+    Ok(text)
+}
+
+/// With follow_key on: a `recording_done` event re-keys the other clips.
+fn follow_after_recordings(live: &LiveState, events: &[Value]) -> String {
+    let mut out = Vec::new();
+    for e in events {
+        if e.get("type").and_then(Value::as_str) != Some("recording_done") {
+            continue;
+        }
+        let (Some(t), Some(s)) = (
+            e.get("track_index").and_then(Value::as_i64),
+            e.get("slot").and_then(Value::as_i64),
+        ) else {
+            continue;
+        };
+        match follow_key_body(
+            live,
+            &FollowKeyParams {
+                track: json!(t),
+                clip: s,
+            },
+        ) {
+            Ok(text) => out.push(text),
+            Err(err) => out.push(format!("follow_key after the recording failed: {err}")),
+        }
+    }
+    out.join("\n")
+}
+
+pub fn cue_body(live: &LiveState, p: &CueParams) -> ToolResult {
+    require(live, "schedule_cue")?;
+    let state = read_perf_state(live)?;
+    let resolved = perf::resolve_cue(&state, p)?;
+    let sent = live
+        .send_command(
+            "schedule_cue",
+            Some(json!({"cue": {"name": p.name, "steps": resolved.steps}})),
+        )
+        .map_err(|e| live_err("schedule the cue", e))?;
+    let id = sent.get("id").and_then(Value::as_i64).unwrap_or(0);
+    let name = get_display(&sent, "name", "cue");
+    if let Some(pf) = live
+        .performance
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        pf.cues_scheduled += 1;
+    }
+    let mut text = format!(
+        "Cue '{name}' (id {id}) scheduled — it is bar {} now.\n",
+        state.position()
+    );
+    for line in &resolved.lines {
+        text.push_str("  ");
+        text.push_str(line);
+        text.push('\n');
+    }
+    let launches = resolved.steps.iter().any(|s| {
+        matches!(
+            s.get("action").and_then(Value::as_str),
+            Some("fire_scene" | "fire_clip" | "stop_clip" | "stop_all_clips")
+        )
+    });
+    if launches && !p.allow_silence {
+        text.push_str("Check: every bar from the first step has at least one clip playing.\n");
+    }
+    for w in &resolved.warnings {
+        text.push_str("Warning: ");
+        text.push_str(w);
+        text.push('\n');
+    }
+    text.push_str(&format!(
+        "The Remote Script runs this on its own clock; it happens even if I go quiet. Cancel with cancel_cue {{\"id\": {id}}}."
+    ));
+    Ok(text)
+}
+
+pub fn cancel_cue_body(live: &LiveState, p: &CancelCueParams) -> ToolResult {
+    require(live, "cancel_cue")?;
+    let r = live
+        .send_command("cancel_cue", Some(json!({"id": p.id})))
+        .map_err(|e| live_err("cancel the cue", e))?;
+    if let Some(pf) = live
+        .performance
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        pf.cues_cancelled += 1;
+    }
+    Ok(format!(
+        "Cancelled cue {}; steps already fired stay fired.",
+        r.get("cancelled")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .map(display)
+            .unwrap_or_else(|| p.id.to_string())
+    ))
+}
+
+pub fn fire_scene_body(live: &LiveState, p: &FireSceneParams) -> ToolResult {
+    require(live, "fire_scene")?;
+    let state = read_perf_state(live)?;
+    let scene = state.scene_by(&p.scene)?;
+    if let Some(text) = defer_if_too_close(
+        live,
+        p.no_later_than,
+        json!({"action": "fire_scene", "scene_index": scene.index}),
+        &format!("fire scene '{}'", scene.name),
+    )? {
+        return Ok(text);
+    }
+    let r = live
+        .send_command("fire_scene", Some(json!({"scene_index": scene.index})))
+        .map_err(|e| live_err("fire the scene", e))?;
+    let clips = r.get("clips").and_then(Value::as_array).map_or(0, Vec::len);
+    let landing = landing_text(live, &r);
+    let mut text = format!(
+        "Fired scene '{}' ({clips} clip{}){}",
+        scene.name,
+        if clips == 1 { "" } else { "s" },
+        if landing.is_empty() {
+            format!(" — starts {}.", state.launch_lands_on())
+        } else {
+            landing
+        }
+    );
+    if let Some(off) = r.get("off_grid_clips").and_then(Value::as_array) {
+        if !off.is_empty() {
+            let names: Vec<String> = off
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{}/{} ({})",
+                        get_display(c, "track", "?"),
+                        get_display(c, "name", "?"),
+                        get_display(c, "launch_quantization", "?")
+                    )
+                })
+                .collect();
+            text.push_str(&format!(
+                "\nNote: {} launch on their own quantization, not the bar.",
+                names.join(", ")
+            ));
+        }
+    }
+    let would_record = join_names(r.get("would_record"));
+    if !would_record.is_empty() {
+        text.push_str(&format!(
+            "\nNote: {would_record} armed with an empty slot in this scene — Live records into it if Start Recording on Scene Launch is on."
+        ));
+    }
+    Ok(text)
+}
+
+pub fn create_scene_body(live: &LiveState, p: &CreateSceneParams) -> ToolResult {
+    require(live, "create_scene")?;
+    let r = live
+        .send_command(
+            "create_scene",
+            Some(json!({"index": p.index, "name": p.name, "tempo": p.tempo, "phrase_bars": p.phrase_bars})),
+        )
+        .map_err(|e| live_err("create the scene", e))?;
+    let index = get_display(&r, "index", "?");
+    Ok(format!(
+        "Created scene {index} '{}' ({} scenes now). create_clip with clip_index {index} fills its row; fire_scene or a cue plays it.",
+        get_display(&r, "name", ""),
+        get_display(&r, "scene_count", "?")
+    ))
+}
+
+pub fn record_clip_body(live: &LiveState, p: &RecordClipParams) -> ToolResult {
+    require(live, "record_clip")?;
+    if !(1..=64).contains(&p.bars) {
+        return Err(format!("bars must be between 1 and 64, got {}", p.bars));
+    }
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    if p.no_later_than.is_some() {
+        return Err("record_clip cannot be cued yet: arm and fire it two bars ahead, or drop no_later_than.".into());
+    }
+    let r = live
+        .send_command(
+            "record_clip",
+            Some(json!({"track_index": track.index, "bars": p.bars, "name": p.name})),
+        )
+        .map_err(|e| live_err("start the recording", e))?;
+    let landing = landing_text(live, &r);
+    Ok(format!(
+        "Recording {} slot {} '{}'{}, {} bar{}, then loops. The track is armed until the recording ends; the clip is named when it appears.",
+        track.name,
+        get_display(&r, "slot", "?"),
+        p.name.clone().unwrap_or_else(|| "take".into()),
+        if landing.is_empty() {
+            format!(" — starts {}", state.launch_lands_on())
+        } else {
+            landing.trim_end_matches('.').to_string()
+        },
+        p.bars,
+        if p.bars == 1 { "" } else { "s" }
+    ))
+}
+
+pub fn set_launch_quantization_body(
+    live: &LiveState,
+    p: &SetLaunchQuantizationParams,
+) -> ToolResult {
+    require(live, "set_launch_quantization")?;
+    let mut q = p.quantization.trim().to_lowercase();
+    if q == "bar" || q == "1 bar" {
+        q = "1_bar".into();
+    }
+    if !perf::GLOBAL_QUANTIZATIONS.contains(&q.as_str()) {
+        return Err(format!(
+            "quantization must be one of {}",
+            perf::GLOBAL_QUANTIZATIONS.join(", ")
+        ));
+    }
+    let r = live
+        .send_command("set_launch_quantization", Some(json!({"name": q})))
+        .map_err(|e| live_err("set the launch quantization", e))?;
+    let name = get_display(&r, "name", &q);
+    if let Some(pf) = live
+        .performance
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        pf.quantization = name.clone();
+    }
+    Ok(format!(
+        "Launch quantization is now {}: fire_clip, fire_scene, record_clip and cue launches land on the next {}.",
+        quant_words(&name),
+        if name == "none" { "— no quantization: launches happen immediately".to_string() } else { quant_words(&name) }
+    ))
+}
+
+pub fn set_crossfader_body(live: &LiveState, p: &SetCrossfaderParams) -> ToolResult {
+    require(live, "set_crossfader")?;
+    if p.value.is_none() && p.assign.is_empty() {
+        return Err("Give value (0 = A, 1 = B) and/or assign.".into());
+    }
+    if let Some(v) = p.value {
+        if !(0.0..=1.0).contains(&v) {
+            return Err(format!("value must be between 0 (A) and 1 (B), got {v}"));
+        }
+    }
+    let mut assign = Vec::new();
+    if !p.assign.is_empty() {
+        let state = read_perf_state(live)?;
+        for a in &p.assign {
+            let side = a.side.trim().to_uppercase();
+            if !matches!(side.as_str(), "A" | "B" | "NONE") {
+                return Err(format!("side must be A, B or none, got '{}'", a.side));
+            }
+            let t = state.track_by(&a.track)?;
+            assign.push(json!({"track_index": t.index, "side": side.to_lowercase()}));
+        }
+    }
+    let r = live
+        .send_command(
+            "set_crossfader",
+            Some(json!({"value": p.value, "assign": assign})),
+        )
+        .map_err(|e| live_err("set the crossfader", e))?;
+    let mut parts = Vec::new();
+    if let Some(v) = r.get("crossfader").and_then(Value::as_f64) {
+        parts.push(format!(
+            "crossfader at {} ({})",
+            perf_num(v),
+            if v <= 0.0 {
+                "A"
+            } else if v >= 1.0 {
+                "B"
+            } else {
+                "between"
+            }
+        ));
+    }
+    if let Some(a) = r.get("assigned").and_then(Value::as_array) {
+        for x in a {
+            parts.push(format!(
+                "{} → {}",
+                get_display(x, "track", "?"),
+                get_display(x, "side", "?")
+            ));
+        }
+    }
+    Ok(format!(
+        "Crossfader: {}. For a timed blend, ramp it in a cue.",
+        parts.join(", ")
+    ))
+}
+
+pub fn end_performance_body(live: &LiveState, p: &EndPerformanceParams) -> ToolResult {
+    let Some(running) = performance_running(live) else {
+        return Err("No performance is running.".into());
+    };
+    for c in [
+        "cancel_cue",
+        "stop_playback",
+        "stop_all_clips",
+        "schedule_cue",
+    ] {
+        require(live, c)?;
+    }
+    let state = read_perf_state(live)?;
+    let _ = live.send_command(
+        "cancel_cue",
+        Some(json!({"id": null, "reason": "end_performance"})),
+    );
+    let duration = (chrono::Local::now() - running.started_at)
+        .num_seconds()
+        .max(0);
+    let summary = format!(
+        "{} min {} s, {} cue{} scheduled, {} cancelled.",
+        duration / 60,
+        duration % 60,
+        running.cues_scheduled,
+        if running.cues_scheduled == 1 { "" } else { "s" },
+        running.cues_cancelled
+    );
+    let how = if p.now {
+        let _ = live.send_command("stop_all_clips", None);
+        live.send_command("stop_playback", None)
+            .map_err(|e| live_err("stop playback", e))?;
+        format!(
+            "Performance ended now, at bar {}: all clips and the transport stopped.",
+            state.position()
+        )
+    } else if !state.is_playing {
+        format!(
+            "Performance ended (the transport was already stopped at bar {}).",
+            state.position()
+        )
+    } else if let Some(bars) = p.fade_bars {
+        if !(1.0..=64.0).contains(&bars) {
+            return Err(format!("fade_bars must be between 1 and 64, got {bars}"));
+        }
+        let (bar, beat) = perf::resolve_time(&state, &perf::CueTime::Named("next_bar".into()))?;
+        let end_beat = beat + bars * state.beats_per_bar();
+        let master_volume = live
+            .send_command("get_session_info", None)
+            .ok()
+            .and_then(|s| s.pointer("/master_track/volume").and_then(Value::as_f64))
+            .unwrap_or(0.85);
+        let steps = vec![
+            json!({"action": "ramp", "beat": beat, "end_beat": end_beat, "bar": bar, "target": "volume", "kind": "master", "to": 0.0, "label": "fade master to silence"}),
+            json!({"action": "stop_playback", "beat": end_beat, "bar": bar + bars, "label": "stop"}),
+            json!({"action": "set", "beat": end_beat + 0.01, "bar": bar + bars, "target": "volume", "kind": "master", "value": master_volume, "label": "restore master volume"}),
+        ];
+        live.send_command(
+            "schedule_cue",
+            Some(json!({"cue": {"name": "end", "steps": steps}})),
+        )
+        .map_err(|e| live_err("schedule the ending", e))?;
+        format!(
+            "Performance ends: the master fades over {} bars from bar {} and the transport stops at bar {}; the master volume is restored after the stop.",
+            perf_num(bars),
+            perf_num(bar),
+            perf_num(bar + bars)
+        )
+    } else {
+        let at =
+            p.at.clone()
+                .unwrap_or(perf::CueTime::Named("next_bar".into()));
+        let (bar, beat) = perf::resolve_time(&state, &at)?;
+        if beat <= state.beat {
+            return Err(format!(
+                "bar {} has passed (it is bar {}); use \"next_bar\" or now: true.",
+                perf_num(bar),
+                state.position()
+            ));
+        }
+        let steps =
+            vec![json!({"action": "stop_playback", "beat": beat, "bar": bar, "label": "stop"})];
+        live.send_command(
+            "schedule_cue",
+            Some(json!({"cue": {"name": "end", "steps": steps}})),
+        )
+        .map_err(|e| live_err("schedule the ending", e))?;
+        format!(
+            "Performance ends at bar {}: the transport stops on the bar.",
+            perf_num(bar)
+        )
+    };
+    if live.script.has_capability("set_performance_mode") {
+        let _ = live.send_command("set_performance_mode", Some(json!({"on": false})));
+    }
+    *live.performance.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let mut text = format!("{how} {summary} Guards lifted.");
+    if state.pending_record.is_some() {
+        text.push_str(" A recording was pending; the script disarms the track when it ends or the transport stops.");
+    }
+    Ok(text)
+}
+
 /// Run one tool by name with JSON arguments — the batch and build_song
 /// dispatcher. Every Live-facing tool is here; batch itself is not.
 pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
@@ -2608,7 +4356,7 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "set_arrangement_clip_name" => (SetClipNameParams, set_arrangement_clip_name_body),
         "set_tempo" => (SetTempoParams, set_tempo_body),
         "load_instrument_or_effect" => (LoadInstrumentParams, load_instrument_or_effect_body),
-        "fire_clip" => (ClipParams, fire_clip_body),
+        "fire_clip" => (FireClipParams, fire_clip_body),
         "stop_clip" => (ClipParams, stop_clip_body),
         "delete_clip" => (ClipParams, delete_clip_body),
         "start_playback" => (Empty, start_playback_body),
@@ -2643,18 +4391,53 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "delete_track" => (TrackParams, delete_track_body),
         "back_to_arrangement" => (Empty, back_to_arrangement_body),
         "set_arrangement_loop" => (SetArrangementLoopParams, set_arrangement_loop_body),
+        "start_performance" => (StartPerformanceParams, start_performance_body),
+        "get_performance_state" => (GetPerformanceStateParams, get_performance_state_body),
+        "cue" => (CueParams, cue_body),
+        "cancel_cue" => (CancelCueParams, cancel_cue_body),
+        "fire_scene" => (FireSceneParams, fire_scene_body),
+        "create_scene" => (CreateSceneParams, create_scene_body),
+        "record_clip" => (RecordClipParams, record_clip_body),
+        "set_launch_quantization" => (SetLaunchQuantizationParams, set_launch_quantization_body),
+        "set_crossfader" => (SetCrossfaderParams, set_crossfader_body),
+        "end_performance" => (EndPerformanceParams, end_performance_body),
+        "keep_track_playing" => (KeepTrackPlayingParams, keep_track_playing_body),
+        "get_context" => (GetContextParams, get_context_body),
+        "set_scene" => (SetSceneParams, set_scene_body),
+        "listen" => (ListenParams, listen_body),
+        "vary_clip" => (VaryClipParams, vary_clip_body),
+        "undo_vary" => (UndoVaryParams, undo_vary_body),
+        "follow_key" => (FollowKeyParams, follow_key_body),
+        "snapshot_mix" => (Empty, snapshot_mix_body),
+        "restore_mix" => (RestoreMixParams, restore_mix_body),
+        "panic" => (PanicParams, panic_body),
     )
 }
 
 /// "Created MIDI track 6 (…)" → 6.
 fn track_index_from_text(text: &str) -> Option<i64> {
     let rest = text.strip_prefix("Created ")?;
+    if rest.starts_with("clip ") {
+        return None;
+    }
     let after = rest.split(" track ").nth(1)?;
     let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
 }
 
-fn substitute(v: &mut Value, last_track: Option<i64>) -> Result<(), String> {
+/// "Created clip at track 2, slot 3 …" → (2, 3).
+fn clip_from_text(text: &str) -> Option<(i64, i64)> {
+    let rest = text.strip_prefix("Created clip at track ")?;
+    let (t, after) = rest.split_once(", slot ")?;
+    let s: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    Some((t.trim().parse().ok()?, s.parse().ok()?))
+}
+
+fn substitute(
+    v: &mut Value,
+    last_track: Option<i64>,
+    last_clip: Option<(i64, i64)>,
+) -> Result<(), String> {
     match v {
         Value::String(s) if s == "$last_track" => match last_track {
             Some(i) => *v = json!(i),
@@ -2662,14 +4445,18 @@ fn substitute(v: &mut Value, last_track: Option<i64>) -> Result<(), String> {
                 return Err("$last_track used before any track was created in this batch".into())
             }
         },
+        Value::String(s) if s == "$last_clip" => match last_clip {
+            Some((_, c)) => *v = json!(c),
+            None => return Err("$last_clip used before any clip was created in this batch".into()),
+        },
         Value::Array(items) => {
             for item in items {
-                substitute(item, last_track)?;
+                substitute(item, last_track, last_clip)?;
             }
         }
         Value::Object(map) => {
             for item in map.values_mut() {
-                substitute(item, last_track)?;
+                substitute(item, last_track, last_clip)?;
             }
         }
         _ => {}
@@ -2696,15 +4483,19 @@ pub fn batch_body(live: &LiveState, p: &BatchParams) -> ToolResult {
     }
     let mut out = String::new();
     let mut last_track: Option<i64> = None;
+    let mut last_clip: Option<(i64, i64)> = None;
     let mut failed = 0;
     for (i, step) in p.steps.iter().enumerate() {
         let mut args = step.args.clone();
-        let outcome =
-            substitute(&mut args, last_track).and_then(|_| run_named(live, &step.tool, args));
+        let outcome = substitute(&mut args, last_track, last_clip)
+            .and_then(|_| run_named(live, &step.tool, args));
         match outcome {
             Ok(text) => {
                 if let Some(idx) = track_index_from_text(&text) {
                     last_track = Some(idx);
+                }
+                if let Some(c) = clip_from_text(&text) {
+                    last_clip = Some(c);
                 }
                 let body = if text.contains('\n') {
                     format!("\n   {}", text.replace('\n', "\n   "))
@@ -2780,13 +4571,14 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
         }
         let notes =
             crate::notes::expand(&c.notes).map_err(|e| format!("clip '{}': {e}", c.name))?;
-        if defined_clips.contains(&(c.track.clone(), c.slot)) {
+        let main_slot = c.slot.or_else(|| c.slots.first().copied()).unwrap_or(0);
+        if defined_clips.contains(&(c.track.clone(), main_slot)) {
             return Err(format!(
                 "two clips are defined for track '{}' slot {}",
-                c.track, c.slot
+                c.track, main_slot
             ));
         }
-        defined_clips.push((c.track.clone(), c.slot));
+        defined_clips.push((c.track.clone(), main_slot));
         planned_notes.push(notes);
     }
     let mut placements: Vec<(usize, Vec<f64>)> = Vec::new();
@@ -2834,6 +4626,37 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
         set_tempo_body(live, &SetTempoParams { tempo: t }).map_err(|e| fail(&done, e))?;
         done.push_str(&format!("Tempo {t}.\n"));
     }
+    if !p.scenes.is_empty() {
+        require(live, "create_scene").map_err(|e| fail(&done, e))?;
+        require(live, "set_scene").map_err(|e| fail(&done, e))?;
+        let existing = read_perf_state(live)
+            .map(|s| s.scenes.len() as i64)
+            .unwrap_or(0);
+        for (i, sc) in p.scenes.iter().enumerate() {
+            let i = i as i64;
+            let cmd = if i < existing {
+                "set_scene"
+            } else {
+                "create_scene"
+            };
+            let args = if i < existing {
+                json!({"index": i, "name": sc.name, "tempo": sc.tempo, "phrase_bars": sc.phrase_bars})
+            } else {
+                json!({"index": -1, "name": sc.name, "tempo": sc.tempo, "phrase_bars": sc.phrase_bars})
+            };
+            live.send_command(cmd, Some(args))
+                .map_err(|e| fail(&done, live_err("set up the scenes", e)))?;
+        }
+        done.push_str(&format!(
+            "Scenes: {}.\n",
+            p.scenes
+                .iter()
+                .enumerate()
+                .map(|(i, s)| format!("{i} {}", s.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     let mut created: BTreeMap<String, i64> = BTreeMap::new();
     for t in &p.tracks {
         let (index, _) = create_track(live, &t.kind, -1).map_err(|e| fail(&done, e))?;
@@ -2856,27 +4679,20 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
         .map_err(|e| fail(&done, e))?;
         created.insert(t.name.clone(), index);
         let mut line = format!("Track {index} '{}'", t.name);
-        let uri = match (&t.instrument, &t.instrument_query) {
-            (Some(u), _) => Some(u.clone()),
-            (None, Some(q)) => {
-                require(live, "search_browser").map_err(|e| fail(&done, e))?;
-                let r = live
-                    .send_command(
-                        "search_browser",
-                        Some(json!({"query": q, "category": "all", "limit": 1})),
-                    )
-                    .map_err(|e| fail(&done, live_err("search the browser", e)))?;
-                let hit = r["items"]
-                    .get(0)
-                    .and_then(|i| i.get("uri"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+        // A browser URI always carries a ':' (query:Synths#…); plain words in
+        // `instrument` are what the model meant by instrument_query.
+        let query = match (&t.instrument, &t.instrument_query) {
+            (Some(u), None) if !u.contains(':') => Some(u),
+            (_, q) => q.as_ref(),
+        };
+        let uri = match (&t.instrument, query) {
+            (Some(u), _) if u.contains(':') => Some(u.clone()),
+            (_, Some(q)) => {
+                let hits = find_items(live, q, "all", 1).map_err(|e| fail(&done, e))?;
+                let hit = hits.first().map(|h| (h.uri.clone(), h.name.clone()));
                 match hit {
-                    Some(u) => {
-                        line.push_str(&format!(
-                            ", found '{}' for \"{q}\"",
-                            get_display(&r["items"][0], "name", "?")
-                        ));
+                    Some((u, name)) => {
+                        line.push_str(&format!(", found '{name}' for \"{q}\""));
                         Some(u)
                     }
                     None => {
@@ -2887,7 +4703,7 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
                     }
                 }
             }
-            (None, None) => None,
+            _ => None,
         };
         if let Some(uri) = uri {
             let text = load_instrument_or_effect_body(
@@ -2949,21 +4765,38 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     }
     for (c, notes) in p.clips.iter().zip(planned_notes.iter()) {
         let track_index = song_track_index(&c.track, &created).map_err(|e| fail(&done, e))?;
-        let params = CreateClipParams {
-            track_index,
-            clip_index: c.slot,
-            length: c.length,
-            name: c.name.clone(),
-            input: NotesInput {
-                notes: notes.clone(),
-                ..Default::default()
-            },
+        let mut slots: Vec<i64> = match c.slot {
+            Some(s) => vec![s],
+            None if !c.slots.is_empty() => Vec::new(),
+            None => vec![0],
         };
-        create_clip_body(live, &params).map_err(|e| fail(&done, e))?;
+        for s in &c.slots {
+            if !slots.contains(s) {
+                slots.push(*s);
+            }
+        }
+        for slot in &slots {
+            let params = CreateClipParams {
+                track_index,
+                clip_index: *slot,
+                length: c.length,
+                name: c.name.clone(),
+                input: NotesInput {
+                    notes: notes.clone(),
+                    ..Default::default()
+                },
+            };
+            create_clip_body(live, &params).map_err(|e| fail(&done, e))?;
+        }
         done.push_str(&format!(
-            "Clip '{}' on track {track_index} slot {} ({} notes).\n",
+            "Clip '{}' on track {track_index} slot{} {} ({} notes).\n",
             c.name,
-            c.slot,
+            if slots.len() == 1 { "" } else { "s" },
+            slots
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
             notes.len()
         ));
     }
@@ -3021,6 +4854,15 @@ fn run_blocking<P: Serialize>(
     connection::begin_trace();
     let result = body(live, params);
     let trace = connection::end_trace();
+    // While a performance runs the Remote Script attaches its clock to every
+    // response; it ends every result here, success or error, at no cost.
+    let result = match trace.clock.as_ref().map(perf::clock_line) {
+        Some(line) => match result {
+            Ok(text) => Ok(format!("{text}\n{line}")),
+            Err(text) => Err(format!("{text}\n{line}")),
+        },
+        None => result,
+    };
     live.activity
         .record(spec.name, params, &result, start.elapsed(), trace);
     crate::app::refresh_heartbeat(live);
@@ -3069,6 +4911,21 @@ impl Server {
 
 #[tool_router]
 impl Server {
+    /// Start here. One call, one round trip to Live: the set (Live and script
+    /// versions, tempo, signature, position, launch quantization, key, loop),
+    /// every track with its kind, arm/mute/solo, volume and pan, device
+    /// chain, clips by slot with lengths, what plays and what is queued,
+    /// Arrangement clip count; the returns and their devices; the scenes with
+    /// clip counts (playing one in [brackets]); the performance clock (cues,
+    /// pending recording, what fired since the last read); and a one-line
+    /// workflow reminder. include_library adds the browser inventory (slower).
+    /// json: true returns the raw payload. Prefer this over get_session_info +
+    /// get_session_snapshot + get_library_status.
+    #[tool(name = "get_context")]
+    async fn get_context(&self, Parameters(p): Parameters<GetContextParams>) -> CallToolResult {
+        self.run(&GET_CONTEXT, p, get_context_body).await
+    }
+
     /// Get detailed information about the current Ableton session
     #[tool(name = "get_session_info")]
     async fn get_session_info(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
@@ -3256,9 +5113,12 @@ impl Server {
         .await
     }
 
-    /// Start playing a clip.
+    /// Start playing a clip on the global launch quantization. The reply
+    /// says which bar it lands on, read from the transport after the fire;
+    /// no_later_than: N refuses to gamble when bar N is closer than the round
+    /// trip and schedules a cue for the next certain bar instead.
     #[tool(name = "fire_clip")]
-    async fn fire_clip(&self, Parameters(p): Parameters<ClipParams>) -> CallToolResult {
+    async fn fire_clip(&self, Parameters(p): Parameters<FireClipParams>) -> CallToolResult {
         self.run(&FIRE_CLIP, p, fire_clip_body).await
     }
 
@@ -3598,6 +5458,220 @@ impl Server {
             .await
     }
 
+    /// Go live. Sets the global launch quantization (default 1 bar), reads
+    /// the key (from the set on Live 12, else from `key`), fires the named
+    /// scene if given and starts the transport if it is stopped, and turns on
+    /// the performance guards: until end_performance, stop_playback,
+    /// set_arrangement_time, set_tempo, capture_mix, play_and_measure,
+    /// switch_to_arrangement_view, back_to_arrangement, and
+    /// delete_track/delete_clip on anything playing or queued are refused
+    /// with a message that names the on-the-bar alternative. Nothing in the
+    /// set changes except the quantization. Refused if a performance is
+    /// already running. Then: get_performance_state to see where the set is,
+    /// cue for timed moves, fire_scene for the next section, record_clip to
+    /// record the producer playing.
+    #[tool(name = "start_performance")]
+    async fn start_performance(
+        &self,
+        Parameters(p): Parameters<StartPerformanceParams>,
+    ) -> CallToolResult {
+        self.run(&START_PERFORMANCE, p, start_performance_body)
+            .await
+    }
+
+    /// Where the set is: bar.beat, tempo, signature, seconds since the
+    /// performance started, launch quantization, key; per track the playing
+    /// clip and the queued clip (● marks an armed track); the scenes with the
+    /// playing one in [brackets]; pending cues with their next step; seconds
+    /// to the next bar; and everything the Remote Script's clock did since
+    /// the last call (cue steps fired, cues cancelled, recordings finished,
+    /// the transport stopped in Live). Read-only. Bar numbers are Live's own.
+    /// bar_map: true adds the next 32 bars with every cue step and phrase
+    /// boundary. The result also reports the measured round trip to Live.
+    #[tool(name = "get_performance_state")]
+    async fn get_performance_state(
+        &self,
+        Parameters(p): Parameters<GetPerformanceStateParams>,
+    ) -> CallToolResult {
+        self.run(&GET_PERFORMANCE_STATE, p, get_performance_state_body)
+            .await
+    }
+
+    /// Schedule steps on Live's clock. Each step has a time — "next_bar",
+    /// {"bar": N} in Live's bar numbers, or {"bars_after": k} counted from
+    /// the next bar — and exactly one action: fire_scene (name or index),
+    /// fire_clip / stop_clip ({"track": name or index, "clip": slot}),
+    /// stop_all_clips: true, set ({"target": "tempo"|"crossfader"|"volume"|
+    /// "mute"|"send"|"device", "track": …, "value": …}), or a ramp over
+    /// `bars` from `from`: {"tempo": 134}, {"crossfader": 1.0}, {"volume":
+    /// 0.5, "track": "Bass"}, {"send": 0.3, "track": "Pad", "send_index": 0}
+    /// or {"target": "device", "track": …, "device_index": …,
+    /// "parameter_index": …, "to": …}. The Remote Script executes the cue on
+    /// its own clock, so it happens even if this server is slow or gone.
+    /// Launches are placed by Live's quantization and land exactly on the
+    /// bar; sets and ramp steps land within one script tick of the beat (a
+    /// filter sweep belongs in set_clip_automation, which is sample-accurate;
+    /// cue ramps are for tempo and the crossfader). Refuses a step in the
+    /// past, an unknown scene or clip, a ramp longer than 64 bars, and a plan
+    /// that leaves a bar with nothing playing unless allow_silence is true.
+    /// Returns the cue id and the plan as it will run, with warnings when a
+    /// step is less than a bar ahead or the quantization is not 1 bar.
+    #[tool(name = "cue")]
+    async fn cue(&self, Parameters(p): Parameters<CueParams>) -> CallToolResult {
+        self.run(&CUE, p, cue_body).await
+    }
+
+    /// Cancel a pending cue by id; steps already fired stay fired.
+    #[tool(name = "cancel_cue")]
+    async fn cancel_cue(&self, Parameters(p): Parameters<CancelCueParams>) -> CallToolResult {
+        self.run(&CANCEL_CUE, p, cancel_cue_body).await
+    }
+
+    /// Fire a scene by name or index, quantized by Live to the next bar (or
+    /// the current launch quantization). Says which bar it starts on, names
+    /// any clip in the row whose own launch quantization is finer than a bar,
+    /// and warns when an armed track has an empty slot in the scene (Live
+    /// records into it if Start Recording on Scene Launch is on). For timed
+    /// moves use cue.
+    #[tool(name = "fire_scene")]
+    async fn fire_scene(&self, Parameters(p): Parameters<FireSceneParams>) -> CallToolResult {
+        self.run(&FIRE_SCENE, p, fire_scene_body).await
+    }
+
+    /// Add a scene (a row of slots) at an index or the end, optionally named
+    /// and with a scene tempo (Live 11+). Returns its index so create_clip can
+    /// fill its row before a cue fires it.
+    #[tool(name = "create_scene")]
+    async fn create_scene(&self, Parameters(p): Parameters<CreateSceneParams>) -> CallToolResult {
+        self.run(&CREATE_SCENE, p, create_scene_body).await
+    }
+
+    /// Record the producer playing into a Session clip: arms the track, fires
+    /// its first empty slot on the next bar (the global launch quantization)
+    /// for `bars` bars, and lets the clip loop when the recording ends; the
+    /// Remote Script names the clip and disarms the track by itself. Live 11+.
+    /// Refused while the track is already recording.
+    #[tool(name = "record_clip")]
+    async fn record_clip(&self, Parameters(p): Parameters<RecordClipParams>) -> CallToolResult {
+        self.run(&RECORD_CLIP, p, record_clip_body).await
+    }
+
+    /// The global launch quantization (Live's transport-bar setting): none,
+    /// 8_bars, 4_bars, 2_bars, 1_bar, 1/2, 1/2t, 1/4, 1/4t, 1/8, 1/8t, 1/16,
+    /// 1/16t, 1/32. This is what quantizes fire_clip, fire_scene, record_clip
+    /// and cue launches. start_performance sets it to 1_bar.
+    #[tool(name = "set_launch_quantization")]
+    async fn set_launch_quantization(
+        &self,
+        Parameters(p): Parameters<SetLaunchQuantizationParams>,
+    ) -> CallToolResult {
+        self.run(&SET_LAUNCH_QUANTIZATION, p, set_launch_quantization_body)
+            .await
+    }
+
+    /// Move the master crossfader (0 = A, 1 = B) and/or assign tracks to A, B
+    /// or neither. For a timed blend, ramp the crossfader in a cue.
+    #[tool(name = "set_crossfader")]
+    async fn set_crossfader(
+        &self,
+        Parameters(p): Parameters<SetCrossfaderParams>,
+    ) -> CallToolResult {
+        self.run(&SET_CROSSFADER, p, set_crossfader_body).await
+    }
+
+    /// End the performance: stop on a bar ({"at": "next_bar"} or {"at":
+    /// {"bar": N}}; the default), fade the master over `fade_bars` bars and
+    /// stop (the master volume is restored after the stop), or stop now.
+    /// Cancels pending cues, lifts the guards, and reports the set: duration,
+    /// cues scheduled and cancelled. The launch quantization stays as it is.
+    #[tool(name = "end_performance")]
+    async fn end_performance(
+        &self,
+        Parameters(p): Parameters<EndPerformanceParams>,
+    ) -> CallToolResult {
+        self.run(&END_PERFORMANCE, p, end_performance_body).await
+    }
+
+    /// Name a scene, give it a tempo, or set its phrase length (bars per
+    /// phrase, default 16) — what "next_phrase" and {"phrases_after": n} count
+    /// in cues, from the bar the scene was fired on.
+    #[tool(name = "set_scene")]
+    async fn set_scene(&self, Parameters(p): Parameters<SetSceneParams>) -> CallToolResult {
+        self.run(&SET_SCENE, p, set_scene_body).await
+    }
+
+    /// Listen without stopping the set: reads Live's output meters four times
+    /// a bar from the next bar line for `bars` bars and reports peak and
+    /// average per track, return and master (the master is flagged within
+    /// 0.5 dB of clipping). capture: true records the bars through the Capture
+    /// track instead (never touches the transport) and adds peak, RMS per bar
+    /// and low/mid/high balance from the file. Allowed during a performance.
+    #[tool(name = "listen")]
+    async fn listen(&self, Parameters(p): Parameters<ListenParams>) -> CallToolResult {
+        self.run(&LISTEN, p, listen_body).await
+    }
+
+    /// A variation of an existing clip's notes: fill_last_bar (16th repeats of
+    /// its own pitches into the downbeat), ghost_notes (quiet notes on empty
+    /// 16ths), invert_chords, thin (every other off-beat note dropped),
+    /// half_time, double_time. Seeded: the same seed gives the same result.
+    /// to_slot writes a new clip; without it the clip is changed in place and
+    /// undo_vary restores it (one level).
+    #[tool(name = "vary_clip")]
+    async fn vary_clip(&self, Parameters(p): Parameters<VaryClipParams>) -> CallToolResult {
+        self.run(&VARY_CLIP, p, vary_clip_body).await
+    }
+
+    /// Restore the notes a clip had before the last in-place vary_clip.
+    #[tool(name = "undo_vary")]
+    async fn undo_vary(&self, Parameters(p): Parameters<UndoVaryParams>) -> CallToolResult {
+        self.run(&UNDO_VARY, p, undo_vary_body).await
+    }
+
+    /// Read the key of what the producer just played (a record_clip clip),
+    /// set Live's scale to it, and transpose every other MIDI clip to match.
+    /// start_performance {"follow_key": true} does this after every recording.
+    #[tool(name = "follow_key")]
+    async fn follow_key(&self, Parameters(p): Parameters<FollowKeyParams>) -> CallToolResult {
+        self.run(&FOLLOW_KEY, p, follow_key_body).await
+    }
+
+    /// Remember every track's, return's and master's volume, pan, sends and
+    /// mute in one round trip, so an experiment can be reverted on the bar:
+    /// restore_mix, or a cue step {"gesture": {"restore_mix": {"snapshot": id}}}.
+    #[tool(name = "snapshot_mix")]
+    async fn snapshot_mix(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+        self.run(&SNAPSHOT_MIX, p, snapshot_mix_body).await
+    }
+
+    /// Put the mix back as a snapshot had it, now. For "on the bar", cue it.
+    #[tool(name = "restore_mix")]
+    async fn restore_mix(&self, Parameters(p): Parameters<RestoreMixParams>) -> CallToolResult {
+        self.run(&RESTORE_MIX, p, restore_mix_body).await
+    }
+
+    /// Fade every playing track except `keep` to silence over `bars` bars
+    /// from now, then stop them (faders stay down: snapshot_mix first if you
+    /// want to restore them). Runs on the Remote Script's clock.
+    #[tool(name = "panic")]
+    async fn panic(&self, Parameters(p): Parameters<PanicParams>) -> CallToolResult {
+        self.run(&PANIC, p, panic_body).await
+    }
+
+    /// Let a track play through scene launches: removes the stop buttons
+    /// from its empty Session slots, so a layer added mid-set (a lead, a
+    /// pad) survives every section change without copying the clip into
+    /// every row. A clip in a row still replaces it. keep: false puts the
+    /// stop buttons back. cue's silence check knows about it.
+    #[tool(name = "keep_track_playing")]
+    async fn keep_track_playing(
+        &self,
+        Parameters(p): Parameters<KeepTrackPlayingParams>,
+    ) -> CallToolResult {
+        self.run(&KEEP_TRACK_PLAYING, p, keep_track_playing_body)
+            .await
+    }
+
     #[tool(name = "batch")]
     async fn batch(&self, Parameters(p): Parameters<BatchParams>) -> CallToolResult {
         self.run(&BATCH, p, batch_body).await
@@ -3617,6 +5691,21 @@ impl Server {
 
 #[tool_handler(router = self.tool_router, name = "AbletonMusicMaker")]
 impl ServerHandler for Server {
+    /// What every client receives at `initialize`: the tools, and the
+    /// instructions that teach the model the workflow before its first call.
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        rmcp::model::ServerConfig::new(
+            rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
+        )
+        .with_server_info(rmcp::model::Implementation::new(
+            "AbletonMusicMaker",
+            env!("CARGO_PKG_VERSION"),
+        ))
+        .with_instructions(crate::context::INSTRUCTIONS.to_string())
+    }
+
     /// The one place the server learns who started it: the client's own
     /// name and version from `initialize`. Recorded in the heartbeat file the
     /// Mac app reads; never sent anywhere.
@@ -3660,11 +5749,26 @@ mod tests {
         }
     }
 
+    /// Clients show the model the input schema as one document; a `$ref`
+    /// into `$defs` hides the nested type (notes, cue steps, song tracks)
+    /// from it, so every nested type is `#[schemars(inline)]`.
+    #[test]
+    fn no_tool_schema_hides_a_type_behind_a_ref() {
+        for tool in Server::tool_router().list_all() {
+            let schema = serde_json::to_string(&tool.input_schema).unwrap();
+            assert!(
+                !schema.contains("\"$ref\""),
+                "{} has a $ref: {schema}",
+                tool.name
+            );
+        }
+    }
+
     #[test]
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 55);
+        assert_eq!(tools.len(), 75);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();

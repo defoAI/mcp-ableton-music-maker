@@ -39,6 +39,16 @@ stereo correlation), writes nothing, and the Mac app plays it in place. Captures
 project's files: nothing here copies, uploads or deletes them, and "Delete all local data"
 leaves them alone.
 
+## Library index
+
+To answer "find me an analog bass" without a round trip to Live, the server keeps its own
+copy of Live's browser: the names, folder paths and URIs of the loadable items Live showed
+the Remote Script. No audio, no notes, no project content. It lives in memory and, by
+default, as one JSON file per Live library under `~/.ableton-music-maker/library/`, so a
+new server process is ready at once. `ABLETON_MCP_LIBRARY_INDEX=false` keeps it in memory
+only. "Delete all local data" removes the folder; it is rebuilt in the background when the
+server next talks to Live.
+
 ## Deleting it
 
 Delete the `~/.ableton-music-maker` folder, or use **Delete all local data** in the Mac

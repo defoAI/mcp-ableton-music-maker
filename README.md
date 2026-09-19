@@ -19,7 +19,7 @@ Prompt-assisted music production, end-to-end track creation, and Live session an
 
 Two pieces:
 
-1. **`ableton-music-maker`**, a single Rust binary that speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio to Claude Desktop, Claude Code or Cursor. It exposes 55 tools for reading and editing the Live set, and talks to Live over a TCP socket on port 9877.
+1. **`ableton-music-maker`**, a single Rust binary that speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio to Claude Desktop, Claude Code or Cursor. It exposes 75 tools for reading, editing and performing the Live set, and talks to Live over a TCP socket on port 9877.
 2. **The AbletonMusicMaker Remote Script**, a control surface that runs inside Live and executes the commands. Live only loads control surfaces through its embedded Python interpreter, so this one file stays Python. It is embedded in the binary and installed with `ableton-music-maker-install-script`.
 
 ```
@@ -127,19 +127,22 @@ Checked by `docker/verify-image.sh` and by CI on every build:
 
 | Area | Tools |
 |---|---|
-| Session | `get_session_info`, `get_session_snapshot`, `set_tempo`, `start_playback`, `stop_playback`, `back_to_arrangement`, `set_arrangement_loop` |
+| Session | `get_context` (start here: the whole set in one call), `get_session_info`, `get_session_snapshot`, `set_tempo`, `start_playback`, `stop_playback`, `back_to_arrangement`, `set_arrangement_loop` |
 | Tracks | `get_track_info`, `create_midi_track`, `create_audio_track`, `delete_track`, `set_track_name`, `set_track_mixer`, `set_send`, `get_returns`, `set_color` |
 | Clips | `create_clip`, `create_audio_clip`, `get_clip_notes`, `add_notes_to_clip`, `clear_notes_from_clip`, `set_clip_name`, `delete_clip`, `fire_clip`, `stop_clip`, `get_clip_info`, `set_clip_loop`, `set_clip_launch`, `set_clip_automation`, `get_clip_automation` |
 | Devices | `get_device_parameters`, `set_device_parameter`, `load_instrument_or_effect`, `load_drum_kit`, `get_drum_rack_pads` |
-| Browser | `search_browser`, `get_library_status`, `get_browser_tree`, `get_browser_items_at_path` |
+| Browser | `search_browser` (many queries per call, answered from the server's own index once it has walked the library), `get_library_status`, `get_browser_tree`, `get_browser_items_at_path` |
 | Arrangement | `switch_to_arrangement_view`, `set_arrangement_time`, `get_arrangement_clips`, `duplicate_to_arrangement`, `set_arrangement_clip_name`, `delete_arrangement_clip`, `create_locator`, `delete_locator` |
 | Listening | `capture_mix`, `list_captures`, `measure_capture`, `get_track_meters`, `play_and_measure` |
+| Performing | `start_performance`, `get_performance_state`, `cue` (with gestures: breakdown, drop, mute_except, sweep, build, panic, restore_mix), `cancel_cue`, `fire_scene`, `create_scene`, `set_scene`, `record_clip`, `set_launch_quantization`, `set_crossfader`, `keep_track_playing`, `listen`, `vary_clip`, `undo_vary`, `follow_key`, `snapshot_mix`, `restore_mix`, `panic`, `end_performance` — every result carries the clock while a performance runs; launches report the bar they made; timed moves run by the Remote Script's own clock |
 | Orchestration | `batch`, `build_song` |
 | Bridge | `get_remote_script_info` |
 
 Notes can be written compactly: a step string per pitch (`{"36": "x...x...x...x..."}`), a repeating pattern, `notes_csv` lines, and `loop_every`/`until` to tile a bar across a clip; `create_clip` names and fills a clip in one call; `duplicate_to_arrangement` places a clip across a whole range at once.
 
 **Upgrading from the original AbletonMCP?** Remove its `AbletonMCP` entry from your client config; both servers talk to the same Remote Script and Claude would see two overlapping tool sets. The Mac app offers to do this in Setup.
+
+The server hands every client a short workflow at `initialize` (MCP instructions): start with `get_context`, build with `build_song`, hear it with `capture_mix`, perform with `start_performance` and `cue`. Clients that do not show instructions get the same reminder at the end of every `get_context` result.
 
 Every tool checks that the loaded Remote Script advertises the command it needs. A missing or outdated script produces a clear "run `ableton-music-maker-install-script`, then restart Live" error instead of a half-working session. The server also retries the handshake on the first tool call, so starting it before Live is fine.
 

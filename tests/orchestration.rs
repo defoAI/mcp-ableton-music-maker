@@ -24,6 +24,9 @@ async fn search_lists_hits_with_uris() {
     }));
     let server = server_with(bridge.clone());
     let p = SearchBrowserParams {
+        queries: vec![],
+        best: false,
+        refresh: false,
         query: "analog bass".into(),
         category: "all".into(),
         limit: 30,
@@ -34,7 +37,7 @@ async fn search_lists_hits_with_uris() {
     assert!(!is_error(&r));
     let t = text_of(&r);
     assert!(
-        t.contains("2 of 2 matches") && t.contains("uri: query:Synths#Analog:Deep"),
+        t.contains("2 matches for") && t.contains("uri: query:Synths#Analog:Deep"),
         "{t}"
     );
     assert_eq!(bridge.sent()[0].1["query"], "analog bass");
@@ -272,6 +275,7 @@ fn song() -> BuildSongParams {
     sends.insert("Reverb".to_string(), 0.3);
     BuildSongParams {
         tempo: Some(128.0),
+        scenes: vec![],
         tracks: vec![
             SongTrack {
                 name: "Drums".into(),
@@ -296,7 +300,8 @@ fn song() -> BuildSongParams {
         ],
         clips: vec![SongClip {
             track: "Drums".into(),
-            slot: 0,
+            slot: Some(0),
+            slots: vec![],
             name: "Kick".into(),
             length: 4.0,
             notes: NotesInput {
@@ -539,6 +544,218 @@ async fn add_notes_can_refresh_arrangement_copies() {
     assert_eq!(deletes, vec![2, 0]);
     assert!(
         text_of(&r).contains("Refreshed 2 Arrangement copies of 'bass' at beat(s) 0, 8"),
+        "{}",
+        text_of(&r)
+    );
+}
+
+#[tokio::test]
+async fn build_song_treats_plain_words_in_instrument_as_a_search() {
+    // The model often puts search words where a URI belongs; a URI always
+    // carries a ':' so plain words go through search_browser first.
+    let bridge = FakeBridge::responding(json!({
+        "index": 0, "name": "Pad", "loaded": true, "item_name": "Evolving Pad", "track_name": "Pad",
+        "devices_after": ["Evolving Pad"], "loaded_device": {"index": 0, "name": "Evolving Pad"}
+    }));
+    bridge.script(
+        "search_browser",
+        vec![
+            json!({"items": [{"name": "Evolving Pad", "uri": "query:Sounds#Pad:Evolving%20Pad"}]}),
+        ],
+    );
+    let server = server_with(bridge.clone());
+    let mut p = song();
+    p.tracks.truncate(1);
+    p.tracks[0].instrument = Some("ambient evolving pad".into());
+    p.tracks[0].instrument_query = None;
+    p.clips.clear();
+    p.placements.clear();
+    p.locators.clear();
+    let r = server
+        .run(&tools::BUILD_SONG, p, tools::build_song_body)
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let cmds = bridge.commands();
+    assert_eq!(
+        &cmds[..4],
+        &[
+            "set_tempo",
+            "create_midi_track",
+            "set_track_name",
+            "search_browser"
+        ]
+    );
+    assert_eq!(cmds[4], "load_browser_item");
+    assert_eq!(bridge.sent()[3].1["query"], "ambient evolving pad");
+    assert_eq!(
+        bridge.sent()[4].1["item_uri"],
+        "query:Sounds#Pad:Evolving%20Pad"
+    );
+    assert!(
+        text_of(&r).contains("found 'Evolving Pad' for \"ambient evolving pad\""),
+        "{}",
+        text_of(&r)
+    );
+}
+
+#[tokio::test]
+async fn build_song_copies_a_clip_into_extra_slots() {
+    let bridge = FakeBridge::responding(json!({"index": 0, "name": "Pad", "loaded": true}));
+    let server = server_with(bridge.clone());
+    let mut p = song();
+    p.tracks.truncate(1);
+    p.tracks[0].instrument = None;
+    p.clips.truncate(1);
+    p.clips[0].track = "Drums".into();
+    p.clips[0].slot = Some(0);
+    p.clips[0].slots = vec![1, 2, 0];
+    p.placements.clear();
+    p.locators.clear();
+    let r = server
+        .run(&tools::BUILD_SONG, p, tools::build_song_body)
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let slots: Vec<i64> = bridge
+        .sent()
+        .iter()
+        .filter(|(c, _)| c == "create_clip")
+        .map(|(_, a)| a["clip_index"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        slots,
+        vec![0, 1, 2],
+        "each extra slot once, the main slot first"
+    );
+    assert!(text_of(&r).contains("slots 0, 1, 2"), "{}", text_of(&r));
+}
+
+#[tokio::test]
+async fn get_context_is_one_round_trip_with_the_workflow_footer() {
+    let bridge = FakeBridge::responding(json!({
+        "live_version": "12.4.6", "script_version": "1.15.0",
+        "session": {"tempo": 120.0, "signature_numerator": 4, "signature_denominator": 4, "is_playing": false,
+            "bar": 1, "beat_in_bar": 1, "clip_trigger_quantization_name": "1_bar", "scale_mode": true,
+            "scale_name": "Major", "root_note_name": "C", "master_volume": 0.85},
+        "tracks": [{"index": 0, "name": "1-MIDI", "kind": "midi", "volume": 0.85, "devices": [], "clips": []}],
+        "returns": [], "scenes": [{"index": 0, "name": "", "clip_count": 0}], "cues": [], "events": []
+    }));
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::GET_CONTEXT,
+            tools::GetContextParams::default(),
+            tools::get_context_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    assert_eq!(bridge.commands(), vec!["get_context"], "one round trip");
+    assert_eq!(bridge.sent()[0].1["include_library"], false);
+    let t = text_of(&r);
+    assert!(t.starts_with("Live 12.4.6 · script 1.15.0 · 120 BPM 4/4 · stopped at bar 1.1 · launch quantization 1 bar · key C Major\n"), "{t}");
+    assert!(
+        t.contains("  0 1-MIDI [midi] no devices · vol 0.85 · no clips\n"),
+        "{t}"
+    );
+    assert!(t.contains("Scenes: 0 empty\n"), "{t}");
+    assert!(t.contains("Performance: not running"), "{t}");
+    assert!(t.ends_with(mcp_ableton_music_maker::context::FOOTER), "{t}");
+    let r = server
+        .run(
+            &tools::GET_CONTEXT,
+            tools::GetContextParams {
+                include_library: true,
+                json: true,
+            },
+            tools::get_context_body,
+        )
+        .await;
+    assert!(
+        text_of(&r).trim_start().starts_with('{'),
+        "raw JSON on request"
+    );
+    assert_eq!(bridge.sent()[1].1["include_library"], true);
+}
+
+#[tokio::test]
+async fn batch_resolves_last_clip_and_build_song_handles_scenes_and_slots() {
+    let bridge = FakeBridge::responding(json!({"index": 3, "name": "3-MIDI"}));
+    let server = server_with(bridge.clone());
+    let p: tools::BatchParams = serde_json::from_value(json!({"steps": [
+        {"tool": "create_midi_track", "args": {}},
+        {"tool": "create_clip", "args": {"track_index": "$last_track", "clip_index": 2, "length": 4}},
+        {"tool": "fire_clip", "args": {"track_index": "$last_track", "clip_index": "$last_clip"}}
+    ]}))
+    .unwrap();
+    let r = server.run(&tools::BATCH, p, tools::batch_body).await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let fired = bridge
+        .sent()
+        .into_iter()
+        .find(|(c, _)| c == "fire_clip")
+        .unwrap()
+        .1;
+    assert_eq!(
+        fired["clip_index"], 2,
+        "$last_clip is the slot of the last create_clip"
+    );
+    assert_eq!(fired["track_index"], 3);
+
+    // A scenes block names rows; clips with only `slots` skip slot 0.
+    let bridge = FakeBridge::responding(json!({"index": 0, "name": "Drums", "loaded": true}));
+    let server = server_with(bridge.clone());
+    let mut p = song();
+    p.scenes = vec![
+        tools::SongScene {
+            name: "Intro".into(),
+            tempo: None,
+            phrase_bars: Some(8),
+        },
+        tools::SongScene {
+            name: "Groove".into(),
+            tempo: Some(128.0),
+            phrase_bars: None,
+        },
+    ];
+    p.tracks.truncate(1);
+    p.tracks[0].instrument = None;
+    p.clips.truncate(1);
+    p.clips[0].slot = None;
+    p.clips[0].slots = vec![1, 2];
+    p.placements.clear();
+    p.locators.clear();
+    let r = server
+        .run(&tools::BUILD_SONG, p, tools::build_song_body)
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let cmds = bridge.commands();
+    assert_eq!(
+        &cmds[..4],
+        &[
+            "set_tempo",
+            "get_performance_state",
+            "create_scene",
+            "create_scene"
+        ],
+        "{cmds:?}"
+    );
+    let scene_args: Vec<_> = bridge
+        .sent()
+        .into_iter()
+        .filter(|(c, _)| c == "create_scene")
+        .map(|(_, a)| a)
+        .collect();
+    assert_eq!(scene_args[0]["name"], "Intro");
+    assert_eq!(scene_args[0]["phrase_bars"], 8);
+    assert_eq!(scene_args[1]["tempo"], 128.0);
+    let slots: Vec<i64> = bridge
+        .sent()
+        .iter()
+        .filter(|(c, _)| c == "create_clip")
+        .map(|(_, a)| a["clip_index"].as_i64().unwrap())
+        .collect();
+    assert_eq!(slots, vec![1, 2], "no slot 0 when only slots is given");
+    assert!(
+        text_of(&r).contains("Scenes: 0 Intro, 1 Groove."),
         "{}",
         text_of(&r)
     );

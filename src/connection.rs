@@ -53,10 +53,25 @@ pub trait LiveBridge: Send + Sync {
 pub struct CallTrace {
     pub commands: Vec<String>,
     pub live_ms: f64,
+    /// The Remote Script's clock from the last response of this call, when a
+    /// performance runs (the script attaches it to every response envelope).
+    #[serde(skip)]
+    pub clock: Option<Value>,
 }
 
 thread_local! {
     static TRACE: RefCell<Option<CallTrace>> = const { RefCell::new(None) };
+    static EXCHANGE_CLOCK: RefCell<Option<Value>> = const { RefCell::new(None) };
+}
+
+/// Called by the connection when a response envelope carries `clock`; a
+/// test bridge may call it to attach one.
+pub fn note_exchange_clock(clock: Option<Value>) {
+    EXCHANGE_CLOCK.with(|c| *c.borrow_mut() = clock);
+}
+
+fn take_exchange_clock() -> Option<Value> {
+    EXCHANGE_CLOCK.with(|c| c.borrow_mut().take())
 }
 
 /// Start observing the Live commands sent from this thread.
@@ -69,11 +84,14 @@ pub fn end_trace() -> CallTrace {
     TRACE.with(|t| t.borrow_mut().take().unwrap_or_default())
 }
 
-fn note_command(command: &str, elapsed: Duration) {
+fn note_command(command: &str, elapsed: Duration, clock: Option<&Value>) {
     TRACE.with(|t| {
         if let Some(trace) = t.borrow_mut().as_mut() {
             trace.commands.push(command.to_string());
             trace.live_ms += elapsed.as_secs_f64() * 1000.0;
+            if let Some(c) = clock {
+                trace.clock = Some(c.clone());
+            }
         }
     });
 }
@@ -88,12 +106,38 @@ pub fn live_address() -> (String, u16) {
     (host, port)
 }
 
+/// A running performance: set by `start_performance`, cleared by
+/// `end_performance`. While it is set, the transport-touching tools refuse.
+/// In memory only; it vanishes with the process.
+#[derive(Debug, Clone, Serialize)]
+pub struct Performance {
+    pub started_at: chrono::DateTime<chrono::Local>,
+    pub start_bar: i64,
+    pub start_beat: f64,
+    pub key: Option<String>,
+    pub quantization: String,
+    pub cues_scheduled: u32,
+    pub cues_cancelled: u32,
+    /// Re-key the assistant's clips after every recording (`follow_key: true`)
+    #[serde(default)]
+    pub follow_key: bool,
+}
+
 /// Everything a tool needs to talk to Live: the bridge, the cached
-/// handshake result, and the local activity log.
+/// handshake result, the local activity log, the running performance, the
+/// library index, and what the last exchange told us about time.
 pub struct LiveState {
     pub bridge: Arc<dyn LiveBridge>,
     pub script: ScriptInfoCache,
     pub activity: Activity,
+    pub performance: Mutex<Option<Performance>>,
+    pub library: crate::library::Library,
+    /// The last 20 round trips in seconds, for latency compensation.
+    pub round_trips: Mutex<std::collections::VecDeque<f64>>,
+    /// The last clock the Remote Script attached, and when it arrived.
+    pub last_clock: Mutex<Option<(Instant, Value)>>,
+    /// One level of undo for vary_clip: (track, slot) → the notes before.
+    pub vary_undo: Mutex<std::collections::HashMap<(i64, i64), Vec<Value>>>,
 }
 
 impl LiveState {
@@ -107,14 +151,56 @@ impl LiveState {
             bridge,
             script: ScriptInfoCache::default(),
             activity,
+            performance: Mutex::new(None),
+            library: crate::library::Library::default(),
+            round_trips: Mutex::new(std::collections::VecDeque::new()),
+            last_clock: Mutex::new(None),
+            vary_undo: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
     pub fn send_command(&self, command_type: &str, params: Option<Value>) -> LiveResult<Value> {
         let start = Instant::now();
+        note_exchange_clock(None);
         let result = self.bridge.send_command(command_type, params);
-        note_command(command_type, start.elapsed());
+        let elapsed = start.elapsed();
+        let clock = take_exchange_clock();
+        note_command(command_type, elapsed, clock.as_ref());
+        if result.is_ok() {
+            let mut rt = self.round_trips.lock().unwrap_or_else(|e| e.into_inner());
+            rt.push_back(elapsed.as_secs_f64());
+            while rt.len() > 20 {
+                rt.pop_front();
+            }
+        }
+        if let Some(c) = clock {
+            *self.last_clock.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), c));
+        }
         result
+    }
+
+    /// Trailing-average round trip to Live in seconds (0.2 s before any call).
+    pub fn round_trip_s(&self) -> f64 {
+        let rt = self.round_trips.lock().unwrap_or_else(|e| e.into_inner());
+        if rt.is_empty() {
+            0.2
+        } else {
+            rt.iter().sum::<f64>() / rt.len() as f64
+        }
+    }
+
+    /// The last clock the script sent, with how many seconds ago it arrived.
+    pub fn last_clock(&self) -> Option<(f64, Value)> {
+        self.last_clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|(at, v)| (at.elapsed().as_secs_f64(), v.clone()))
+    }
+
+    /// Tests: pretend the script just sent this clock.
+    pub fn set_last_clock(&self, clock: Value) {
+        *self.last_clock.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), clock));
     }
 }
 
@@ -157,7 +243,23 @@ const MODIFYING_COMMANDS: &[&str] = &[
     "delete_track",
     "back_to_arrangement",
     "set_arrangement_loop",
+    "set_launch_quantization",
+    "create_scene",
+    "fire_scene",
+    "stop_all_clips",
+    "set_crossfader",
+    "record_clip",
+    "schedule_cue",
+    "cancel_cue",
+    "set_scale",
+    "set_slot_stop_buttons",
+    "set_performance_mode",
+    "set_scene",
+    "start_live_capture",
+    "snapshot_mix",
+    "restore_mix",
 ];
+// get_context and get_browser_index are reads: the default budget applies.
 
 /// Socket budget per command. Importing a large audio file can keep Live's
 /// main thread busy far longer than any other command.
@@ -353,8 +455,10 @@ impl AbletonConnection {
                 None => "unknown error from Ableton".to_string(),
             };
             tracing::error!("Ableton error for {}: {}", command_type, message);
+            note_exchange_clock(response.get("clock").cloned());
             return Err(LiveError::Ableton(message));
         }
+        note_exchange_clock(response.get("clock").cloned());
         Ok(response.get("result").cloned().unwrap_or_else(|| json!({})))
     }
 }

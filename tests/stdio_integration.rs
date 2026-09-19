@@ -92,9 +92,19 @@ async fn full_stack_over_stdio() {
     let server_info = info.server_info.as_ref().expect("server implementation");
     assert_eq!(server_info.name, "AbletonMusicMaker");
     assert_eq!(server_info.version, mcp_ableton_music_maker::MCP_VERSION);
+    let instructions = info.instructions.as_deref().expect("server instructions");
+    for word in [
+        "get_context",
+        "build_song",
+        "capture_mix",
+        "start_performance",
+        "cue",
+    ] {
+        assert!(instructions.contains(word), "instructions lack {word}");
+    }
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 55);
+    assert_eq!(tools.len(), 75);
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     for expected in [
         "get_session_info",

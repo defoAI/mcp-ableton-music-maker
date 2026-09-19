@@ -181,6 +181,7 @@ pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Activity log off (ABLETON_MCP_ACTIVITY=false)");
     }
     write_heartbeat(&live, None);
+    crate::library::start_warm_up(live.clone());
 
     let server = Server::new(live.clone());
     let service = server.serve(rmcp::transport::stdio()).await?;
