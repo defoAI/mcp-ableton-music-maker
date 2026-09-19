@@ -184,6 +184,7 @@ pub struct LiveState {
     pub activity: Activity,
     pub performance: Mutex<Option<Performance>>,
     pub library: crate::library::Library,
+    pub samples: crate::samples::Samples,
     /// The last 20 round trips in seconds, for latency compensation.
     pub round_trips: Mutex<std::collections::VecDeque<f64>>,
     /// The last clock the Remote Script attached, and when it arrived.
@@ -209,6 +210,7 @@ impl LiveState {
             activity,
             performance: Mutex::new(None),
             library: crate::library::Library::default(),
+            samples: crate::samples::Samples::default(),
             round_trips: Mutex::new(std::collections::VecDeque::new()),
             last_clock: Mutex::new(None),
             vary_undo: Mutex::new(std::collections::HashMap::new()),
@@ -322,14 +324,18 @@ const MODIFYING_COMMANDS: &[&str] = &[
     "set_device_parameters",
     "create_tracks",
     "write_clips",
+    "place_sample",
 ];
-// get_context and get_browser_index are reads: the default budget applies.
+// get_context, get_browser_index and list_sample_folders are reads: the
+// default budget applies, except where named below.
 
 /// Socket budget per command. Importing a large audio file can keep Live's
 /// main thread busy far longer than any other command.
 pub fn command_timeout(command_type: &str) -> Duration {
     match command_type {
         "create_audio_clip" => Duration::from_secs(65),
+        // Creates the clip from the file and fits it, in one undo step.
+        "place_sample" => Duration::from_secs(65),
         // Many tracks with instruments loaded from the browser, one round trip.
         "create_tracks" => Duration::from_secs(190),
         // Many clips with their notes, one round trip.

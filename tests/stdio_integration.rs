@@ -104,7 +104,7 @@ async fn full_stack_over_stdio() {
     }
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 99);
+    assert_eq!(tools.len(), 101);
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     for expected in [
         "adv_get_session_info",
@@ -112,6 +112,8 @@ async fn full_stack_over_stdio() {
         "adv_load_drum_kit",
         "adv_get_remote_script_info",
         "get_context",
+        "add_sample",
+        "adv_sample_folders",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }

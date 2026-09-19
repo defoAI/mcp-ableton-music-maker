@@ -27,6 +27,7 @@ another address in a `bind_host.txt` file beside it.
 | **Activity log** — one line per tool call: the tool's name, which Live commands it sent, how long it took and how long those commands held Live's main thread, whether it succeeded, the error text if not, and the *size* of what went in and out | `~/.ableton-music-maker/activity/<session>.jsonl` | On | `ABLETON_MCP_ACTIVITY=false`, or the switch in the Mac app |
 | **Payloads** — the parameters and results themselves, which contain your MIDI notes and the names you give tracks and clips | same files | **Off** | `ABLETON_MCP_ACTIVITY_PAYLOADS=true` turns it on; leave it unset to keep it off |
 | **Heartbeat** — that a server is running, which client started it, and the versions involved | `~/.ableton-music-maker/sessions/<pid>.json` | On | Removed automatically when the server exits |
+| **Sample folders** — the paths you told Claude to look in for samples (not Live's own folders, which need no telling) | `~/.ableton-music-maker/sample_folders.json` | **Only when you ask** (`adv_sample_folders add`) | Delete the file, or "Delete all local data" |
 | **Set exports** — a whole set as a document: your track and clip names, every MIDI note, mixer values, sections and setlist | `~/.ableton-music-maker/sets/<name>.json` | **Only when you ask** (`export_set`) | Delete the file or the folder, or "Delete all local data" |
 
 Error text can contain a name you typed (a track called "Nick's bass", say). That is why the
@@ -64,6 +65,15 @@ default, as one JSON file per Live library under `~/.ableton-music-maker/library
 new server process is ready at once. `ABLETON_MCP_LIBRARY_INDEX=false` keeps it in memory
 only. "Delete all local data" removes the folder; it is rebuilt in the background when the
 server next talks to Live.
+
+The same folder holds the **sample index**, built the first time Claude is asked for a
+sample and never before: the name, folder, path, type and length of every audio file in the
+folders Live names — the Core Library, your Packs, your User Library, the open set's own
+folder — plus any you added yourself. Live says where those folders are; the server reads
+them, and for a WAV or AIFF it reads the first few bytes of each file to learn how long it
+is. That is the header, never the audio: nothing decodes, plays, copies or moves a sample,
+and a sample Claude puts in your set is referenced where it lies, exactly as if you had
+dragged it in. The same `ABLETON_MCP_LIBRARY_INDEX=false` keeps this index in memory only.
 
 ## Set exports
 
