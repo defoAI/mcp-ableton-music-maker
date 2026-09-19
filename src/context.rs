@@ -18,12 +18,14 @@ MAKING MUSIC: build_song builds a whole set from one document: tracks (instrumen
 
 HEARING IT: capture_mix records N bars of the master through a Capture track and reports peak, RMS per bar, silent bars, clipping and stereo width; play_and_measure is the cheap meter-only check. Nothing leaves the machine.
 
+SECTIONS AND SONGS: a section is a scene row named \"<name> · <bars>\" (its phrase length; Live's Save keeps it). make_section makes one from what plays, as a copy of another with per-track changes, or from clips per track. set_song writes the setlist into the 'Setlist:' scene: an entry without repeats loops until the performer says go. play_song fires the first section and cues the counted jumps; then go (end of the playing phrase, or at: next_bar which cuts it short and says so), hold_section, next_section, previous_section, back (the jump history) and jump_to {section, repeats, at, transition} steer it — each is one state read and one cue, and a jump into a section that ran more than 3 dB hotter warns. The level line (🔊) rides under the clock line on every reply while performing.
+
 PERFORMING: start_performance (1-bar launch quantization, disarms tracks, sets the key, fires the first scene, turns on guards). Then cue for anything timed: steps at bar numbers (\"next_bar\", {\"bar\": N}, {\"bars_after\": k}) with fire_scene, fire_clip, stop_clip, set, or a ramp of tempo, crossfader or volume over bars. The Remote Script runs cues on Live's own clock, so plan two bars ahead and never try to hit a beat with a tool call. get_performance_state tells you the bar, what plays, what is queued and what fired since you last asked. keep_track_playing lets a layer added mid-set survive scene changes. record_clip records the producer playing. While a performance runs, stop_playback, set_tempo, playhead moves, capture_mix and deleting playing clips are refused with the on-the-bar alternative; end_performance stops on the bar, fades, or now.
 
 RULES: Live's bar numbers are 1-based. Every launch lands on the next bar. A scene launch stops tracks without a clip in that row (unless keep_track_playing). A fresh Live 12 set sits in its default C Major scale: pass the key you mean. Live arms new MIDI tracks by itself: an armed track with an empty slot records on a scene launch.";
 
 /// The short form appended to every get_context result.
-pub const FOOTER: &str = "Workflow: build_song (tracks with instrument words or URI; clips as step strings, notes_csv or patterns; `slots` for copies) → hear it with capture_mix or play_and_measure → perform with start_performance, cue (timed moves on Live's clock, two bars ahead), get_performance_state, keep_track_playing, record_clip, end_performance. Tracks and scenes by name or index.";
+pub const FOOTER: &str = "Workflow: build_song (tracks with instrument words or URI; clips as step strings, notes_csv or patterns; `slots` for copies) → hear it with capture_mix or play_and_measure → perform with start_performance, cue (timed moves on Live's clock, two bars ahead), get_performance_state, keep_track_playing, record_clip, end_performance. Sections are scene rows named '<name> · <bars>'; make_section, set_song, play_song, then go / hold_section / next_section / back / jump_to steer them. Tracks and scenes by name or index.";
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
@@ -206,7 +208,19 @@ pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
     let scenes = arr(ctx, "scenes");
     let mut named: Vec<String> = Vec::new();
     let mut empty: Vec<i64> = Vec::new();
+    let mut setlist: Option<&str> = None;
+    let mut has_sections = false;
+    let mut section_names: Vec<String> = Vec::new();
     for sc in scenes {
+        if crate::song::is_setlist_scene(s(sc, "name")) {
+            setlist = Some(s(sc, "name"));
+            continue;
+        }
+        let (base, suffix) = crate::song::parse_section_name(s(sc, "name"));
+        if suffix.is_some() {
+            has_sections = true;
+        }
+        section_names.push(base);
         let count = sc
             .get("clip_count")
             .and_then(Value::as_i64)
@@ -233,7 +247,11 @@ pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
         }
         named.push(item);
     }
-    out.push_str("Scenes: ");
+    out.push_str(if has_sections {
+        "Sections (scenes): "
+    } else {
+        "Scenes: "
+    });
     out.push_str(&named.join(" · "));
     if !empty.is_empty() {
         if !named.is_empty() {
@@ -243,6 +261,27 @@ pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
         out.push_str(" empty");
     }
     out.push('\n');
+    if let Some(name) = setlist {
+        match crate::song::parse_setlist(name) {
+            Ok(entries) if entries.is_empty() => {
+                out.push_str("Song: none yet (the 'Setlist:' scene is empty; set_song)\n")
+            }
+            Ok(entries) => match crate::song::unknown_entry(&entries, &section_names) {
+                None => out.push_str(&format!(
+                    "Song: {} (from the 'Setlist:' scene; play_song, or jump_to a section)\n",
+                    crate::song::setlist_text(&entries)
+                )),
+                Some(problem) => out.push_str(&format!(
+                    "Song: the 'Setlist:' scene reads \"{}\"; {problem}. Fix the scene name in Live or set_song again.\n",
+                    name.trim()
+                )),
+            },
+            Err(e) => out.push_str(&format!(
+                "Song: the 'Setlist:' scene reads \"{}\"; {e}. Fix the scene name in Live or set_song again.\n",
+                name.trim()
+            )),
+        }
+    }
 
     let cues = arr(ctx, "cues");
     match since {
@@ -387,6 +426,34 @@ mod tests {
     }
 
     #[test]
+    fn sections_and_the_song_read_back_from_the_scene_names() {
+        let mut p = payload();
+        p["scenes"] = json!([
+            {"index": 0, "name": "Intro · 8", "clip_count": 2}, {"index": 1, "name": "Groove · 8", "clip_count": 4, "is_playing": true},
+            {"index": 2, "name": "Break · 16", "clip_count": 2},
+            {"index": 3, "name": "Setlist: Intro×2 → Groove → Break", "clip_count": 0}
+        ]);
+        let t = context_text(&p, None);
+        assert!(
+            t.contains(
+                "Sections (scenes): 0 Intro · 8 (2) · 1 [Groove · 8] (4) · 2 Break · 16 (2)\n"
+            ),
+            "{t}"
+        );
+        assert!(t.contains("Song: Intro×2 → Groove → Break (from the 'Setlist:' scene; play_song, or jump_to a section)\n"), "{t}");
+        p["scenes"][3]["name"] = json!("Setlist: intro x2, grove x4");
+        let t = context_text(&p, None);
+        assert!(t.contains("Song: the 'Setlist:' scene reads \"Setlist: intro x2, grove x4\"; 'grove' is not a section (did you mean Groove?)."), "{t}");
+        p["scenes"][3]["name"] = json!("Setlist: Intro → → Groove");
+        let t = context_text(&p, None);
+        assert!(t.contains("Song: the 'Setlist:' scene reads \"Setlist: Intro → → Groove\"; entry 2 of the setlist is empty"), "{t}");
+        assert!(
+            t.contains("Fix the scene name in Live or set_song again."),
+            "{t}"
+        );
+    }
+
+    #[test]
     fn context_text_without_a_performance_or_library() {
         let mut p = payload();
         p["cues"] = json!([]);
@@ -415,10 +482,14 @@ mod tests {
             "get_performance_state",
             "end_performance",
             "not made by Ableton",
+            "make_section",
+            "set_song",
+            "play_song",
+            "jump_to",
         ] {
             assert!(INSTRUCTIONS.contains(word), "{word}");
         }
-        assert!(INSTRUCTIONS.len() < 4000);
+        assert!(INSTRUCTIONS.len() < 5000);
         assert_eq!(ranges(&[5, 6, 7, 9]), "5–7, 9");
     }
 }

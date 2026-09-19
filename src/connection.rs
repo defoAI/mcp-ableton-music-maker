@@ -121,6 +121,9 @@ pub struct Performance {
     /// Re-key the assistant's clips after every recording (`follow_key: true`)
     #[serde(default)]
     pub follow_key: bool,
+    /// The song cursor while a setlist is being played or steered
+    #[serde(default)]
+    pub song: Option<crate::song::Song>,
 }
 
 /// Everything a tool needs to talk to Live: the bridge, the cached
@@ -258,6 +261,10 @@ const MODIFYING_COMMANDS: &[&str] = &[
     "start_live_capture",
     "snapshot_mix",
     "restore_mix",
+    "capture_scene",
+    "duplicate_scene",
+    "set_clip_groove",
+    "set_device_parameters",
 ];
 // get_context and get_browser_index are reads: the default budget applies.
 

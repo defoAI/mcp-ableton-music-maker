@@ -60,8 +60,9 @@ Paths are relative to the repository root.
 |---|---|---|
 | The server has no upload path | `tests/local_only.rs` (no removed variable or the word Supabase in `src/`; no dataset tool served) plus the CI step "No HTTP client in the dependency tree" | `cargo tree -e normal \| grep -E 'ureq\|reqwest\|hyper\|curl'` prints nothing |
 | What the activity log writes, and that payloads are off by default | `src/activity.rs`; `tests/activity.rs` pins the defaults | `cargo test --test activity` |
+| Set exports are written only on an explicit call, and where | `src/sets.rs`; `tests/sets.rs` pins the folder and that no other tool creates it | `cargo test --test sets` |
 | Every environment variable the server reads | the code | `grep -rhoE 'ABLETON_MCP_[A-Z_]+' src \| sort -u` |
-| Where the server writes | `src/state.rs` — `ABLETON_MCP_STATE_DIR`, else `~/.ableton-music-maker/` with `activity/` and `sessions/` under it | `ableton-music-maker --status` |
+| Where the server writes | `src/state.rs` — `ABLETON_MCP_STATE_DIR`, else `~/.ableton-music-maker/` with `activity/`, `sessions/`, `library/` and (only after an `export_set` call) `sets/` under it | `ableton-music-maker --status` |
 | What the heartbeat contains | `app::write_heartbeat` in `src/app.rs` | one `<pid>.json` per running server |
 | Plain-language description of the above, and how to delete it | `TERMS.md` — must match the code facts in this table | |
 | Who publishes the product | DefoAI UG — [decision 0004](../decisions/0004-who-publishes-and-holds-the-data.md); nobody holds data because none leaves the machine | |
@@ -96,9 +97,9 @@ matches on them.
 
 | | Verified value | Source |
 |---|---|---|
-| MCP tools | **75** | `src/tools.rs` |
-| Remote Script commands | **75** | `SCRIPT_CAPABILITIES` |
-| Remote Script version | **1.16.0** | `SCRIPT_VERSION` |
+| MCP tools | **94** | `src/tools.rs` |
+| Remote Script commands | **80** | `SCRIPT_CAPABILITIES` |
+| Remote Script version | **1.19.0** | `SCRIPT_VERSION` |
 | Server version | **2.0.0** | `Cargo.toml` |
 | Image size limit | **50** MB | `docker/verify-image.sh` |
 | Port | **9877** | `DEFAULT_PORT` |

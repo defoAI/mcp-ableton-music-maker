@@ -3,7 +3,7 @@
 //! Everything lives under one state directory: `ABLETON_MCP_STATE_DIR` when
 //! set (the Docker image points it at `/state`), else
 //! `~/.ableton-music-maker/`. The Mac app reads these paths; nothing uploads
-//! them.
+//! them. `sets/` appears only when `export_set` is called.
 
 use std::path::PathBuf;
 
@@ -31,4 +31,9 @@ pub fn sessions_dir() -> PathBuf {
 /// One `<library-key>.json` per Live library: the browser index; see [`crate::library`].
 pub fn library_dir() -> PathBuf {
     state_dir().join("library")
+}
+
+/// One `<name>.json` per exported set, written only by `export_set`; see [`crate::sets`].
+pub fn sets_dir() -> PathBuf {
+    state_dir().join("sets")
 }

@@ -1185,7 +1185,7 @@ async fn listen_reads_meters_over_a_bar_without_touching_the_transport() {
     b.script("get_performance_state", vec![s]);
     b.script(
         "get_track_meters",
-        vec![json!({"tracks": [{"name": "Kick", "output_meter_left": 0.6, "output_meter_right": 0.55}], "returns": [], "master": {"name": "Master", "output_meter_level": 0.98}})],
+        vec![json!({"tracks": [{"name": "Kick", "left": 0.6, "right": 0.55}], "returns": [], "master": {"name": "Master", "level": 0.98}})],
     );
     let server = server_with(b.clone());
     let r = server

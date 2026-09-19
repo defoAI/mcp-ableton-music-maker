@@ -97,6 +97,11 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "snapshot_mix",
     "restore_mix",
     "get_browser_index",
+    "capture_scene",
+    "duplicate_scene",
+    "get_grooves",
+    "set_clip_groove",
+    "set_device_parameters",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -134,7 +139,7 @@ fn beat(v: Option<&Value>) -> String {
     }
 }
 
-fn get_display(v: &Value, key: &str, default: &str) -> String {
+pub(crate) fn get_display(v: &Value, key: &str, default: &str) -> String {
     v.get(key)
         .map(display)
         .unwrap_or_else(|| default.to_string())
@@ -263,10 +268,31 @@ params!(SetDeviceParameterParams {
     track_index: i64,
     /// Index into the track's device chain
     device_index: i64,
-    /// Index into device.parameters
-    parameter_index: i64,
+    /// Index into device.parameters (or give `parameter` by name)
+    parameter_index: Option<i64>,
+    /// The parameter by name: an exact name, or a substring of one ("Cutoff", "atk")
+    parameter: Option<String>,
     /// New parameter value (Live parameter units)
     value: f64,
+});
+params!(ShapeSoundParams {
+    /// Track name or index
+    track: Value,
+    /// The device, by name (a substring) or index; default: the first instrument, rack or drum rack on the track
+    device: Option<Value>,
+    /// Each word: a fraction 0–1 of the parameter's range, or "±N%" relative to where it sits
+    cutoff: Option<Value>,
+    resonance: Option<Value>,
+    attack: Option<Value>,
+    decay: Option<Value>,
+    sustain: Option<Value>,
+    release: Option<Value>,
+    drive: Option<Value>,
+    detune: Option<Value>,
+    width: Option<Value>,
+    lfo_rate: Option<Value>,
+    reverb: Option<Value>,
+    delay: Option<Value>,
 });
 params!(SnapshotParams {
     /// Include MIDI note arrays in clips (default true)
@@ -319,18 +345,35 @@ params!(CreateAudioClipParams {
 #[schemars(inline)]
 pub struct Note {
     /// MIDI pitch 0-127
+    #[serde(deserialize_with = "int_or_float")]
     pub pitch: i64,
     /// Start position in beats
     pub start_time: f64,
     /// Length in beats
     pub duration: f64,
     /// Velocity 1-127
+    #[serde(deserialize_with = "int_or_float")]
     pub velocity: i64,
     /// Optional; defaults to false. Leave it out unless the note is muted.
     #[serde(default)]
     pub mute: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// Live reports velocities (and, on some versions, pitches) as floats;
+/// notes read with get_clip_notes must write back unchanged.
+fn int_or_float<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+    let v = Value::deserialize(d)?;
+    match v {
+        Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f.round() as i64))
+            .ok_or_else(|| serde::de::Error::custom("not a whole number")),
+        other => Err(serde::de::Error::custom(format!(
+            "expected a number, got {other}"
+        ))),
+    }
 }
 
 params!(AddNotesParams {
@@ -803,17 +846,36 @@ pub const FOLLOW_KEY: ToolSpec = ToolSpec::new("follow_key");
 pub const SNAPSHOT_MIX: ToolSpec = ToolSpec::new("snapshot_mix");
 pub const RESTORE_MIX: ToolSpec = ToolSpec::new("restore_mix");
 pub const PANIC: ToolSpec = ToolSpec::new("panic");
+pub const RETIME_CLIP: ToolSpec = ToolSpec::new("retime_clip");
+pub const SHAPE_SOUND: ToolSpec = ToolSpec::new("shape_sound");
+pub const EXPORT_SET: ToolSpec = ToolSpec::new("export_set");
+pub const IMPORT_SET: ToolSpec = ToolSpec::new("import_set");
+pub const GROOVE_CLIP: ToolSpec = ToolSpec::new("groove_clip");
+pub const GROOVE_AMOUNT: ToolSpec = ToolSpec::new("groove_amount");
+pub const HUMANIZE: ToolSpec = ToolSpec::new("humanize");
+pub const SWING_NOTES: ToolSpec = ToolSpec::new("swing_notes");
+pub const MAKE_SECTION: ToolSpec = ToolSpec::new("make_section");
+pub const SET_SONG: ToolSpec = ToolSpec::new("set_song");
+pub const ADD_TO_SONG: ToolSpec = ToolSpec::new("add_to_song");
+pub const REMOVE_FROM_SONG: ToolSpec = ToolSpec::new("remove_from_song");
+pub const PLAY_SONG: ToolSpec = ToolSpec::new("play_song");
+pub const HOLD_SECTION: ToolSpec = ToolSpec::new("hold_section");
+pub const GO: ToolSpec = ToolSpec::new("go");
+pub const NEXT_SECTION: ToolSpec = ToolSpec::new("next_section");
+pub const PREVIOUS_SECTION: ToolSpec = ToolSpec::new("previous_section");
+pub const BACK: ToolSpec = ToolSpec::new("back");
+pub const JUMP_TO: ToolSpec = ToolSpec::new("jump_to");
 
 // ── Tool bodies ─────────────────────────────────────────────────────────────
 
-fn live_err(what: &str, e: LiveError) -> String {
+pub(crate) fn live_err(what: &str, e: LiveError) -> String {
     format!("Could not {what}: {e}")
 }
 
 /// Every tool checks that the loaded Remote Script serves the command it is
 /// about to send; a stale or missing script gets a reinstall message rather
 /// than a half-working session.
-fn require(live: &LiveState, capability: &str) -> Result<(), String> {
+pub(crate) fn require(live: &LiveState, capability: &str) -> Result<(), String> {
     match live
         .script
         .require_capability(live.bridge.as_ref(), capability)
@@ -864,15 +926,303 @@ pub fn get_device_parameters_body(live: &LiveState, p: &DeviceParams) -> ToolRes
     .map_err(|e| live_err("get device parameters", e))
 }
 
+/// One device's parameters, as [`crate::sound::Param`]s, with its name and class.
+fn device_params(
+    live: &LiveState,
+    track_index: i64,
+    device_index: i64,
+) -> Result<(String, String, Vec<crate::sound::Param>), String> {
+    require(live, "get_device_parameters")?;
+    let r = live
+        .send_command(
+            "get_device_parameters",
+            Some(json!({"track_index": track_index, "device_index": device_index})),
+        )
+        .map_err(|e| live_err("read the device's parameters", e))?;
+    let d = r.get("device").cloned().unwrap_or(Value::Null);
+    let params: Vec<crate::sound::Param> = d
+        .get("parameters")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(crate::sound::Param::from_value)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((
+        get_display(&d, "name", "device"),
+        get_display(&d, "class_name", ""),
+        params,
+    ))
+}
+
+/// The device `shape_sound` and a sound ramp mean: by name or index, else
+/// the first instrument, rack or drum rack on the track.
+fn pick_device(
+    live: &LiveState,
+    track_index: i64,
+    which: Option<&Value>,
+) -> Result<(i64, String), String> {
+    require(live, "get_track_info")?;
+    let info = live
+        .send_command("get_track_info", Some(json!({"track_index": track_index})))
+        .map_err(|e| live_err("read the track's devices", e))?;
+    let devices: Vec<Value> = info
+        .get("devices")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if devices.is_empty() {
+        return Err(format!(
+            "'{}' has no devices to shape",
+            get_display(&info, "name", "the track")
+        ));
+    }
+    let names: Vec<String> = devices
+        .iter()
+        .map(|d| get_display(d, "name", "?"))
+        .collect();
+    let found = match which {
+        Some(Value::Number(n)) => devices
+            .iter()
+            .find(|d| d.get("index").and_then(Value::as_i64) == n.as_i64()),
+        Some(Value::String(s)) => {
+            let want = s.trim().to_lowercase();
+            devices
+                .iter()
+                .find(|d| get_display(d, "name", "").to_lowercase() == want)
+                .or_else(|| {
+                    devices
+                        .iter()
+                        .find(|d| get_display(d, "name", "").to_lowercase().contains(&want))
+                })
+        }
+        Some(other) => return Err(format!("device must be a name or an index, not {other}")),
+        None => devices
+            .iter()
+            .find(|d| {
+                matches!(
+                    d.get("type").and_then(Value::as_str),
+                    Some("instrument" | "rack" | "drum_machine")
+                )
+            })
+            .or_else(|| devices.first()),
+    };
+    let d = found.ok_or_else(|| {
+        format!(
+            "no device {} on this track; its devices: {}",
+            which.map(display).unwrap_or_default(),
+            names.join(", ")
+        )
+    })?;
+    Ok((
+        d.get("index").and_then(Value::as_i64).unwrap_or(0),
+        get_display(d, "name", "device"),
+    ))
+}
+
+pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
+    require(live, "set_device_parameters")?;
+    let given: Vec<(&str, &Value)> = [
+        ("cutoff", &p.cutoff),
+        ("resonance", &p.resonance),
+        ("attack", &p.attack),
+        ("decay", &p.decay),
+        ("sustain", &p.sustain),
+        ("release", &p.release),
+        ("drive", &p.drive),
+        ("detune", &p.detune),
+        ("width", &p.width),
+        ("lfo_rate", &p.lfo_rate),
+        ("reverb", &p.reverb),
+        ("delay", &p.delay),
+    ]
+    .into_iter()
+    .filter_map(|(w, v)| v.as_ref().filter(|v| !v.is_null()).map(|v| (w, v)))
+    .collect();
+    if given.is_empty() {
+        return Err(format!(
+            "Give at least one word: {} (a fraction 0–1 of the range, or \"±N%\").",
+            crate::sound::WORDS.join(", ")
+        ));
+    }
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    let (di, dname) = pick_device(live, track.index, p.device.as_ref())?;
+    let (_, class, params) = device_params(live, track.index, di)?;
+    let rack = crate::sound::is_rack(&class);
+    let mut values: Vec<Value> = Vec::new();
+    let mut resolved: Vec<(String, crate::sound::Param, crate::sound::Via, f64)> = Vec::new();
+    let mut unresolved: Vec<&str> = Vec::new();
+    for (word, v) in &given {
+        match crate::sound::resolve(word, &class, &params) {
+            Some((param, via)) => {
+                let target = crate::sound::target_value(param, v)?;
+                values.push(json!({"index": param.index, "value": target}));
+                resolved.push((word.to_string(), param.clone(), via, target));
+            }
+            None => unresolved.push(word),
+        }
+    }
+    let param_names = || -> String {
+        params
+            .iter()
+            .map(|q| q.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if resolved.is_empty() {
+        return Err(format!(
+            "{} ('{dname}', {class}) is not in the vocabulary for {}; its parameters by name are: {}. set_device_parameter takes a name substring: {{\"track_index\": {}, \"device_index\": {di}, \"parameter\": \"<name>\", \"value\": …}}.",
+            track.name,
+            unresolved.join(", "),
+            param_names(),
+            track.index
+        ));
+    }
+    let r = live
+        .send_command(
+            "set_device_parameters",
+            Some(json!({"track_index": track.index, "device_index": di, "values": values})),
+        )
+        .map_err(|e| live_err("set the parameters", e))?;
+    let written: Vec<Value> = r
+        .get("parameters")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut moves: Vec<String> = Vec::new();
+    for (word, param, via, _) in &resolved {
+        let after = written
+            .iter()
+            .find(|w| w.get("index").and_then(Value::as_i64) == Some(param.index));
+        let new_display = after
+            .and_then(crate::sound::Param::from_value)
+            .map(|q| q.display())
+            .unwrap_or_else(|| "?".into());
+        moves.push(format!(
+            "{}'{}' {} → {new_display}",
+            match via {
+                crate::sound::Via::Macro => "macro ",
+                _ => "",
+            },
+            param.name,
+            param.display()
+        ));
+        let _ = word;
+    }
+    let vocab = crate::sound::vocabulary(&class, &params);
+    let mut text = format!(
+        "{} ({}'{dname}'{}): {}.",
+        track.name,
+        if rack { "rack " } else { "" },
+        if class.is_empty() {
+            String::new()
+        } else {
+            format!(", {class}")
+        },
+        moves.join(", ")
+    );
+    if !unresolved.is_empty() {
+        text.push_str(&format!(
+            "\nNot found on this device: {}{}. set_device_parameter takes a name substring; the parameters are: {}.",
+            unresolved.join(", "),
+            if rack { " (no macro says it; a rack's own chain devices are reached through their macros)" } else { "" },
+            param_names()
+        ));
+    }
+    if rack {
+        text.push_str("\nRacks are asked first: their macros are how the preset's maker meant it to be shaped.");
+    }
+    text.push_str(&format!(
+        "\nWords this device answers to: {}. Sweep one in a cue: {{\"ramp\": {{\"sound\": \"{}\", \"track\": \"{}\", \"to\": 0.8}}, \"bars\": 8}}.",
+        vocab
+            .iter()
+            .map(|(w, n)| format!("{w} ({n})"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        vocab.first().map(|(w, _)| w.as_str()).unwrap_or("cutoff"),
+        track.name
+    ));
+    Ok(text)
+}
+
+/// A cue step's `ramp {"sound": word, "track": …, "device"?: …, "to": 0–1}`
+/// resolved to the device parameter it means; other steps pass through.
+fn resolve_sound_ramps(
+    live: &LiveState,
+    state: &PerfState,
+    p: &CueParams,
+) -> Result<CueParams, String> {
+    let mut out = p.clone();
+    for (i, step) in out.steps.iter_mut().enumerate() {
+        let Some(ramp) = step.ramp.as_ref().and_then(Value::as_object).cloned() else {
+            continue;
+        };
+        let Some(word) = ramp.get("sound").and_then(Value::as_str) else {
+            continue;
+        };
+        let n = i + 1;
+        let which = ramp
+            .get("track")
+            .ok_or_else(|| format!("step {n}: a sound ramp needs \"track\""))?;
+        let track = state
+            .track_by(which)
+            .map_err(|e| format!("step {n}: {e}"))?;
+        let to = ramp.get("to").and_then(Value::as_f64).ok_or_else(|| {
+            format!("step {n}: a sound ramp needs \"to\" (0–1 of the parameter's range)")
+        })?;
+        if !(0.0..=1.0).contains(&to) {
+            return Err(format!("step {n}: to must be between 0 and 1, got {to}"));
+        }
+        let (di, dname) = pick_device(live, track.index, ramp.get("device"))
+            .map_err(|e| format!("step {n}: {e}"))?;
+        let (_, class, params) =
+            device_params(live, track.index, di).map_err(|e| format!("step {n}: {e}"))?;
+        let (param, _) = crate::sound::resolve(word, &class, &params).ok_or_else(|| {
+            format!(
+                "step {n}: '{word}' is not in the vocabulary for '{dname}' ({class}); its parameters: {}",
+                params.iter().map(|q| q.name.clone()).collect::<Vec<_>>().join(", ")
+            )
+        })?;
+        step.ramp = Some(
+            json!({"target": "device", "track": track.index, "device_index": di,
+                                "parameter_index": param.index, "to": param.at_fraction(to)}),
+        );
+    }
+    Ok(out)
+}
+
 pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams) -> ToolResult {
     require(live, "set_device_parameter")?;
+    let parameter_index = match (p.parameter_index, p.parameter.as_deref()) {
+        (Some(i), _) => i,
+        (None, Some(name)) => {
+            let (dname, _, params) = device_params(live, p.track_index, p.device_index)?;
+            crate::sound::by_name(name, &params)
+                .map(|q| q.index)
+                .ok_or_else(|| {
+                    format!(
+                        "no parameter named '{name}' on '{dname}'; its parameters: {}",
+                        params
+                            .iter()
+                            .map(|q| q.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?
+        }
+        (None, None) => {
+            return Err("give parameter_index, or parameter (a name or a substring of one)".into())
+        }
+    };
     let r = live
         .send_command(
             "set_device_parameter",
             Some(json!({
                 "track_index": p.track_index,
                 "device_index": p.device_index,
-                "parameter_index": p.parameter_index,
+                "parameter_index": parameter_index,
                 "value": p.value,
             })),
         )
@@ -3017,6 +3367,69 @@ params!(VaryClipParams {
     /// Write the variation into this slot instead of in place (a new clip)
     to_slot: Option<i64>,
 });
+params!(RetimeClipParams {
+    /// Track name or index
+    track: Value,
+    /// Session slot of the clip
+    clip: i64,
+    /// "half_time" or "double_time"
+    to: String,
+    /// Seed (default 1)
+    seed: u64 = "one_u64",
+    /// Write the retimed clip into this slot instead of in place
+    to_slot: Option<i64>,
+});
+params!(GrooveClipParams {
+    /// Track name or index
+    track: Value,
+    /// Session slot of the clip
+    clip: i64,
+    /// A groove from this set's Groove Pool, by name (a substring will do) or index; "none" removes the clip's groove
+    groove: Value,
+    /// The groove's timing amount 0–1 (how much of the groove's timing applies)
+    amount: Option<f64>,
+    /// The groove's random amount 0–1
+    random: Option<f64>,
+    /// The groove's velocity amount 0–1
+    velocity: Option<f64>,
+});
+params!(GrooveAmountParams {
+    /// The set's global groove amount, 0–1 (Live's Groove Pool "Amount")
+    value: f64,
+});
+params!(HumanizeParams {
+    /// Track name or index
+    track: Value,
+    /// Session slot of the clip
+    clip: i64,
+    /// How far a hit may land early or late, in milliseconds at the current tempo (default 12)
+    timing_ms: f64 = "twelve",
+    /// How much a velocity may vary, up or down (default 15); off-beat notes vary more
+    velocity: i64 = "fifteen",
+    /// Seed: the same seed gives the same feel (default 1)
+    seed: u64 = "one_u64",
+});
+params!(SwingNotesParams {
+    /// Track name or index
+    track: Value,
+    /// Session slot of the clip
+    clip: i64,
+    /// How far the off-beat steps are delayed, as a fraction of the grid step (0.5 = halfway to the next step; 0.33 is a classic swing)
+    amount: f64,
+    /// The grid: "1/16" (default) or "1/8"
+    grid: String = "sixteenth_grid",
+    /// Seed (unused by a plain swing; kept so the call matches humanize)
+    seed: u64 = "one_u64",
+});
+fn twelve() -> f64 {
+    12.0
+}
+fn fifteen() -> i64 {
+    15
+}
+fn sixteenth_grid() -> String {
+    "1/16".to_string()
+}
 params!(UndoVaryParams {
     /// Track name or index
     track: Value,
@@ -3104,7 +3517,7 @@ fn no_assign() -> Vec<CrossfadeAssign> {
     Vec::new()
 }
 
-fn read_perf_state(live: &LiveState) -> Result<PerfState, String> {
+pub(crate) fn read_perf_state(live: &LiveState) -> Result<PerfState, String> {
     require(live, "get_performance_state")?;
     let v = live
         .send_command("get_performance_state", None)
@@ -3112,7 +3525,7 @@ fn read_perf_state(live: &LiveState) -> Result<PerfState, String> {
     PerfState::from_value(&v)
 }
 
-fn performance_running(live: &LiveState) -> Option<Performance> {
+pub(crate) fn performance_running(live: &LiveState) -> Option<Performance> {
     live.performance
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -3227,18 +3640,10 @@ pub fn set_scene_body(live: &LiveState, p: &SetSceneParams) -> ToolResult {
     ))
 }
 
+/// The loudest of a track's meters as the script reports them (`left`,
+/// `right`, `level`, the `output_meter_` prefix stripped).
 fn meter_level(v: &Value) -> f64 {
-    let mut best = 0.0f64;
-    if let Some(o) = v.as_object() {
-        for (k, x) in o {
-            if k.starts_with("output_meter") {
-                if let Some(f) = x.as_f64() {
-                    best = best.max(f);
-                }
-            }
-        }
-    }
-    best
+    meter_peak(v)
 }
 
 pub fn listen_body(live: &LiveState, p: &ListenParams) -> ToolResult {
@@ -3374,7 +3779,11 @@ pub fn listen_body(live: &LiveState, p: &ListenParams) -> ToolResult {
     Ok(out)
 }
 
-fn clip_notes(live: &LiveState, track_index: i64, clip_index: i64) -> Result<Vec<Value>, String> {
+pub(crate) fn clip_notes(
+    live: &LiveState,
+    track_index: i64,
+    clip_index: i64,
+) -> Result<Vec<Value>, String> {
     require(live, "get_clip_notes")?;
     let r = live
         .send_command(
@@ -3388,7 +3797,7 @@ fn clip_notes(live: &LiveState, track_index: i64, clip_index: i64) -> Result<Vec
         .unwrap_or_default())
 }
 
-fn write_notes(
+pub(crate) fn write_notes(
     live: &LiveState,
     track_index: i64,
     clip_index: i64,
@@ -3484,6 +3893,283 @@ pub fn vary_clip_body(live: &LiveState, p: &VaryClipParams) -> ToolResult {
             ))
         }
     }
+}
+
+/// The clip's notes as [`crate::variation::VNote`]s, refusing an empty clip.
+fn clip_vnotes(
+    live: &LiveState,
+    track: &perf::TrackState,
+    clip: i64,
+) -> Result<(Vec<Value>, Vec<crate::variation::VNote>), String> {
+    if !track.slots_with_clips.contains(&clip) {
+        return Err(format!("slot {clip} on '{}' holds no clip", track.name));
+    }
+    let raw = clip_notes(live, track.index, clip)?;
+    let notes: Vec<crate::variation::VNote> = raw
+        .iter()
+        .filter_map(crate::variation::VNote::from_value)
+        .collect();
+    if notes.is_empty() {
+        return Err(format!(
+            "'{}' slot {clip} has no notes to work on",
+            track.name
+        ));
+    }
+    Ok((raw, notes))
+}
+
+/// Write varied notes in place, keeping the previous ones for undo_vary.
+fn write_varied(
+    live: &LiveState,
+    track_index: i64,
+    clip: i64,
+    previous: Vec<Value>,
+    notes: &[crate::variation::VNote],
+) -> Result<(), String> {
+    live.vary_undo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert((track_index, clip), previous);
+    let values: Vec<Value> = notes.iter().map(|n| n.to_value()).collect();
+    write_notes(live, track_index, clip, &values)
+}
+
+pub fn humanize_body(live: &LiveState, p: &HumanizeParams) -> ToolResult {
+    if !(0.0..=200.0).contains(&p.timing_ms) {
+        return Err(format!(
+            "timing_ms must be between 0 and 200, got {}",
+            p.timing_ms
+        ));
+    }
+    if !(0..=127).contains(&p.velocity) {
+        return Err(format!(
+            "velocity must be between 0 and 127, got {}",
+            p.velocity
+        ));
+    }
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    let (raw, notes) = clip_vnotes(live, track, p.clip)?;
+    let timing_beats = p.timing_ms / 1000.0 * state.tempo / 60.0;
+    let varied = crate::variation::humanize(
+        &notes,
+        timing_beats,
+        p.velocity,
+        p.seed,
+        state.beats_per_bar(),
+    );
+    write_varied(live, track.index, p.clip, raw, &varied)?;
+    let off_beat = notes
+        .iter()
+        .filter(|n| (n.start - n.start.round()).abs() > 0.01)
+        .count();
+    Ok(format!(
+        "{} slot {} humanized (seed {}): hits now land up to {} ms early or late — {} at {} BPM — so they drift around the grid instead of sitting on it; velocities vary ±{}{}. undo_vary puts them back.",
+        track.name,
+        p.clip,
+        p.seed,
+        perf_num(p.timing_ms),
+        crate::variation::note_value_words(timing_beats),
+        perf_num(state.tempo),
+        p.velocity,
+        if off_beat > 0 { ", the off-beat notes most" } else { "" }
+    ))
+}
+
+pub fn swing_notes_body(live: &LiveState, p: &SwingNotesParams) -> ToolResult {
+    if !(0.0..=1.0).contains(&p.amount) {
+        return Err(format!("amount must be between 0 and 1, got {}", p.amount));
+    }
+    let step = match p.grid.trim() {
+        "1/16" | "16" | "16th" | "16ths" => 0.25,
+        "1/8" | "8" | "8th" | "8ths" => 0.5,
+        other => return Err(format!("grid must be \"1/16\" or \"1/8\", not '{other}'")),
+    };
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    let (raw, notes) = clip_vnotes(live, track, p.clip)?;
+    let swung = crate::variation::swing(&notes, p.amount, step);
+    let moved = swung
+        .iter()
+        .zip(notes.iter())
+        .filter(|(a, b)| (a.start - b.start).abs() > 1e-9)
+        .count();
+    if moved == 0 {
+        return Err(format!(
+            "'{}' slot {} has no notes on the off-beat {} steps, so a swing changes nothing",
+            track.name,
+            p.clip,
+            if step == 0.25 { "16th" } else { "8th" }
+        ));
+    }
+    write_varied(live, track.index, p.clip, raw, &swung)?;
+    Ok(format!(
+        "{} slot {} swung: the off-beat {}s now lag by {} ({}% of the step); the on-beat notes stay where they were. undo_vary straightens them.",
+        track.name,
+        p.clip,
+        if step == 0.25 { "16th" } else { "8th" },
+        crate::variation::note_value_words(p.amount * step),
+        (p.amount * 100.0).round() as i64
+    ))
+}
+
+const NO_GROOVE_HELP: &str = "the API cannot add one; drag one in from the browser (Grooves) so it appears in the pool, or use humanize / swing_notes (a note rewrite, undoable)";
+
+pub fn groove_clip_body(live: &LiveState, p: &GrooveClipParams) -> ToolResult {
+    for c in ["get_grooves", "set_clip_groove"] {
+        require(live, c)?;
+    }
+    for (name, v) in [
+        ("amount", p.amount),
+        ("random", p.random),
+        ("velocity", p.velocity),
+    ] {
+        if let Some(v) = v {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(format!("{name} must be between 0 and 1, got {v}"));
+            }
+        }
+    }
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    if !track.slots_with_clips.contains(&p.clip) {
+        return Err(format!("slot {} on '{}' holds no clip", p.clip, track.name));
+    }
+    let pool = live
+        .send_command("get_grooves", None)
+        .map_err(|e| live_err("read the Groove Pool", e))?;
+    if let Some(e) = pool.get("error").and_then(Value::as_str) {
+        return Err(format!("{e}; use humanize / swing_notes instead."));
+    }
+    let grooves = pool
+        .get("grooves")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let names: Vec<String> = grooves
+        .iter()
+        .map(|g| get_display(g, "name", "?"))
+        .collect();
+    let remove = matches!(&p.groove, Value::String(s) if s.trim().eq_ignore_ascii_case("none") || s.trim().is_empty());
+    let index: Option<i64> = if remove {
+        None
+    } else {
+        match &p.groove {
+            Value::Number(n) => {
+                let i = n.as_i64().unwrap_or(-1);
+                if i < 0 || i >= grooves.len() as i64 {
+                    return Err(format!(
+                        "no groove {i} in the pool ({} groove{}: {})",
+                        grooves.len(),
+                        if grooves.len() == 1 { "" } else { "s" },
+                        names.join(", ")
+                    ));
+                }
+                Some(i)
+            }
+            Value::String(s) => {
+                let want = s.trim().to_lowercase();
+                if grooves.is_empty() {
+                    return Err(format!(
+                        "No groove named '{}' in this set's Groove Pool (it is empty) and {NO_GROOVE_HELP}.",
+                        s.trim()
+                    ));
+                }
+                let hit = names
+                    .iter()
+                    .position(|n| n.to_lowercase() == want)
+                    .or_else(|| names.iter().position(|n| n.to_lowercase().contains(&want)));
+                match hit {
+                    Some(i) => Some(i as i64),
+                    None => {
+                        return Err(format!(
+                            "No groove named '{}' in this set's Groove Pool and {NO_GROOVE_HELP}. In the pool: {}.",
+                            s.trim(),
+                            names.join(", ")
+                        ))
+                    }
+                }
+            }
+            other => {
+                return Err(format!(
+                    "groove must be a name, an index or \"none\", not {other}"
+                ))
+            }
+        }
+    };
+    let r = live
+        .send_command(
+            "set_clip_groove",
+            Some(json!({"track_index": track.index, "clip_index": p.clip, "groove_index": index.unwrap_or(-1),
+                        "timing": p.amount, "random": p.random, "velocity": p.velocity})),
+        )
+        .map_err(|e| live_err("assign the groove", e))?;
+    match r.get("groove").filter(|g| g.is_object()) {
+        Some(g) => {
+            let mut amounts = Vec::new();
+            for (k, label) in [
+                ("timing_amount", "timing"),
+                ("random_amount", "random"),
+                ("velocity_amount", "velocity"),
+            ] {
+                if let Some(v) = g.get(k).and_then(Value::as_f64) {
+                    amounts.push(format!("{label} {}%", (v * 100.0).round() as i64));
+                }
+            }
+            Ok(format!(
+                "{} slot {}: groove '{}' from the Groove Pool{} (non-destructive; Live's own groove, shared by every clip that uses it). Set the pool's global amount with groove_amount{}.",
+                track.name,
+                p.clip,
+                get_display(g, "name", "?"),
+                if amounts.is_empty() { String::new() } else { format!(" at {}", amounts.join(", ")) },
+                pool.get("groove_amount").and_then(Value::as_f64).map(|a| format!(" (now {}%)", (a * 100.0).round() as i64)).unwrap_or_default()
+            ))
+        }
+        None => Ok(format!(
+            "{} slot {}: groove removed; the clip plays straight again.",
+            track.name, p.clip
+        )),
+    }
+}
+
+pub fn groove_amount_body(live: &LiveState, p: &GrooveAmountParams) -> ToolResult {
+    require(live, "set_clip_groove")?;
+    if !(0.0..=1.0).contains(&p.value) {
+        return Err(format!("value must be between 0 and 1, got {}", p.value));
+    }
+    let r = live
+        .send_command("set_clip_groove", Some(json!({"global_amount": p.value})))
+        .map_err(|e| live_err("set the groove amount", e))?;
+    Ok(format!(
+        "Groove Pool amount {}%: every clip with a groove follows it that much.",
+        (r.get("groove_amount")
+            .and_then(Value::as_f64)
+            .unwrap_or(p.value)
+            * 100.0)
+            .round() as i64
+    ))
+}
+
+/// `retime_clip`: the half- or double-time rewrite a transition writes,
+/// on its own.
+pub fn retime_clip_body(live: &LiveState, p: &RetimeClipParams) -> ToolResult {
+    let to = p.to.trim().to_lowercase().replace([' ', '-'], "_");
+    if to != "half_time" && to != "double_time" {
+        return Err(format!(
+            "to must be half_time or double_time, not '{}'",
+            p.to
+        ));
+    }
+    vary_clip_body(
+        live,
+        &VaryClipParams {
+            track: p.track.clone(),
+            clip: p.clip,
+            variation: to,
+            seed: p.seed,
+            to_slot: p.to_slot,
+        },
+    )
 }
 
 pub fn undo_vary_body(live: &LiveState, p: &UndoVaryParams) -> ToolResult {
@@ -3823,6 +4509,7 @@ pub fn start_performance_body(live: &LiveState, p: &StartPerformanceParams) -> T
         cues_scheduled: 0,
         cues_cancelled: 0,
         follow_key: p.follow_key,
+        song: None,
     };
     *live.performance.lock().unwrap_or_else(|e| e.into_inner()) = Some(started.clone());
     let mut text = format!(
@@ -3921,7 +4608,8 @@ pub fn get_performance_state_body(live: &LiveState, p: &GetPerformanceStateParam
         .as_ref()
         .and_then(|r| r.key.clone())
         .or_else(|| state.key_from_set());
-    let mut text = perf::state_text(&state, since, key.as_deref());
+    let song_lines = crate::sections::song_lines(live, &state);
+    let mut text = perf::state_text_with(&state, since, key.as_deref(), &song_lines);
     if p.bar_map {
         text.push('\n');
         text.push_str(&perf::bar_map_text(&state, state.bar, 32));
@@ -3967,6 +4655,7 @@ fn follow_after_recordings(live: &LiveState, events: &[Value]) -> String {
 pub fn cue_body(live: &LiveState, p: &CueParams) -> ToolResult {
     require(live, "schedule_cue")?;
     let state = read_perf_state(live)?;
+    let p = &resolve_sound_ramps(live, &state, p)?;
     let resolved = perf::resolve_cue(&state, p)?;
     let sent = live
         .send_command(
@@ -4411,6 +5100,25 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "snapshot_mix" => (Empty, snapshot_mix_body),
         "restore_mix" => (RestoreMixParams, restore_mix_body),
         "panic" => (PanicParams, panic_body),
+        "retime_clip" => (RetimeClipParams, retime_clip_body),
+        "shape_sound" => (ShapeSoundParams, shape_sound_body),
+        "export_set" => (crate::sets::ExportSetParams, crate::sets::export_set_body),
+        "import_set" => (crate::sets::ImportSetParams, crate::sets::import_set_body),
+        "groove_clip" => (GrooveClipParams, groove_clip_body),
+        "groove_amount" => (GrooveAmountParams, groove_amount_body),
+        "humanize" => (HumanizeParams, humanize_body),
+        "swing_notes" => (SwingNotesParams, swing_notes_body),
+        "make_section" => (crate::sections::MakeSectionParams, crate::sections::make_section_body),
+        "set_song" => (crate::sections::SetSongParams, crate::sections::set_song_body),
+        "add_to_song" => (crate::sections::AddToSongParams, crate::sections::add_to_song_body),
+        "remove_from_song" => (crate::sections::RemoveFromSongParams, crate::sections::remove_from_song_body),
+        "play_song" => (crate::sections::PlaySongParams, crate::sections::play_song_body),
+        "hold_section" => (Empty, crate::sections::hold_section_body),
+        "go" => (crate::sections::SteerParams, crate::sections::go_body),
+        "next_section" => (crate::sections::SteerParams, crate::sections::next_section_body),
+        "previous_section" => (crate::sections::SteerParams, crate::sections::previous_section_body),
+        "back" => (crate::sections::SteerParams, crate::sections::back_body),
+        "jump_to" => (crate::sections::JumpToParams, crate::sections::jump_to_body),
     )
 }
 
@@ -4855,8 +5563,16 @@ fn run_blocking<P: Serialize>(
     let result = body(live, params);
     let trace = connection::end_trace();
     // While a performance runs the Remote Script attaches its clock to every
-    // response; it ends every result here, success or error, at no cost.
-    let result = match trace.clock.as_ref().map(perf::clock_line) {
+    // response; it ends every result here, success or error, at no cost. The
+    // level line rides under it, and the song's plan cue reads as "next jump".
+    let plan_cue = live
+        .performance
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|p| p.song.as_ref())
+        .and_then(|s| s.plan_cue_id);
+    let result = match trace.clock.as_ref().map(|c| perf::clock_lines(c, plan_cue)) {
         Some(line) => match result {
             Ok(text) => Ok(format!("{text}\n{line}")),
             Err(text) => Err(format!("{text}\n{line}")),
@@ -4875,6 +5591,11 @@ impl Server {
             live,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Every tool in one router: the main table plus the section and song tools.
+    pub fn tool_router() -> ToolRouter<Self> {
+        Self::main_tool_router() + Self::section_tool_router()
     }
 
     pub fn live(&self) -> &Arc<LiveState> {
@@ -4909,7 +5630,7 @@ impl Server {
     }
 }
 
-#[tool_router]
+#[tool_router(router = main_tool_router)]
 impl Server {
     /// Start here. One call, one round trip to Live: the set (Live and script
     /// versions, tempo, signature, position, launch quantization, key, loop),
@@ -5689,6 +6410,225 @@ impl Server {
     }
 }
 
+#[tool_router(router = section_tool_router)]
+impl Server {
+    /// A new section: a scene row named "<name> · <bars>" (its phrase
+    /// length, kept by Live's Save). Three sources: from: "playing" copies
+    /// what plays into a new row below the playing one (Live's
+    /// capture-and-insert-scene; the set keeps playing); from: {"section":
+    /// "Groove"} copies that row and applies `changes` per track (a
+    /// vary_clip variation name, {"transpose": -12}, "empty", or replacement
+    /// notes); `clips` writes it from notes per track in any compact form
+    /// (tracks not named stay empty and stop when it fires). At the end or
+    /// after a named section. A duplicate name is refused; replace: true
+    /// rewrites a `clips` section in place so the setlist keeps its name.
+    #[tool(name = "make_section")]
+    async fn make_section(
+        &self,
+        Parameters(p): Parameters<crate::sections::MakeSectionParams>,
+    ) -> CallToolResult {
+        self.run(&MAKE_SECTION, p, crate::sections::make_section_body)
+            .await
+    }
+
+    /// The song: an ordered setlist of sections. An entry without repeats
+    /// loops until you say go; with repeats the song moves on by itself.
+    /// Validates every section, refuses one that would leave the set silent,
+    /// and writes the 'Setlist:' scene (an empty row at the bottom, kept by
+    /// Live's Save; edit its name in Live to change the order). A running
+    /// song is re-planned from where it is.
+    #[tool(name = "set_song")]
+    async fn set_song(
+        &self,
+        Parameters(p): Parameters<crate::sections::SetSongParams>,
+    ) -> CallToolResult {
+        self.run(&SET_SONG, p, crate::sections::set_song_body).await
+    }
+
+    /// Put a section into the song: after or before a named entry, or at
+    /// the end; with repeats to pre-plan it. Re-plans a running song.
+    #[tool(name = "add_to_song")]
+    async fn add_to_song(
+        &self,
+        Parameters(p): Parameters<crate::sections::AddToSongParams>,
+    ) -> CallToolResult {
+        self.run(&ADD_TO_SONG, p, crate::sections::add_to_song_body)
+            .await
+    }
+
+    /// Take every entry of a section out of the song. Re-plans a running song.
+    #[tool(name = "remove_from_song")]
+    async fn remove_from_song(
+        &self,
+        Parameters(p): Parameters<crate::sections::RemoveFromSongParams>,
+    ) -> CallToolResult {
+        self.run(&REMOVE_FROM_SONG, p, crate::sections::remove_from_song_body)
+            .await
+    }
+
+    /// Play the song: starts a performance if none runs (start_performance's
+    /// defaults), fires `from` (default the first entry) now, and schedules
+    /// every counted jump as one cue at phrase boundaries, waiting at the
+    /// first entry without a count. Then go, next_section, previous_section,
+    /// back and jump_to steer it; hold_section stops a count. Every reply
+    /// carries the plan, the clock line and the level line.
+    #[tool(name = "play_song")]
+    async fn play_song(
+        &self,
+        Parameters(p): Parameters<crate::sections::PlaySongParams>,
+    ) -> CallToolResult {
+        self.run(&PLAY_SONG, p, crate::sections::play_song_body)
+            .await
+    }
+
+    /// Stop a running count: the playing section loops from here until go.
+    #[tool(name = "hold_section")]
+    async fn hold_section(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+        self.run(&HOLD_SECTION, p, crate::sections::hold_section_body)
+            .await
+    }
+
+    /// Continue the song: the next setlist entry at the end of the playing
+    /// section's phrase (the next multiple of its phrase length from the
+    /// bar it started on, however many passes it looped), or at: "next_bar"
+    /// to cut the phrase short (the reply says by how many bars). With a
+    /// count still running it says so and changes nothing.
+    #[tool(name = "go")]
+    async fn go(&self, Parameters(p): Parameters<crate::sections::SteerParams>) -> CallToolResult {
+        self.run(&GO, p, crate::sections::go_body).await
+    }
+
+    /// The next setlist entry, at the end of this phrase or on the next bar;
+    /// the song continues after it. Warns when the target last ran more
+    /// than 3 dB hotter than this section (force: true skips the warning).
+    #[tool(name = "next_section")]
+    async fn next_section(
+        &self,
+        Parameters(p): Parameters<crate::sections::SteerParams>,
+    ) -> CallToolResult {
+        self.run(&NEXT_SECTION, p, crate::sections::next_section_body)
+            .await
+    }
+
+    /// The previous setlist entry, at the end of this phrase or on the next bar.
+    #[tool(name = "previous_section")]
+    async fn previous_section(
+        &self,
+        Parameters(p): Parameters<crate::sections::SteerParams>,
+    ) -> CallToolResult {
+        self.run(&PREVIOUS_SECTION, p, crate::sections::previous_section_body)
+            .await
+    }
+
+    /// Return to the section before the last jump (the jump history, so a
+    /// mistaken jump_to goes back to where you were, not to the entry
+    /// before it), at the end of this phrase or on the next bar.
+    #[tool(name = "back")]
+    async fn back(
+        &self,
+        Parameters(p): Parameters<crate::sections::SteerParams>,
+    ) -> CallToolResult {
+        self.run(&BACK, p, crate::sections::back_body).await
+    }
+
+    /// Write the whole set as a rebuildable document under the server's
+    /// sets folder (tracks with every device by name and instruments by
+    /// browser URI, Session clips with their notes, mixer and sends,
+    /// sections with phrase lengths, the setlist, tempo, signature and key).
+    /// Only on request: nothing exports on its own. The file holds your
+    /// notes and names; delete it from the folder or with "Delete all local
+    /// data". The Live set stays the memory (save it in Live).
+    #[tool(name = "export_set")]
+    async fn export_set(
+        &self,
+        Parameters(p): Parameters<crate::sets::ExportSetParams>,
+    ) -> CallToolResult {
+        self.run(&EXPORT_SET, p, crate::sets::export_set_body).await
+    }
+
+    /// Rebuild an exported set through build_song and set_song: validates
+    /// the document, refuses a set that already has tracks unless merge:
+    /// true, sets the key, writes the setlist. Audio clips are named, not
+    /// rebuilt. dry_run describes the document without touching Live.
+    #[tool(name = "import_set")]
+    async fn import_set(
+        &self,
+        Parameters(p): Parameters<crate::sets::ImportSetParams>,
+    ) -> CallToolResult {
+        self.run(&IMPORT_SET, p, crate::sets::import_set_body).await
+    }
+
+    /// Shape a sound in words: cutoff, resonance, attack, decay, sustain,
+    /// release, drive, detune, width, lfo_rate, reverb, delay, each a
+    /// fraction 0–1 of the parameter's range or "±N%" of where it sits. The
+    /// words are resolved against the device's rack macros first (most Live
+    /// presets are racks), then a table per Live instrument, then parameter
+    /// names; several words are one round trip. The reply names each
+    /// parameter with its before and after in Live's display units and the
+    /// words this device answers to; an unknown device lists its parameters
+    /// for set_device_parameter by name.
+    #[tool(name = "shape_sound")]
+    async fn shape_sound(&self, Parameters(p): Parameters<ShapeSoundParams>) -> CallToolResult {
+        self.run(&SHAPE_SOUND, p, shape_sound_body).await
+    }
+
+    /// Give a Session clip a groove from this set's Groove Pool (Live's own,
+    /// non-destructive, Live 11+), by name or index, with the groove's
+    /// timing/random/velocity amounts; "none" removes it. The API cannot add
+    /// a groove to the pool: an unknown name lists the pool and says what to
+    /// drag in, or use humanize / swing_notes (note rewrites, undoable).
+    #[tool(name = "groove_clip")]
+    async fn groove_clip(&self, Parameters(p): Parameters<GrooveClipParams>) -> CallToolResult {
+        self.run(&GROOVE_CLIP, p, groove_clip_body).await
+    }
+
+    /// The set's global groove amount (Live's Groove Pool "Amount"), 0–1.
+    #[tool(name = "groove_amount")]
+    async fn groove_amount(&self, Parameters(p): Parameters<GrooveAmountParams>) -> CallToolResult {
+        self.run(&GROOVE_AMOUNT, p, groove_amount_body).await
+    }
+
+    /// Loosen a clip: every hit lands up to timing_ms early or late (a
+    /// seeded, bell-shaped drift, never across a bar line) and velocities
+    /// vary by up to `velocity`, off-beat notes most. A note rewrite; the
+    /// reply says what to listen for in note values, and undo_vary restores.
+    #[tool(name = "humanize")]
+    async fn humanize(&self, Parameters(p): Parameters<HumanizeParams>) -> CallToolResult {
+        self.run(&HUMANIZE, p, humanize_body).await
+    }
+
+    /// Swing a clip: the off-beat 16ths (or 8ths) are delayed by `amount`
+    /// of the grid step; on-beat notes stay. A note rewrite; undo_vary
+    /// restores. For Live's own groove use groove_clip.
+    #[tool(name = "swing_notes")]
+    async fn swing_notes(&self, Parameters(p): Parameters<SwingNotesParams>) -> CallToolResult {
+        self.run(&SWING_NOTES, p, swing_notes_body).await
+    }
+
+    /// Half- or double-time a clip's notes (the rewrite a jump's `retime`
+    /// transition makes), in place with one undo_vary, or into a free slot.
+    #[tool(name = "retime_clip")]
+    async fn retime_clip(&self, Parameters(p): Parameters<RetimeClipParams>) -> CallToolResult {
+        self.run(&RETIME_CLIP, p, retime_clip_body).await
+    }
+
+    /// Go to any section by name at the end of this phrase (default) or on
+    /// the next bar, optionally for a number of passes, after which the song
+    /// continues from the entry after it. `transition` composes tempo ramps,
+    /// half/double-time rewrites into the target row, crossfades between
+    /// track groups, a fill, a drop or a sweep into the same cue; the
+    /// default is a straight cut. One state read and one cue; the old plan
+    /// is replaced in the same call. Warns when the target last ran more
+    /// than 3 dB hotter (force: true skips it).
+    #[tool(name = "jump_to")]
+    async fn jump_to(
+        &self,
+        Parameters(p): Parameters<crate::sections::JumpToParams>,
+    ) -> CallToolResult {
+        self.run(&JUMP_TO, p, crate::sections::jump_to_body).await
+    }
+}
+
 #[tool_handler(router = self.tool_router, name = "AbletonMusicMaker")]
 impl ServerHandler for Server {
     /// What every client receives at `initialize`: the tools, and the
@@ -5768,7 +6708,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 75);
+        assert_eq!(tools.len(), 94);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();

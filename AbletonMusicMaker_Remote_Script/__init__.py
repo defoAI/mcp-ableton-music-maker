@@ -3,6 +3,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 from _Framework.ControlSurface import ControlSurface
 import os
+import math
 import socket
 import json
 import threading
@@ -27,7 +28,7 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.16.0"
+SCRIPT_VERSION = "1.19.0"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
@@ -119,6 +120,11 @@ SCRIPT_CAPABILITIES = [
     "snapshot_mix",
     "restore_mix",
     "get_browser_index",
+    "capture_scene",
+    "duplicate_scene",
+    "get_grooves",
+    "set_clip_groove",
+    "set_device_parameters",
 ]
 
 def create_instance(c_instance):
@@ -167,6 +173,11 @@ class AbletonMCP(ControlSurface):
         self._scene_phrase = {}     # scene index -> bars per phrase
         self._scene_started = {}    # scene index -> bar it last started on
         self._current_scene = None
+        # Levels: the meter peaks of the current bar, the last completed bar,
+        # and the loudest the master got while each scene row played.
+        self._bar_peaks = None
+        self._last_bar_peaks = None
+        self._section_peaks = {}
         self._mix_snapshots = {}
         self._snapshot_next_id = 1
         self._library_key_cache = None
@@ -403,8 +414,12 @@ class AbletonMCP(ControlSurface):
                                  "set_scale", "set_slot_stop_buttons",
                                  "set_performance_mode", "set_scene", "start_live_capture",
                                  "snapshot_mix", "restore_mix",
+                                 "capture_scene", "duplicate_scene", "set_clip_groove",
+                                 "set_device_parameters",
                                  # reads that touch a clip while it records: main thread only
-                                 "capture_status", "list_captures"]:
+                                 "capture_status", "list_captures",
+                                 # output meters read as zero off the main thread
+                                 "get_track_meters"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -556,6 +571,22 @@ class AbletonMCP(ControlSurface):
                                 params.get("phrase_bars"))
                         elif command_type == "set_performance_mode":
                             result = self._set_performance_mode(params.get("on", True))
+                        elif command_type == "capture_scene":
+                            result = self._capture_scene(
+                                params.get("name"), params.get("phrase_bars"), params.get("after"))
+                        elif command_type == "duplicate_scene":
+                            result = self._duplicate_scene(
+                                params.get("index", 0), params.get("name"), params.get("phrase_bars"))
+                        elif command_type == "set_device_parameters":
+                            result = self._set_device_parameters(
+                                params.get("track_index", 0), params.get("device_index", 0),
+                                params.get("values", []))
+                        elif command_type == "set_clip_groove":
+                            result = self._set_clip_groove(
+                                params.get("track_index"), params.get("clip_index"),
+                                params.get("groove_index"), params.get("timing"),
+                                params.get("random"), params.get("velocity"),
+                                params.get("global_amount"))
                         elif command_type == "start_live_capture":
                             result = self._start_live_capture(params.get("bars", 1), params.get("name"))
                         elif command_type == "snapshot_mix":
@@ -583,6 +614,8 @@ class AbletonMCP(ControlSurface):
                                 params.get("slots"))
                         elif command_type == "capture_status":
                             result = self._capture_status(params.get("slot", 0))
+                        elif command_type == "get_track_meters":
+                            result = self._get_track_meters()
                         elif command_type == "list_captures":
                             result = self._list_captures()
                         elif command_type == "ensure_capture_track":
@@ -663,8 +696,6 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_clip_info(
                     params.get("track_index", 0), params.get("clip_index", 0),
                     params.get("arrangement", False))
-            elif command_type == "get_track_meters":
-                response["result"] = self._get_track_meters()
             elif command_type == "get_library_status":
                 response["result"] = self._get_library_status()
             elif command_type == "get_clip_automation":
@@ -695,6 +726,8 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._drain_passive_events()
             elif command_type == "get_performance_state":
                 response["result"] = self._get_performance_state()
+            elif command_type == "get_grooves":
+                response["result"] = self._get_grooves()
             elif command_type == "get_context":
                 response["result"] = self._get_context(bool(params.get("include_library", False)))
             elif command_type == "get_browser_index":
@@ -3015,6 +3048,7 @@ class AbletonMCP(ControlSurface):
         """Where the set is, what plays, what is queued, the pending cues, and
         everything the clock did since the last call."""
         song = self._song
+        self._sync_scene_phrases()
         bar, beat_in_bar, beat = self._bar_position()
         tracks = []
         for i, t in enumerate(song.tracks):
@@ -3043,8 +3077,10 @@ class AbletonMCP(ControlSurface):
             tracks.append(entry)
         scenes = []
         for i, sc in enumerate(song.scenes):
+            name = "%s" % sc.name
+            section, _ = self._parse_section_name(name)
             scenes.append({
-                "index": i, "name": str(sc.name),
+                "index": i, "name": name, "section": section,
                 "tempo": self._safe_attr(sc, "tempo", float, None),
                 "is_triggered": bool(self._safe_attr(sc, "is_triggered", bool, False)),
                 "is_playing": any(t["playing_slot_index"] == i for t in tracks),
@@ -3082,6 +3118,7 @@ class AbletonMCP(ControlSurface):
             "performance_mode": bool(self._performance_mode),
             "phrase": self._phrase_info(bar),
             "current_scene": self._current_scene,
+            "levels": self._levels(),
         }
 
     # ── Performance mode, the clock, phrases ────────────────────────────────
@@ -3141,6 +3178,11 @@ class AbletonMCP(ControlSurface):
         started = int(self._scene_started[idx])
         if bar is None:
             bar, _, _ = self._bar_position()
+        if started > bar:
+            # Fired while the transport was stopped: Live restarted from the
+            # start marker, so count phrases from the bar it actually began.
+            started = 1 + ((bar - 1) // bars) * bars
+            self._scene_started[idx] = started
         k = max(1, (bar - started) // bars + 1)
         return {"scene_index": idx, "started_bar": started, "bars": bars,
                 "ends_bar": started + k * bars, "default": idx not in self._scene_phrase}
@@ -3162,6 +3204,7 @@ class AbletonMCP(ControlSurface):
 
     def _clock(self):
         song = self._song
+        self._sync_scene_phrases()
         bar, bib, beat = self._bar_position()
         bpb = self._beats_per_bar()
         tempo = float(song.tempo)
@@ -3169,30 +3212,337 @@ class AbletonMCP(ControlSurface):
                 "beats_per_bar": bpb, "is_playing": bool(song.is_playing),
                 "seconds_to_next_bar": max(0.0, (bar * bpb - beat) * 60.0 / max(1.0, tempo)),
                 "phrase": self._phrase_info(bar), "next_cue": self._next_cue_step(),
-                "pending_cues": len(self._cues)}
+                "pending_cues": len(self._cues), "levels": self._levels()}
+
+    # ── Sections: the scene-name convention ─────────────────────────────────
+    #
+    # A section is a scene row named "<name> · <bars>"; the suffix is its
+    # phrase length. The name is the memory: Live's own Save keeps it, and
+    # every state read seeds the phrase table from the names, so nothing is
+    # lost when Live restarts. The "Setlist:" scene holds the song and is
+    # never parsed for a phrase.
+
+    SECTION_SEP = " \u00b7 "
+    SETLIST_PREFIX = "Setlist:"
+
+    def _parse_section_name(self, name):
+        """'Groove · 8' -> ('Groove', 8); 'Groove' -> ('Groove', None)."""
+        text = ("%s" % (name if name is not None else "")).strip()
+        if text.startswith(self.SETLIST_PREFIX):
+            return text, None
+        sep = self.SECTION_SEP
+        if sep in text:
+            head, tail = text.rsplit(sep, 1)
+            tail = tail.strip()
+            if tail.isdigit() and head.strip():
+                return head.strip(), int(tail)
+        return text, None
+
+    def _section_name(self, base, bars):
+        base = ("%s" % base).strip()
+        if bars is None:
+            return base
+        return base + self.SECTION_SEP + ("%d" % int(bars))
+
+    def _clamp_phrase(self, bars):
+        pb = int(bars)
+        if pb < 1 or pb > 128:
+            raise ValueError("phrase_bars must be between 1 and 128")
+        return pb
+
+    def _sync_scene_phrases(self):
+        """Rebuild the phrase table from the scene names (the names win)."""
+        try:
+            table = {}
+            for i, sc in enumerate(self._song.scenes):
+                _, bars = self._parse_section_name(sc.name)
+                if bars is not None:
+                    table[i] = max(1, min(128, bars))
+            self._scene_phrase = table
+        except Exception:
+            pass
+
+    def _shift_scene_tables(self, new_index):
+        """Rows at or after new_index moved down by one."""
+        shift = lambda d: dict((k + 1 if k >= new_index else k, v) for k, v in d.items())
+        self._scene_phrase = shift(self._scene_phrase)
+        self._scene_started = shift(self._scene_started)
+        self._section_peaks = shift(self._section_peaks)
+        if self._current_scene is not None and self._current_scene >= new_index:
+            self._current_scene += 1
+
+    def _scene_result(self, i, scene, extra=None):
+        base, bars = self._parse_section_name(scene.name)
+        out = {"index": i, "name": "%s" % scene.name, "section": base,
+               "tempo": self._safe_attr(scene, "tempo", float, None),
+               "phrase_bars": self._scene_phrase.get(i, 16),
+               "phrase_default": i not in self._scene_phrase,
+               "scene_count": len(self._song.scenes)}
+        if extra:
+            out.update(extra)
+        return out
 
     def _set_scene(self, index, name=None, tempo=None, phrase_bars=None):
         try:
             i, scene = self._resolve_scene(index)
-            if name is not None:
-                scene.name = str(name)
+            if name is not None or phrase_bars is not None:
+                current_base, current_bars = self._parse_section_name(scene.name)
+                if name is not None and ("%s" % name).strip().startswith(self.SETLIST_PREFIX):
+                    scene.name = ("%s" % name).strip()
+                else:
+                    if name is not None:
+                        base, named_bars = self._parse_section_name(name)
+                    else:
+                        base, named_bars = current_base, None
+                    if phrase_bars is not None:
+                        bars = self._clamp_phrase(phrase_bars)
+                    elif named_bars is not None:
+                        bars = named_bars
+                    else:
+                        bars = current_bars  # a plain rename keeps the phrase
+                    scene.name = self._section_name(base, bars)
             if tempo is not None:
                 try:
                     scene.tempo = float(tempo)
                 except Exception as e:
                     raise ValueError("a scene tempo needs Live 11 or newer: " + str(e))
-            if phrase_bars is not None:
-                pb = int(phrase_bars)
-                if pb < 1 or pb > 128:
-                    raise ValueError("phrase_bars must be between 1 and 128")
-                self._scene_phrase[i] = pb
-            return {"index": i, "name": str(scene.name),
-                    "tempo": self._safe_attr(scene, "tempo", float, None),
-                    "phrase_bars": self._scene_phrase.get(i, 16),
-                    "phrase_default": i not in self._scene_phrase}
+            self._sync_scene_phrases()
+            return self._scene_result(i, scene)
         except Exception as e:
             self.log_message("Error setting scene: " + str(e))
             raise
+
+    def _capture_scene(self, name=None, phrase_bars=None, after=None):
+        """Live's own Capture and Insert Scene: the playing clips are copied
+        into a new row below `after` (default: the current row) and Live
+        launches that row with no audible interruption. The phrase count and
+        the section peak carry over to the copy."""
+        try:
+            song = self._song
+            scenes = list(song.scenes)
+            if not scenes:
+                raise ValueError("the set has no scenes")
+            if after is None:
+                after = self._current_scene if self._current_scene is not None else len(scenes) - 1
+            after = int(after)
+            if after < 0 or after >= len(scenes):
+                raise IndexError("scene index %d out of range (0-%d)" % (after, len(scenes) - 1))
+            song.view.selected_scene = scenes[after]
+            song.capture_and_insert_scene()
+            new_index = after + 1
+            scenes = list(song.scenes)
+            if len(scenes) <= new_index:
+                raise RuntimeError("Live did not insert a scene")
+            scene = scenes[new_index]
+            was_current = self._current_scene == after
+            self._shift_scene_tables(new_index)
+            if was_current:
+                self._current_scene = new_index
+                if after in self._scene_started:
+                    self._scene_started[new_index] = self._scene_started[after]
+                if after in self._section_peaks:
+                    self._section_peaks[new_index] = self._section_peaks[after]
+            if name:
+                base, bars = self._parse_section_name(name)
+            else:
+                base, bars = self._parse_section_name(scene.name)
+            if phrase_bars is not None:
+                bars = self._clamp_phrase(phrase_bars)
+            elif bars is None:
+                bars = self._scene_phrase.get(after)
+            scene.name = self._section_name(base, bars)
+            self._sync_scene_phrases()
+            clips, _, _ = self._scene_row(new_index)
+            return self._scene_result(new_index, scene, {"clips": clips, "launched": True,
+                                                          "captured_from": after})
+        except Exception as e:
+            self.log_message("Error capturing scene: " + str(e))
+            raise
+
+    def _duplicate_scene(self, index, name=None, phrase_bars=None):
+        """A copy of a row below the original, named as a section."""
+        try:
+            song = self._song
+            i, source = self._resolve_scene(index)
+            song.duplicate_scene(i)
+            new_index = i + 1
+            scenes = list(song.scenes)
+            if len(scenes) <= new_index:
+                raise RuntimeError("Live did not duplicate the scene")
+            scene = scenes[new_index]
+            self._shift_scene_tables(new_index)
+            source_base, source_bars = self._parse_section_name(source.name)
+            if name:
+                base, bars = self._parse_section_name(name)
+            else:
+                base, bars = source_base + " copy", None
+            if phrase_bars is not None:
+                bars = self._clamp_phrase(phrase_bars)
+            elif bars is None:
+                bars = source_bars
+            scene.name = self._section_name(base, bars)
+            self._sync_scene_phrases()
+            clips, _, _ = self._scene_row(new_index)
+            return self._scene_result(new_index, scene, {"clips": clips, "source_index": i})
+        except Exception as e:
+            self.log_message("Error duplicating scene: " + str(e))
+            raise
+
+    # ── The Groove Pool (Live 11+): assign a pool groove to a clip ──────────
+
+    GROOVE_AMOUNTS = ("timing_amount", "random_amount", "velocity_amount", "quantization_amount")
+
+    def _groove_pool(self):
+        pool = getattr(self._song, "groove_pool", None)
+        if pool is None:
+            raise ValueError("this Live has no Groove Pool in its API (Live 11 or newer)")
+        return pool
+
+    def _groove_entry(self, i, g):
+        entry = {"index": i, "name": "%s" % getattr(g, "name", "groove %d" % i)}
+        base = self._safe_attr(g, "base", int, None)
+        if base is not None:
+            entry["base"] = base
+        for attr in self.GROOVE_AMOUNTS:
+            v = self._safe_attr(g, attr, float, None)
+            if v is not None:
+                entry[attr] = v
+        return entry
+
+    def _get_grooves(self):
+        """The set's Groove Pool: every groove with its amounts, the global
+        amount, and whether the API offers any way to add one (it does not
+        on Live 12.4; the reply says what to drag)."""
+        try:
+            song = self._song
+            out = {"groove_amount": self._safe_attr(song, "groove_amount", float, None),
+                   "grooves": [], "can_add": False, "pool_functions": []}
+            try:
+                pool = self._groove_pool()
+            except ValueError as e:
+                out["error"] = str(e)
+                return out
+            grooves = list(getattr(pool, "grooves", []) or [])
+            out["grooves"] = [self._groove_entry(i, g) for i, g in enumerate(grooves)]
+            try:
+                names = [n for n in dir(pool) if not n.startswith("_")]
+                out["pool_functions"] = [n for n in names if callable(getattr(pool, n, None))]
+                # Live 12.4.6 offers only listeners here (add_grooves_listener):
+                # there is no way to add a groove to the pool through the API.
+                out["can_add"] = any(("add" in n.lower() or "create" in n.lower()) and "listener" not in n.lower()
+                                     for n in out["pool_functions"])
+            except Exception:
+                pass
+            return out
+        except Exception as e:
+            self.log_message("Error reading the groove pool: " + str(e))
+            raise
+
+    def _set_clip_groove(self, track_index=None, clip_index=None, groove_index=None,
+                         timing=None, random=None, velocity=None, global_amount=None):
+        """Assign a pool groove to a Session clip (groove_index -1 or None
+        with a clip given removes it), set that groove's amounts, and/or the
+        set's global groove amount."""
+        try:
+            song = self._song
+            out = {}
+            if global_amount is not None:
+                v = max(0.0, min(1.0, float(global_amount)))
+                song.groove_amount = v
+                out["groove_amount"] = float(song.groove_amount)
+            if track_index is not None and clip_index is not None:
+                track = self._resolve_track(int(track_index))
+                slots = list(track.clip_slots)
+                ci = int(clip_index)
+                if ci < 0 or ci >= len(slots) or not slots[ci].has_clip:
+                    raise ValueError("slot %d on '%s' holds no clip" % (ci, track.name))
+                clip = slots[ci].clip
+                if not hasattr(clip, "groove"):
+                    raise ValueError("this Live cannot assign a groove to a clip through the API (Live 11 or newer)")
+                out["track"] = "%s" % track.name
+                out["clip"] = "%s" % clip.name
+                if groove_index is None or int(groove_index) < 0:
+                    clip.groove = None
+                    out["groove"] = None
+                else:
+                    grooves = list(getattr(self._groove_pool(), "grooves", []) or [])
+                    gi = int(groove_index)
+                    if gi >= len(grooves):
+                        raise IndexError("groove index %d out of range (the pool has %d)" % (gi, len(grooves)))
+                    g = grooves[gi]
+                    clip.groove = g
+                    for attr, value in (("timing_amount", timing), ("random_amount", random),
+                                        ("velocity_amount", velocity)):
+                        if value is not None:
+                            try:
+                                setattr(g, attr, max(0.0, min(1.0, float(value))))
+                            except Exception as e:
+                                out.setdefault("not_set", []).append("%s: %s" % (attr, str(e)))
+                    out["groove"] = self._groove_entry(gi, g)
+            if not out:
+                raise ValueError("give a clip and a groove, or global_amount")
+            return out
+        except Exception as e:
+            self.log_message("Error setting the clip groove: " + str(e))
+            raise
+
+    # ── Levels: meter peaks per bar and per section, kept by the tick ───────
+
+    def _db(self, v):
+        v = float(v)
+        if v <= 0.0001:
+            return -80.0
+        return round(20.0 * math.log10(v), 1)
+
+    def _meter_of(self, track):
+        best = 0.0
+        for attr in ("output_meter_left", "output_meter_right", "output_meter_level"):
+            v = self._safe_attr(track, attr, float, None)
+            if v is not None and v > best:
+                best = v
+        return best
+
+    def _level_tick(self, bar):
+        try:
+            song = self._song
+            master = self._meter_of(song.master_track)
+            tracks = [self._meter_of(t) for t in song.tracks]
+            cur = self._bar_peaks
+            if cur is None or cur["bar"] != bar:
+                if cur is not None:
+                    self._last_bar_peaks = cur
+                cur = {"bar": bar, "master": 0.0, "tracks": [0.0] * len(tracks)}
+                self._bar_peaks = cur
+            if len(cur["tracks"]) != len(tracks):
+                cur["tracks"] = [0.0] * len(tracks)
+            cur["master"] = max(cur["master"], master)
+            cur["tracks"] = [max(a, b) for a, b in zip(cur["tracks"], tracks)]
+            idx = self._current_scene
+            if idx is not None:
+                self._section_peaks[idx] = max(self._section_peaks.get(idx, 0.0), master)
+        except Exception as e:
+            self.log_message("level tick error: " + str(e))
+
+    def _levels(self):
+        """The loudest the master and each track got over this bar and the
+        last one, in dB from Live's 0-1 meters, plus the peak of every
+        section row seen so far."""
+        cur = self._bar_peaks
+        if cur is None:
+            return None
+        last = self._last_bar_peaks or {"master": 0.0, "tracks": []}
+        master = max(cur["master"], last.get("master", 0.0))
+        tracks = []
+        try:
+            names = ["%s" % t.name for t in self._song.tracks]
+        except Exception:
+            names = []
+        for i, v in enumerate(cur["tracks"]):
+            prev = last["tracks"][i] if i < len(last.get("tracks", [])) else 0.0
+            tracks.append({"index": i, "name": names[i] if i < len(names) else str(i),
+                           "peak_db": self._db(max(v, prev))})
+        return {"bar": cur["bar"], "master_peak_db": self._db(master), "tracks": tracks,
+                "section_peaks": dict(("%d" % k, self._db(v)) for k, v in self._section_peaks.items())}
 
     # ── Listening without stopping: a fixed-length capture on the bar ───────
 
@@ -3389,21 +3739,23 @@ class AbletonMCP(ControlSurface):
             song.create_scene(index)
             new_index = count if index == -1 else index
             scene = song.scenes[new_index]
-            if name:
-                scene.name = str(name)
+            if index != -1:
+                self._shift_scene_tables(new_index)
+            if name or phrase_bars is not None:
+                if name and ("%s" % name).strip().startswith(self.SETLIST_PREFIX):
+                    scene.name = ("%s" % name).strip()
+                else:
+                    base, bars = self._parse_section_name(name) if name else ("", None)
+                    if phrase_bars is not None:
+                        bars = self._clamp_phrase(phrase_bars)
+                    scene.name = self._section_name(base, bars)
             if tempo is not None:
                 try:
                     scene.tempo = float(tempo)
                 except Exception as e:
                     raise ValueError("a scene tempo needs Live 11 or newer: " + str(e))
-            if index != -1:
-                # rows after the insertion point moved down by one
-                self._scene_phrase = dict((k + 1 if k >= new_index else k, v) for k, v in self._scene_phrase.items())
-                self._scene_started = dict((k + 1 if k >= new_index else k, v) for k, v in self._scene_started.items())
-            if phrase_bars is not None:
-                self._scene_phrase[new_index] = max(1, min(128, int(phrase_bars)))
-            return {"index": new_index, "name": str(scene.name), "scene_count": len(song.scenes),
-                    "phrase_bars": self._scene_phrase.get(new_index, 16)}
+            self._sync_scene_phrases()
+            return self._scene_result(new_index, scene)
         except Exception as e:
             self.log_message("Error creating scene: " + str(e))
             raise
@@ -3759,6 +4111,14 @@ class AbletonMCP(ControlSurface):
                         i + 1, self._fmt_beat(beat), now))
                 self._validate_cue_step(step)
                 steps.append(step)
+            replaced = []
+            if cue.get("replaces") is not None:
+                # One round trip for cancel-and-re-plan: the old plan goes
+                # only once the new one has been validated.
+                try:
+                    replaced = self._cancel_cue(int(cue.get("replaces")), "replaced")["cancelled"]
+                except ValueError:
+                    replaced = []
             with self._cue_lock:
                 cue_id = self._cue_next_id
                 self._cue_next_id += 1
@@ -3768,7 +4128,7 @@ class AbletonMCP(ControlSurface):
                 self._cues.append(entry)
             self._arm_perf_tick()
             return {"id": cue_id, "name": entry["name"], "beat_now": now,
-                    "steps": [self._public_step(s) for s in steps]}
+                    "steps": [self._public_step(s) for s in steps], "replaced": replaced}
         except Exception as e:
             self.log_message("Error scheduling cue: " + str(e))
             raise
@@ -3830,6 +4190,7 @@ class AbletonMCP(ControlSurface):
         self._perf_record_step(playing)
         if self._performance_mode and playing:
             self._watch_scene_rows()
+            self._level_tick(self._bar_position()[0])
         with self._cue_lock:
             cues = list(self._cues)
         if cues and not playing:
@@ -4761,6 +5122,41 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
+            raise
+
+    def _set_device_parameters(self, track_index, device_index, values):
+        """Several parameters of one device in one round trip: values is a
+        list of {index, value}; each reply entry carries the name, the old
+        and new value, the range and Live's display string."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+            device = track.devices[device_index]
+            params = list(device.parameters)
+            out = []
+            for item in list(values or []):
+                pi = int(item.get("index", -1))
+                if pi < 0 or pi >= len(params):
+                    raise IndexError("Parameter index %d out of range on '%s'" % (pi, device.name))
+                param = params[pi]
+                old = float(param.value)
+                new = max(float(param.min), min(float(param.max), float(item.get("value", old))))
+                param.value = new
+                entry = {"index": pi, "name": "%s" % param.name, "old_value": old,
+                         "value": float(param.value), "min": float(param.min), "max": float(param.max)}
+                try:
+                    entry["value_string"] = "%s" % param.value_string
+                except Exception:
+                    pass
+                out.append(entry)
+            return {"track_index": track_index, "device_index": device_index,
+                    "device": "%s" % device.name, "class_name": "%s" % device.class_name,
+                    "parameters": out}
+        except Exception as e:
+            self.log_message("Error setting device parameters: " + str(e))
             raise
 
     def get_browser_tree(self, category_type="all"):

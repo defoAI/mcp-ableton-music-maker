@@ -16,11 +16,12 @@ pub struct VNote {
 
 impl VNote {
     pub fn from_value(v: &Value) -> Option<Self> {
+        let whole = |x: &Value| x.as_i64().or_else(|| x.as_f64().map(|f| f.round() as i64));
         Some(Self {
-            pitch: v.get("pitch")?.as_i64()?,
+            pitch: v.get("pitch").and_then(whole)?,
             start: v.get("start_time")?.as_f64()?,
             duration: v.get("duration").and_then(Value::as_f64).unwrap_or(0.25),
-            velocity: v.get("velocity").and_then(Value::as_i64).unwrap_or(100),
+            velocity: v.get("velocity").and_then(whole).unwrap_or(100),
             mute: v.get("mute").and_then(Value::as_bool).unwrap_or(false),
         })
     }
@@ -224,6 +225,85 @@ fn stretch(notes: &[VNote], factor: f64, length: f64) -> Vec<VNote> {
     out
 }
 
+/// Humanize: every note lands up to `timing` beats early or late (a
+/// seeded, bell-shaped offset) and its velocity varies by up to
+/// `velocity`, off-beat notes more than on-beat ones. A note never crosses
+/// a bar line and never starts before the clip.
+pub fn humanize(notes: &[VNote], timing: f64, velocity: i64, seed: u64, bpb: f64) -> Vec<VNote> {
+    let mut rng = Rng::new(seed);
+    let bell = |rng: &mut Rng| (rng.next_f64() + rng.next_f64() + rng.next_f64()) / 1.5 - 1.0;
+    notes
+        .iter()
+        .map(|n| {
+            let bar_start = (n.start / bpb).floor() * bpb;
+            let bar_end = bar_start + bpb;
+            let start = (n.start + bell(&mut rng) * timing).clamp(bar_start, bar_end - 0.001);
+            let on_beat = (n.start - n.start.round()).abs() < 0.01;
+            let scale = if on_beat { 0.5 } else { 1.0 };
+            let v = n.velocity + (bell(&mut rng) * velocity as f64 * scale).round() as i64;
+            VNote {
+                start: (start * 1000.0).round() / 1000.0,
+                velocity: v.clamp(1, 127),
+                ..n.clone()
+            }
+        })
+        .collect()
+}
+
+/// Swing: the off-beat steps of a grid (`step` beats: 0.25 for 16ths, 0.5
+/// for 8ths) are delayed by `amount` of the step. On-beat notes stay.
+pub fn swing(notes: &[VNote], amount: f64, step: f64) -> Vec<VNote> {
+    let delay = amount.clamp(0.0, 1.0) * step;
+    notes
+        .iter()
+        .map(|n| {
+            let idx = (n.start / step).round();
+            let on_grid = (n.start - idx * step).abs() < 0.02;
+            if on_grid && (idx as i64) % 2 == 1 {
+                VNote {
+                    start: ((n.start + delay) * 1000.0).round() / 1000.0,
+                    ..n.clone()
+                }
+            } else {
+                n.clone()
+            }
+        })
+        .collect()
+}
+
+/// A duration in beats as the nearest note value: "about a 64th".
+pub fn note_value_words(beats: f64) -> String {
+    if beats <= 0.0 {
+        return "nothing".into();
+    }
+    let whole = beats / 4.0;
+    let mut best = (f64::MAX, 1u32);
+    for d in [1u32, 2, 4, 8, 16, 32, 64, 128, 256] {
+        let v = 1.0 / d as f64;
+        let err = (whole.ln() - v.ln()).abs();
+        if err < best.0 {
+            best = (err, d);
+        }
+    }
+    let name = match best.1 {
+        1 => "a whole note".to_string(),
+        2 => "a half note".to_string(),
+        4 => "a quarter note".to_string(),
+        8 => "an 8th".to_string(),
+        16 => "a 16th".to_string(),
+        32 => "a 32nd".to_string(),
+        d => format!("a {d}th"),
+    };
+    let ratio = whole / (1.0 / best.1 as f64);
+    if (0.9..=1.1).contains(&ratio) {
+        format!("about {name}")
+    } else if ratio < 1.0 {
+        format!("a little under {name}")
+    } else {
+        format!("a little over {name}")
+    }
+}
+
 /// Krumhansl-Kessler key profiles.
 const MAJOR: [f64; 12] = [
     6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
@@ -357,6 +437,49 @@ mod tests {
         let d = vary(&notes, "double_time", 1, 8.0, 4.0).unwrap();
         assert_eq!(d.len(), 32);
         assert!(vary(&notes, "reverse", 1, 8.0, 4.0).is_err());
+    }
+
+    #[test]
+    fn humanize_is_seeded_stays_in_the_bar_and_swing_delays_off_beats_only() {
+        // Sixteen 8ths over two bars, the last one on the very last 8th of bar 2.
+        let notes: Vec<VNote> = (0..16).map(|i| n(42, i as f64 * 0.5)).collect();
+        let a = humanize(&notes, 0.125, 15, 3, 4.0);
+        let b = humanize(&notes, 0.125, 15, 3, 4.0);
+        assert_eq!(a, b, "same seed, same feel");
+        assert_ne!(a, humanize(&notes, 0.125, 15, 4, 4.0));
+        assert!(
+            a.iter()
+                .any(|x| x.start.fract() != 0.0 && (x.start - x.start.round()).abs() > 0.01),
+            "something moved off the grid"
+        );
+        for (h, o) in a.iter().zip(notes.iter()) {
+            assert!(
+                (h.start - o.start).abs() <= 0.125 + 1e-9,
+                "{} moved {}",
+                o.start,
+                h.start - o.start
+            );
+            assert_eq!(
+                (h.start / 4.0).floor(),
+                (o.start / 4.0).floor(),
+                "never across a bar line"
+            );
+            assert!(h.start >= 0.0);
+            assert!((h.velocity - o.velocity).abs() <= 15);
+            assert!((1..=127).contains(&h.velocity));
+        }
+        // Swing: odd 16th steps delayed by half a step, even ones untouched.
+        let sixteenths: Vec<VNote> = (0..8).map(|i| n(42, i as f64 * 0.25)).collect();
+        let s = swing(&sixteenths, 0.5, 0.25);
+        assert_eq!(s[0].start, 0.0);
+        assert_eq!(s[1].start, 0.375);
+        assert_eq!(s[2].start, 0.5);
+        assert_eq!(s[3].start, 0.875);
+        assert_eq!(swing(&sixteenths, 0.0, 0.25), sixteenths);
+        assert_eq!(note_value_words(0.0625), "about a 64th");
+        assert_eq!(note_value_words(0.126), "about a 32nd");
+        assert_eq!(note_value_words(1.0), "about a quarter note");
+        assert_eq!(note_value_words(0.05), "a little under a 64th");
     }
 
     #[test]
