@@ -263,6 +263,7 @@ const MODIFYING_COMMANDS: &[&str] = &[
     "restore_mix",
     "capture_scene",
     "duplicate_scene",
+    "set_clip_groove",
 ];
 // get_context and get_browser_index are reads: the default budget applies.
 

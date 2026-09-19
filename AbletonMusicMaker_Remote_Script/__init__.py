@@ -28,7 +28,7 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.17.0"
+SCRIPT_VERSION = "1.18.0"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
@@ -122,6 +122,8 @@ SCRIPT_CAPABILITIES = [
     "get_browser_index",
     "capture_scene",
     "duplicate_scene",
+    "get_grooves",
+    "set_clip_groove",
 ]
 
 def create_instance(c_instance):
@@ -411,7 +413,7 @@ class AbletonMCP(ControlSurface):
                                  "set_scale", "set_slot_stop_buttons",
                                  "set_performance_mode", "set_scene", "start_live_capture",
                                  "snapshot_mix", "restore_mix",
-                                 "capture_scene", "duplicate_scene",
+                                 "capture_scene", "duplicate_scene", "set_clip_groove",
                                  # reads that touch a clip while it records: main thread only
                                  "capture_status", "list_captures"]:
                 # Use a thread-safe approach with a response queue
@@ -571,6 +573,12 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "duplicate_scene":
                             result = self._duplicate_scene(
                                 params.get("index", 0), params.get("name"), params.get("phrase_bars"))
+                        elif command_type == "set_clip_groove":
+                            result = self._set_clip_groove(
+                                params.get("track_index"), params.get("clip_index"),
+                                params.get("groove_index"), params.get("timing"),
+                                params.get("random"), params.get("velocity"),
+                                params.get("global_amount"))
                         elif command_type == "start_live_capture":
                             result = self._start_live_capture(params.get("bars", 1), params.get("name"))
                         elif command_type == "snapshot_mix":
@@ -710,6 +718,8 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._drain_passive_events()
             elif command_type == "get_performance_state":
                 response["result"] = self._get_performance_state()
+            elif command_type == "get_grooves":
+                response["result"] = self._get_grooves()
             elif command_type == "get_context":
                 response["result"] = self._get_context(bool(params.get("include_library", False)))
             elif command_type == "get_browser_index":
@@ -3363,6 +3373,101 @@ class AbletonMCP(ControlSurface):
             return self._scene_result(new_index, scene, {"clips": clips, "source_index": i})
         except Exception as e:
             self.log_message("Error duplicating scene: " + str(e))
+            raise
+
+    # ── The Groove Pool (Live 11+): assign a pool groove to a clip ──────────
+
+    GROOVE_AMOUNTS = ("timing_amount", "random_amount", "velocity_amount", "quantization_amount")
+
+    def _groove_pool(self):
+        pool = getattr(self._song, "groove_pool", None)
+        if pool is None:
+            raise ValueError("this Live has no Groove Pool in its API (Live 11 or newer)")
+        return pool
+
+    def _groove_entry(self, i, g):
+        entry = {"index": i, "name": "%s" % getattr(g, "name", "groove %d" % i)}
+        base = self._safe_attr(g, "base", int, None)
+        if base is not None:
+            entry["base"] = base
+        for attr in self.GROOVE_AMOUNTS:
+            v = self._safe_attr(g, attr, float, None)
+            if v is not None:
+                entry[attr] = v
+        return entry
+
+    def _get_grooves(self):
+        """The set's Groove Pool: every groove with its amounts, the global
+        amount, and whether the API offers any way to add one (it does not
+        on Live 12.4; the reply says what to drag)."""
+        try:
+            song = self._song
+            out = {"groove_amount": self._safe_attr(song, "groove_amount", float, None),
+                   "grooves": [], "can_add": False, "pool_functions": []}
+            try:
+                pool = self._groove_pool()
+            except ValueError as e:
+                out["error"] = str(e)
+                return out
+            grooves = list(getattr(pool, "grooves", []) or [])
+            out["grooves"] = [self._groove_entry(i, g) for i, g in enumerate(grooves)]
+            try:
+                names = [n for n in dir(pool) if not n.startswith("_")]
+                out["pool_functions"] = [n for n in names if callable(getattr(pool, n, None))]
+                out["can_add"] = any(("add" in n.lower() or "create" in n.lower()) for n in out["pool_functions"])
+            except Exception:
+                pass
+            return out
+        except Exception as e:
+            self.log_message("Error reading the groove pool: " + str(e))
+            raise
+
+    def _set_clip_groove(self, track_index=None, clip_index=None, groove_index=None,
+                         timing=None, random=None, velocity=None, global_amount=None):
+        """Assign a pool groove to a Session clip (groove_index -1 or None
+        with a clip given removes it), set that groove's amounts, and/or the
+        set's global groove amount."""
+        try:
+            song = self._song
+            out = {}
+            if global_amount is not None:
+                v = max(0.0, min(1.0, float(global_amount)))
+                song.groove_amount = v
+                out["groove_amount"] = float(song.groove_amount)
+            if track_index is not None and clip_index is not None:
+                track = self._resolve_track(int(track_index))
+                slots = list(track.clip_slots)
+                ci = int(clip_index)
+                if ci < 0 or ci >= len(slots) or not slots[ci].has_clip:
+                    raise ValueError("slot %d on '%s' holds no clip" % (ci, track.name))
+                clip = slots[ci].clip
+                if not hasattr(clip, "groove"):
+                    raise ValueError("this Live cannot assign a groove to a clip through the API (Live 11 or newer)")
+                out["track"] = "%s" % track.name
+                out["clip"] = "%s" % clip.name
+                if groove_index is None or int(groove_index) < 0:
+                    clip.groove = None
+                    out["groove"] = None
+                else:
+                    grooves = list(getattr(self._groove_pool(), "grooves", []) or [])
+                    gi = int(groove_index)
+                    if gi >= len(grooves):
+                        raise IndexError("groove index %d out of range (the pool has %d)" % (gi, len(grooves)))
+                    g = grooves[gi]
+                    clip.groove = g
+                    for attr, value in (("timing_amount", timing), ("random_amount", random),
+                                        ("velocity_amount", velocity)):
+                        if value is not None:
+                            try:
+                                setattr(g, attr, max(0.0, min(1.0, float(value))))
+                            except Exception as e:
+                                out.setdefault("not_set", []).append("%s: %s" % (attr, str(e)))
+                    out["groove"] = self._groove_entry(gi, g)
+            if not out:
+                raise ValueError("give a clip and a groove, or global_amount")
+            return out
+        except Exception as e:
+            self.log_message("Error setting the clip groove: " + str(e))
             raise
 
     # ── Levels: meter peaks per bar and per section, kept by the tick ───────

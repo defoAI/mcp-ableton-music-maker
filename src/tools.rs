@@ -99,6 +99,8 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "get_browser_index",
     "capture_scene",
     "duplicate_scene",
+    "get_grooves",
+    "set_clip_groove",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -806,6 +808,10 @@ pub const SNAPSHOT_MIX: ToolSpec = ToolSpec::new("snapshot_mix");
 pub const RESTORE_MIX: ToolSpec = ToolSpec::new("restore_mix");
 pub const PANIC: ToolSpec = ToolSpec::new("panic");
 pub const RETIME_CLIP: ToolSpec = ToolSpec::new("retime_clip");
+pub const GROOVE_CLIP: ToolSpec = ToolSpec::new("groove_clip");
+pub const GROOVE_AMOUNT: ToolSpec = ToolSpec::new("groove_amount");
+pub const HUMANIZE: ToolSpec = ToolSpec::new("humanize");
+pub const SWING_NOTES: ToolSpec = ToolSpec::new("swing_notes");
 pub const MAKE_SECTION: ToolSpec = ToolSpec::new("make_section");
 pub const SET_SONG: ToolSpec = ToolSpec::new("set_song");
 pub const ADD_TO_SONG: ToolSpec = ToolSpec::new("add_to_song");
@@ -3043,6 +3049,57 @@ params!(RetimeClipParams {
     /// Write the retimed clip into this slot instead of in place
     to_slot: Option<i64>,
 });
+params!(GrooveClipParams {
+    /// Track name or index
+    track: Value,
+    /// Session slot of the clip
+    clip: i64,
+    /// A groove from this set's Groove Pool, by name (a substring will do) or index; "none" removes the clip's groove
+    groove: Value,
+    /// The groove's timing amount 0–1 (how much of the groove's timing applies)
+    amount: Option<f64>,
+    /// The groove's random amount 0–1
+    random: Option<f64>,
+    /// The groove's velocity amount 0–1
+    velocity: Option<f64>,
+});
+params!(GrooveAmountParams {
+    /// The set's global groove amount, 0–1 (Live's Groove Pool "Amount")
+    value: f64,
+});
+params!(HumanizeParams {
+    /// Track name or index
+    track: Value,
+    /// Session slot of the clip
+    clip: i64,
+    /// How far a hit may land early or late, in milliseconds at the current tempo (default 12)
+    timing_ms: f64 = "twelve",
+    /// How much a velocity may vary, up or down (default 15); off-beat notes vary more
+    velocity: i64 = "fifteen",
+    /// Seed: the same seed gives the same feel (default 1)
+    seed: u64 = "one_u64",
+});
+params!(SwingNotesParams {
+    /// Track name or index
+    track: Value,
+    /// Session slot of the clip
+    clip: i64,
+    /// How far the off-beat steps are delayed, as a fraction of the grid step (0.5 = halfway to the next step; 0.33 is a classic swing)
+    amount: f64,
+    /// The grid: "1/16" (default) or "1/8"
+    grid: String = "sixteenth_grid",
+    /// Seed (unused by a plain swing; kept so the call matches humanize)
+    seed: u64 = "one_u64",
+});
+fn twelve() -> f64 {
+    12.0
+}
+fn fifteen() -> i64 {
+    15
+}
+fn sixteenth_grid() -> String {
+    "1/16".to_string()
+}
 params!(UndoVaryParams {
     /// Track name or index
     track: Value,
@@ -3514,6 +3571,261 @@ pub fn vary_clip_body(live: &LiveState, p: &VaryClipParams) -> ToolResult {
             ))
         }
     }
+}
+
+/// The clip's notes as [`crate::variation::VNote`]s, refusing an empty clip.
+fn clip_vnotes(
+    live: &LiveState,
+    track: &perf::TrackState,
+    clip: i64,
+) -> Result<(Vec<Value>, Vec<crate::variation::VNote>), String> {
+    if !track.slots_with_clips.contains(&clip) {
+        return Err(format!("slot {clip} on '{}' holds no clip", track.name));
+    }
+    let raw = clip_notes(live, track.index, clip)?;
+    let notes: Vec<crate::variation::VNote> = raw
+        .iter()
+        .filter_map(crate::variation::VNote::from_value)
+        .collect();
+    if notes.is_empty() {
+        return Err(format!(
+            "'{}' slot {clip} has no notes to work on",
+            track.name
+        ));
+    }
+    Ok((raw, notes))
+}
+
+/// Write varied notes in place, keeping the previous ones for undo_vary.
+fn write_varied(
+    live: &LiveState,
+    track_index: i64,
+    clip: i64,
+    previous: Vec<Value>,
+    notes: &[crate::variation::VNote],
+) -> Result<(), String> {
+    live.vary_undo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert((track_index, clip), previous);
+    let values: Vec<Value> = notes.iter().map(|n| n.to_value()).collect();
+    write_notes(live, track_index, clip, &values)
+}
+
+pub fn humanize_body(live: &LiveState, p: &HumanizeParams) -> ToolResult {
+    if !(0.0..=200.0).contains(&p.timing_ms) {
+        return Err(format!(
+            "timing_ms must be between 0 and 200, got {}",
+            p.timing_ms
+        ));
+    }
+    if !(0..=127).contains(&p.velocity) {
+        return Err(format!(
+            "velocity must be between 0 and 127, got {}",
+            p.velocity
+        ));
+    }
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    let (raw, notes) = clip_vnotes(live, track, p.clip)?;
+    let timing_beats = p.timing_ms / 1000.0 * state.tempo / 60.0;
+    let varied = crate::variation::humanize(
+        &notes,
+        timing_beats,
+        p.velocity,
+        p.seed,
+        state.beats_per_bar(),
+    );
+    write_varied(live, track.index, p.clip, raw, &varied)?;
+    let off_beat = notes
+        .iter()
+        .filter(|n| (n.start - n.start.round()).abs() > 0.01)
+        .count();
+    Ok(format!(
+        "{} slot {} humanized (seed {}): hits now land up to {} ms early or late — {} at {} BPM — so they drift around the grid instead of sitting on it; velocities vary ±{}{}. undo_vary puts them back.",
+        track.name,
+        p.clip,
+        p.seed,
+        perf_num(p.timing_ms),
+        crate::variation::note_value_words(timing_beats),
+        perf_num(state.tempo),
+        p.velocity,
+        if off_beat > 0 { ", the off-beat notes most" } else { "" }
+    ))
+}
+
+pub fn swing_notes_body(live: &LiveState, p: &SwingNotesParams) -> ToolResult {
+    if !(0.0..=1.0).contains(&p.amount) {
+        return Err(format!("amount must be between 0 and 1, got {}", p.amount));
+    }
+    let step = match p.grid.trim() {
+        "1/16" | "16" | "16th" | "16ths" => 0.25,
+        "1/8" | "8" | "8th" | "8ths" => 0.5,
+        other => return Err(format!("grid must be \"1/16\" or \"1/8\", not '{other}'")),
+    };
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    let (raw, notes) = clip_vnotes(live, track, p.clip)?;
+    let swung = crate::variation::swing(&notes, p.amount, step);
+    let moved = swung
+        .iter()
+        .zip(notes.iter())
+        .filter(|(a, b)| (a.start - b.start).abs() > 1e-9)
+        .count();
+    if moved == 0 {
+        return Err(format!(
+            "'{}' slot {} has no notes on the off-beat {} steps, so a swing changes nothing",
+            track.name,
+            p.clip,
+            if step == 0.25 { "16th" } else { "8th" }
+        ));
+    }
+    write_varied(live, track.index, p.clip, raw, &swung)?;
+    Ok(format!(
+        "{} slot {} swung: the off-beat {}s now lag by {} ({}% of the step); the on-beat notes stay where they were. undo_vary straightens them.",
+        track.name,
+        p.clip,
+        if step == 0.25 { "16th" } else { "8th" },
+        crate::variation::note_value_words(p.amount * step),
+        (p.amount * 100.0).round() as i64
+    ))
+}
+
+const NO_GROOVE_HELP: &str = "the API cannot add one; drag one in from the browser (Grooves) so it appears in the pool, or use humanize / swing_notes (a note rewrite, undoable)";
+
+pub fn groove_clip_body(live: &LiveState, p: &GrooveClipParams) -> ToolResult {
+    for c in ["get_grooves", "set_clip_groove"] {
+        require(live, c)?;
+    }
+    for (name, v) in [
+        ("amount", p.amount),
+        ("random", p.random),
+        ("velocity", p.velocity),
+    ] {
+        if let Some(v) = v {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(format!("{name} must be between 0 and 1, got {v}"));
+            }
+        }
+    }
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    if !track.slots_with_clips.contains(&p.clip) {
+        return Err(format!("slot {} on '{}' holds no clip", p.clip, track.name));
+    }
+    let pool = live
+        .send_command("get_grooves", None)
+        .map_err(|e| live_err("read the Groove Pool", e))?;
+    if let Some(e) = pool.get("error").and_then(Value::as_str) {
+        return Err(format!("{e}; use humanize / swing_notes instead."));
+    }
+    let grooves = pool
+        .get("grooves")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let names: Vec<String> = grooves
+        .iter()
+        .map(|g| get_display(g, "name", "?"))
+        .collect();
+    let remove = matches!(&p.groove, Value::String(s) if s.trim().eq_ignore_ascii_case("none") || s.trim().is_empty());
+    let index: Option<i64> = if remove {
+        None
+    } else {
+        match &p.groove {
+            Value::Number(n) => {
+                let i = n.as_i64().unwrap_or(-1);
+                if i < 0 || i >= grooves.len() as i64 {
+                    return Err(format!(
+                        "no groove {i} in the pool ({} groove{}: {})",
+                        grooves.len(),
+                        if grooves.len() == 1 { "" } else { "s" },
+                        names.join(", ")
+                    ));
+                }
+                Some(i)
+            }
+            Value::String(s) => {
+                let want = s.trim().to_lowercase();
+                if grooves.is_empty() {
+                    return Err(format!(
+                        "No groove named '{}' in this set's Groove Pool (it is empty) and {NO_GROOVE_HELP}.",
+                        s.trim()
+                    ));
+                }
+                let hit = names
+                    .iter()
+                    .position(|n| n.to_lowercase() == want)
+                    .or_else(|| names.iter().position(|n| n.to_lowercase().contains(&want)));
+                match hit {
+                    Some(i) => Some(i as i64),
+                    None => {
+                        return Err(format!(
+                            "No groove named '{}' in this set's Groove Pool and {NO_GROOVE_HELP}. In the pool: {}.",
+                            s.trim(),
+                            names.join(", ")
+                        ))
+                    }
+                }
+            }
+            other => {
+                return Err(format!(
+                    "groove must be a name, an index or \"none\", not {other}"
+                ))
+            }
+        }
+    };
+    let r = live
+        .send_command(
+            "set_clip_groove",
+            Some(json!({"track_index": track.index, "clip_index": p.clip, "groove_index": index.unwrap_or(-1),
+                        "timing": p.amount, "random": p.random, "velocity": p.velocity})),
+        )
+        .map_err(|e| live_err("assign the groove", e))?;
+    match r.get("groove").filter(|g| g.is_object()) {
+        Some(g) => {
+            let mut amounts = Vec::new();
+            for (k, label) in [
+                ("timing_amount", "timing"),
+                ("random_amount", "random"),
+                ("velocity_amount", "velocity"),
+            ] {
+                if let Some(v) = g.get(k).and_then(Value::as_f64) {
+                    amounts.push(format!("{label} {}%", (v * 100.0).round() as i64));
+                }
+            }
+            Ok(format!(
+                "{} slot {}: groove '{}' from the Groove Pool{} (non-destructive; Live's own groove, shared by every clip that uses it). Set the pool's global amount with groove_amount{}.",
+                track.name,
+                p.clip,
+                get_display(g, "name", "?"),
+                if amounts.is_empty() { String::new() } else { format!(" at {}", amounts.join(", ")) },
+                pool.get("groove_amount").and_then(Value::as_f64).map(|a| format!(" (now {}%)", (a * 100.0).round() as i64)).unwrap_or_default()
+            ))
+        }
+        None => Ok(format!(
+            "{} slot {}: groove removed; the clip plays straight again.",
+            track.name, p.clip
+        )),
+    }
+}
+
+pub fn groove_amount_body(live: &LiveState, p: &GrooveAmountParams) -> ToolResult {
+    require(live, "set_clip_groove")?;
+    if !(0.0..=1.0).contains(&p.value) {
+        return Err(format!("value must be between 0 and 1, got {}", p.value));
+    }
+    let r = live
+        .send_command("set_clip_groove", Some(json!({"global_amount": p.value})))
+        .map_err(|e| live_err("set the groove amount", e))?;
+    Ok(format!(
+        "Groove Pool amount {}%: every clip with a groove follows it that much.",
+        (r.get("groove_amount")
+            .and_then(Value::as_f64)
+            .unwrap_or(p.value)
+            * 100.0)
+            .round() as i64
+    ))
 }
 
 /// `retime_clip`: the half- or double-time rewrite a transition writes,
@@ -4466,6 +4778,10 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "restore_mix" => (RestoreMixParams, restore_mix_body),
         "panic" => (PanicParams, panic_body),
         "retime_clip" => (RetimeClipParams, retime_clip_body),
+        "groove_clip" => (GrooveClipParams, groove_clip_body),
+        "groove_amount" => (GrooveAmountParams, groove_amount_body),
+        "humanize" => (HumanizeParams, humanize_body),
+        "swing_notes" => (SwingNotesParams, swing_notes_body),
         "make_section" => (crate::sections::MakeSectionParams, crate::sections::make_section_body),
         "set_song" => (crate::sections::SetSongParams, crate::sections::set_song_body),
         "add_to_song" => (crate::sections::AddToSongParams, crate::sections::add_to_song_body),
@@ -5889,6 +6205,39 @@ impl Server {
         self.run(&BACK, p, crate::sections::back_body).await
     }
 
+    /// Give a Session clip a groove from this set's Groove Pool (Live's own,
+    /// non-destructive, Live 11+), by name or index, with the groove's
+    /// timing/random/velocity amounts; "none" removes it. The API cannot add
+    /// a groove to the pool: an unknown name lists the pool and says what to
+    /// drag in, or use humanize / swing_notes (note rewrites, undoable).
+    #[tool(name = "groove_clip")]
+    async fn groove_clip(&self, Parameters(p): Parameters<GrooveClipParams>) -> CallToolResult {
+        self.run(&GROOVE_CLIP, p, groove_clip_body).await
+    }
+
+    /// The set's global groove amount (Live's Groove Pool "Amount"), 0–1.
+    #[tool(name = "groove_amount")]
+    async fn groove_amount(&self, Parameters(p): Parameters<GrooveAmountParams>) -> CallToolResult {
+        self.run(&GROOVE_AMOUNT, p, groove_amount_body).await
+    }
+
+    /// Loosen a clip: every hit lands up to timing_ms early or late (a
+    /// seeded, bell-shaped drift, never across a bar line) and velocities
+    /// vary by up to `velocity`, off-beat notes most. A note rewrite; the
+    /// reply says what to listen for in note values, and undo_vary restores.
+    #[tool(name = "humanize")]
+    async fn humanize(&self, Parameters(p): Parameters<HumanizeParams>) -> CallToolResult {
+        self.run(&HUMANIZE, p, humanize_body).await
+    }
+
+    /// Swing a clip: the off-beat 16ths (or 8ths) are delayed by `amount`
+    /// of the grid step; on-beat notes stay. A note rewrite; undo_vary
+    /// restores. For Live's own groove use groove_clip.
+    #[tool(name = "swing_notes")]
+    async fn swing_notes(&self, Parameters(p): Parameters<SwingNotesParams>) -> CallToolResult {
+        self.run(&SWING_NOTES, p, swing_notes_body).await
+    }
+
     /// Half- or double-time a clip's notes (the rewrite a jump's `retime`
     /// transition makes), in place with one undo_vary, or into a free slot.
     #[tool(name = "retime_clip")]
@@ -5992,7 +6341,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 87);
+        assert_eq!(tools.len(), 91);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();

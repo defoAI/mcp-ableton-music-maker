@@ -104,7 +104,7 @@ async fn full_stack_over_stdio() {
     }
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 87);
+    assert_eq!(tools.len(), 91);
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     for expected in [
         "get_session_info",
