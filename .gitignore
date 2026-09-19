@@ -1,19 +1,10 @@
-# Python-generated files
+# Rust
+/target/
+**/*.rs.bk
+
+# Python bytecode from the Remote Script (Live writes it next to the source)
 __pycache__/
 *.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-.eggs/
-*.egg
-MANIFEST
-
-# Virtual environments
-.venv
-venv/
-ENV/
-env/
 
 # IDE / Editor
 .vscode/
@@ -21,55 +12,19 @@ env/
 *.swp
 *.swo
 *~
-.project
-.pydevproject
-.settings/
 
 # OS files
 .DS_Store
-.DS_Store?
 Thumbs.db
-ehthumbs.db
-Desktop.ini
-
-# Testing / Coverage
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.nox/
-coverage.xml
-*.cover
-*.py,cover
-
-# Type checking
-.mypy_cache/
-.pytype/
 
 # Logs
 *.log
-logs/
 
-# Environment variables
+# Environment variables (Supabase credentials live here, never in the repo)
 .env
 .env.local
 .env.*.local
 
-MCP_Server/secrets.py
-MCP_Server/config.py
-
-# Operator-only material — not part of the open-source distribution
-supabase/
-DATA_COLLECTION.md
-tools_operator/
-MANIFEST.in
-
 # Export output — contains collected user session data
 *.jsonl
 exports/
-
-local_tests/
-
-
-# Lock files (optional - uncomment if you don't want to track)
-# uv.lock

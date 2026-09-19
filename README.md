@@ -1,53 +1,88 @@
 <div align="center">
 
-# Ableton MCP
+# MCP Ableton Music Maker
 
 **Connect Ableton Live to Claude AI**
 
 Prompt-assisted music production, end-to-end track creation, and Live session and arrangement manipulation — driven by AI.
 
-[![PyPI Version](https://img.shields.io/pypi/v/ableton-mcp?color=blue)](https://pypi.org/project/ableton-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/JK4hNKGprW)
 
-[**Setup Video**](https://youtu.be/iJWJqyVuPS8) · [**Discord**](https://discord.gg/JK4hNKGprW) · [**Issues**](https://github.com/ahujasid/ableton-mcp/issues)
+[**Setup Video**](https://youtu.be/iJWJqyVuPS8) · [**Discord**](https://discord.gg/JK4hNKGprW) · [**Issues**](https://github.com/defoAI/mcp-ableton-music-maker/issues)
 
 </div>
 
 ---
 
-## Quickstart
+## What it is
 
-Three steps: install `uv`, point your MCP client at the server, install the Ableton Remote Script.
+Two pieces:
 
-**1. Install uv**
+1. **`ableton-music-maker`**, a single Rust binary that speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio to Claude Desktop, Claude Code or Cursor. It exposes 37 tools for reading and editing the Live set, and talks to Live over a TCP socket on port 9877.
+2. **The AbletonMusicMaker Remote Script**, a control surface that runs inside Live and executes the commands. Live only loads control surfaces through its embedded Python interpreter, so this one file stays Python. It is embedded in the binary and installed with `ableton-music-maker-install-script`.
 
-```bash
-# macOS
-brew install uv
+```
+Claude ──stdio──▶ ableton-music-maker ──TCP 9877──▶ Ableton Live (AbletonMusicMaker Remote Script)
 ```
 
-Otherwise, install from [uv's official website](https://docs.astral.sh/uv/getting-started/installation/).
+**All telemetry is off by default.** Nothing leaves your machine except the connection to Live unless you explicitly opt in. See [Telemetry](#telemetry).
 
-> **Warning:** Do not proceed before installing uv.
+## Quickstart (Docker)
 
-**2. Add the MCP server to your client**
+Docker Desktop must be running whenever the MCP client starts the server.
+
+**1. Build the image**
+
+```bash
+git clone https://github.com/defoAI/mcp-ableton-music-maker.git
+cd mcp-ableton-music-maker
+docker compose build
+docker/verify-image.sh mcp-ableton-music-maker:local   # optional: the checks CI runs
+```
+
+**2. Install the Remote Script into Live's User Library**
+
+```bash
+docker compose --profile install run --rm install-script
+# User Library somewhere else? Point at it:
+ABLETON_USER_LIBRARY="/Volumes/Work/Ableton/User Library" docker compose --profile install run --rm install-script
+```
+
+Then restart Live, open **Settings → Link, Tempo & MIDI**, choose **AbletonMusicMaker** in a **Control Surface** slot, and set its Input and Output to **None**.
+
+**3. Point your MCP client at the container**
 
 <details open>
 <summary><b>Claude Desktop</b> — Settings → Developer → Edit Config</summary>
 
 ```json
 {
-    "mcpServers": {
-        "AbletonMCP": {
-            "command": "uvx",
-            "args": [
-                "ableton-mcp"
-            ]
-        }
+  "mcpServers": {
+    "AbletonMusicMaker": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "--read-only",
+        "--security-opt", "no-new-privileges:true",
+        "--cap-drop", "ALL",
+        "-v", "ableton-music-maker-state:/state",
+        "mcp-ableton-music-maker:local"
+      ]
     }
+  }
 }
 ```
+</details>
+
+<details>
+<summary><b>Claude Code</b></summary>
+
+```bash
+claude mcp add AbletonMusicMaker -- docker run --rm -i --read-only --security-opt no-new-privileges:true --cap-drop ALL -v ableton-music-maker-state:/state mcp-ableton-music-maker:local
+```
+
+Opening this repository in Claude Code also offers the server automatically through the project's [`.mcp.json`](.mcp.json).
 </details>
 
 <details>
@@ -56,305 +91,103 @@ Otherwise, install from [uv's official website](https://docs.astral.sh/uv/gettin
 Paste this as a command:
 
 ```
-uvx ableton-mcp
+docker run --rm -i --read-only --security-opt no-new-privileges:true --cap-drop ALL -v ableton-music-maker-state:/state mcp-ableton-music-maker:local
 ```
 </details>
 
-> **Warning:** Only run one instance of the MCP server (either on Cursor or Claude Desktop), not both.
-
-**3. Install the Ableton Remote Script**
-
-```bash
-uvx --from ableton-mcp ableton-mcp-install-script
-uvx --from ableton-mcp ableton-mcp-install-script --list-targets   # preview target folders first
-```
-
-**4. Connect**
-
-1. Launch Ableton Live
-2. Go to **Settings/Preferences → Link, Tempo & MIDI**
-3. In the **Control Surface** dropdown, select **AbletonMCP**
-4. Set **Input** and **Output** to **None**
+Do not add `-t` (it breaks the stdio transport) or `-p` (the container listens on nothing). Run only one instance of the server at a time across all clients.
 
 That's it — ask Claude to build something.
 
----
+## Running the binary directly
 
-## Table of Contents
+If you would rather not use Docker, build the binaries with a Rust toolchain (1.85 or newer):
 
-- [Quickstart](#quickstart)
-- [Features](#features)
-- [Components](#components)
-- [Installation](#installation)
-  - [Prerequisites](#prerequisites)
-  - [Claude for Desktop Integration](#claude-for-desktop-integration)
-  - [Cursor Integration](#cursor-integration)
-  - [Installing the Ableton Remote Script](#installing-the-ableton-remote-script)
-- [Usage](#usage)
-  - [Starting the Connection](#starting-the-connection)
-  - [Using with Claude](#using-with-claude)
-  - [Capabilities](#capabilities)
-  - [Example Commands](#example-commands)
-- [Troubleshooting](#troubleshooting)
-- [Technical Details](#technical-details)
-- [Limitations & Security Considerations](#limitations--security-considerations)
-- [Telemetry](#telemetry)
-- [Join the Community](#join-the-community)
-- [Contributing](#contributing)
-- [Disclaimer](#disclaimer)
+```bash
+cargo install --path . --locked
+ableton-music-maker-install-script                  # copies the Remote Script into Live's User Library
+ableton-music-maker-install-script --list-targets   # preview the folders it would use
+```
 
----
+Then register `ableton-music-maker` as the command in your MCP client, for example `claude mcp add AbletonMusicMaker ableton-music-maker`. The server reads Live's address from `ABLETON_HOST` (default `localhost`) and `ABLETON_PORT` (default `9877`).
 
-## Features
+## What the image guarantees
 
-| | |
+Checked by `docker/verify-image.sh` and by CI on every build:
+
+- distroless runtime: no shell, no package manager, runs as a non-root user
+- read-only root filesystem; the only writable path is the `/state` volume
+- telemetry and dataset recording are hard-off via environment variables baked into the image, and off by default in the binary as well
+- no Supabase credentials in the image
+- the binary completes the MCP handshake over stdio with nothing but JSON-RPC on stdout
+- image size under 50 MB
+
+## Tools
+
+| Area | Tools |
 |---|---|
-| **Two-way communication** | Connect Claude AI to Ableton Live through a socket-based server |
-| **Track manipulation** | Create, modify, and manipulate MIDI and audio tracks |
-| **Instrument and effect selection** | Claude can access and load the right instruments, effects and sounds from Ableton's library |
-| **Clip creation** | Create and edit MIDI clips with notes |
-| **Arrangement view composition** | Build full songs autonomously in Arrangement View, including sections like intro, buildup, drop, breakdown, and outro |
-| **Session control** | Start and stop playback, fire clips, and control transport across Session View and Arrangement View |
-| **Anonymous telemetry** | Usage tracking to help improve the tool (can be disabled) |
+| Session | `get_session_info`, `get_session_snapshot`, `set_tempo`, `start_playback`, `stop_playback` |
+| Tracks | `get_track_info`, `create_midi_track`, `create_audio_track`, `set_track_name` |
+| Clips | `create_clip`, `create_audio_clip`, `get_clip_notes`, `add_notes_to_clip`, `clear_notes_from_clip`, `set_clip_name`, `delete_clip`, `fire_clip`, `stop_clip` |
+| Devices | `get_device_parameters`, `set_device_parameter`, `load_instrument_or_effect`, `load_drum_kit` |
+| Browser | `get_browser_tree`, `get_browser_items_at_path` |
+| Arrangement | `switch_to_arrangement_view`, `set_arrangement_time`, `get_arrangement_clips`, `duplicate_to_arrangement`, `set_arrangement_clip_name`, `create_locator` |
+| Bridge | `get_remote_script_info` |
+| Dataset (opt-in) | `set_dataset_consent`, `submit_intent`, `rate_last_action`, `prefer_candidate`, `reject_last_action`, `record_audition` |
 
-## Components
+Every tool checks that the loaded Remote Script advertises the command it needs. A missing or outdated script produces a clear "run `ableton-music-maker-install-script`, then restart Live" error instead of a half-working session. The server also retries the handshake on the first tool call, so starting it before Live is fine.
 
-The system consists of two main components:
-
-1. **Ableton Remote Script** (`Ableton_Remote_Script/__init__.py`) — a MIDI Remote Script for Ableton Live that creates a socket server to receive and execute commands
-2. **MCP Server** (`server.py`) — a Python server that implements the Model Context Protocol and connects to the Ableton Remote Script
-
----
-
-## Installation
-
-### Prerequisites
-
-- **Ableton Live** 10 or newer
-- **Python** 3.8 or newer
-- **uv** package manager
-
-If you're on Mac, please install uv as:
-
-```
-brew install uv
-```
-
-Otherwise, install from [uv's official website](https://docs.astral.sh/uv/getting-started/installation/)
-
-> **Warning:** Do not proceed before installing uv.
-
-### Claude for Desktop Integration
-
-[Follow along with the setup instructions video](https://youtu.be/iJWJqyVuPS8)
-
-Go to **Claude → Settings → Developer → Edit Config → `claude_desktop_config.json`** to include the following:
-
-```json
-{
-    "mcpServers": {
-        "AbletonMCP": {
-            "command": "uvx",
-            "args": [
-                "ableton-mcp"
-            ]
-        }
-    }
-}
-```
-
-### Cursor Integration
-
-Run ableton-mcp without installing it permanently through uvx. Go to **Cursor Settings → MCP** and paste this as a command:
-
-```
-uvx ableton-mcp
-```
-
-> **Warning:** Only run one instance of the MCP server (either on Cursor or Claude Desktop), not both.
-
-### Claude Code Integration
-
-In the terminal, run:
-
-```
-claude mcp add AbletonMCP uvx ableton-mcp
-```
-
-### Installing the Ableton Remote Script
-
-[Follow along with the setup instructions video](https://youtu.be/iJWJqyVuPS8)
-
-Install the Remote Script with:
-
-```bash
-uvx --from ableton-mcp ableton-mcp-install-script
-uvx --from ableton-mcp ableton-mcp-install-script --list-targets   # preview target folders first
-```
-
-> If you installed the package with `pip` or `pipx`, the command is on your PATH directly — just run `ableton-mcp-install-script`.
-
-This copies the matching Remote Script into your Ableton **User Library**'s `Remote Scripts` folder — the location Live (10.1.13+) scans for third-party control surface scripts. The installer reads the User Library location from Live's `Library.cfg`, falling back to the default (`~/Music/Ableton/User Library` on macOS, `Documents\Ableton\User Library` on Windows). If a different version of the script is already there, the existing file is backed up to `__init__.py.bak` before being replaced.
-
-If your User Library lives somewhere non-standard and isn't detected, point the installer at it directly:
-
-```bash
-uvx --from ableton-mcp ableton-mcp-install-script --target "/path/to/User Library/Remote Scripts"
-```
-
-> The legacy `Preferences/User Remote Scripts` folder (used for instant-mapping configs, not Python control surfaces) is no longer targeted by default; pass `--legacy` if you need it for an old Live version.
-
-Then **restart Ableton** (or re-select the AbletonMCP control surface) so Live loads it. Re-run the command after upgrading the package — the server logs a warning when the loaded script version doesn't match what it expects.
-
-> **Note:** The server does **not** install the script on startup. Writing into Ableton's preferences directory is an explicit action, not a side effect of launching a server.
-
-**First-time Ableton setup:**
-
-1. Run `uvx --from ableton-mcp ableton-mcp-install-script`
-2. Launch Ableton Live
-3. Go to **Settings/Preferences → Link, Tempo & MIDI**
-4. In the **Control Surface** dropdown, select **AbletonMCP**
-5. Set **Input** and **Output** to **None**
-
-<details>
-<summary><b>Manual fallback locations (User Library → Remote Scripts)</b></summary>
-
-- **macOS:** `~/Music/Ableton/User Library/Remote Scripts/AbletonMCP/`
-- **Windows:** `C:\Users\[Username]\Documents\Ableton\User Library\Remote Scripts\AbletonMCP\`
-
-If you've moved your User Library, use its actual location (shown in Live under **Preferences → Library → Location of User Library**), and create the `Remote Scripts` folder inside it if it doesn't exist yet.
-</details>
-
-The MCP server and Remote Script share a version handshake (`get_remote_script_info`). If they diverge, newer tools degrade gracefully until Live is restarted.
-
----
-
-## Usage
-
-### Starting the Connection
-
-1. Ensure the Ableton Remote Script is loaded in Ableton Live
-2. Make sure the MCP server is configured in Claude Desktop or Cursor
-3. The connection should be established automatically when you interact with Claude
-
-### Using with Claude
-
-Once the config file has been set on Claude, and the remote script is running in Ableton, you will see a hammer icon with tools for the Ableton MCP.
-
-### Capabilities
-
-- Get session and track information
-- Create and modify MIDI and audio tracks
-- Create full song arrangements from start to finish in Arrangement View
-- Create, edit, and trigger clips
-- Control playback
-- Load instruments and effects from Ableton's browser
-- Add notes to MIDI clips
-- Change tempo and other session parameters
-
-### Example Commands
-
-Here are some examples of what you can ask Claude to do:
+### Example prompts
 
 | Prompt | Demo |
 |---|---|
 | *"Create an 80s synthwave track"* | [Watch](https://youtu.be/VH9g66e42XA) |
 | *"Create a Metro Boomin style hip-hop beat"* | |
 | *"Create a full arrangement with an intro, buildup, drop, breakdown, and outro"* | |
-| *"Create a new MIDI track with a synth bass instrument"* | |
-| *"Add reverb to my drums"* | |
-| *"Create a 4-bar MIDI clip with a simple melody"* | |
-| *"Get information about the current Ableton session"* | |
-| *"Load a 808 drum rack into the selected track"* | |
 | *"Add a jazz chord progression to the clip in track 1"* | |
+| *"Load a 808 drum rack into the selected track"* | |
 | *"Set the tempo to 120 BPM"* | |
-| *"Play the clip in track 2"* | |
-
----
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| **Connection issues** | Make sure the Ableton Remote Script is loaded, and the MCP server is configured on Claude |
-| **Timeout errors** | Try simplifying your requests or breaking them into smaller steps |
-| **Have you tried turning it off and on again?** | If you're still having connection errors, try restarting both Claude and Ableton Live |
+| Tools report the Remote Script cannot run a command | Run the installer again, restart Live, and re-select AbletonMusicMaker as a Control Surface. `get_remote_script_info` shows the loaded and expected versions. |
+| "could not connect to Ableton" | Live is not running, or the AbletonMusicMaker control surface is not selected. From Docker, Live must be reachable at `host.docker.internal:9877`. |
+| The client says the server failed to start | With Docker, Docker Desktop must be running before the client launches the server. |
+| Timeout errors | Break the request into smaller steps. Importing large audio files is given 65 seconds; everything else 10 to 15. |
 
-## Technical Details
-
-### Communication Protocol
-
-The system uses a simple JSON-based protocol over TCP sockets:
-
-- **Commands** are sent as JSON objects with a `type` and optional `params`
-- **Responses** are JSON objects with a `status` and `result` or `message`
-
-## Limitations & Security Considerations
-
-- Creating complex musical arrangements might need to be broken down into smaller steps
-- The tool is designed to work with Ableton's default devices and browser items
-- Always save your work before extensive experimentation
-
----
+Diagnostics go to stderr. Set `RUST_LOG=debug` for the full command trace.
 
 ## Telemetry
 
-AbletonMCP collects usage data to help improve the tool. This includes:
+**All telemetry is off by default.** There are two tiers, both opt-in, and both require Supabase credentials in the environment (`ABLETON_MCP_SUPABASE_URL`, `ABLETON_MCP_SUPABASE_ANON_KEY`) that are not shipped with the binary or the image. See the [Terms & Data Use](TERMS.md) for exactly what each tier collects.
 
-- Anonymous tool usage statistics (which features are used)
-- Anonymous session start information (for daily/monthly active user counts)
-- Anonymous rates and performance metrics
-- Prompts, MIDI notes, track and clip names, and device settings
+| Tier | What it collects | Off by default | Turn on |
+|---|---|---|---|
+| Anonymous telemetry | Tool names, success/duration, versions, install ID | Yes | `ABLETON_MCP_ENABLE_TELEMETRY=true` |
+| Dataset recording | Prompts, MIDI notes, track and clip names, device settings | Yes | Telemetry on **and** your explicit yes to the consent question, or `ABLETON_MCP_ENABLE_DATASET=true` |
 
-Telemetry is **on** by default. To see exactly what data is collected, see the [Terms & Data Use](TERMS.md).
+With telemetry off the dataset consent question is never asked. With telemetry on, you are asked once (as a dialog if your client supports it, otherwise in the chat), and an unanswered or dismissed question means recording stays off.
 
-### Opting Out
+The disable variables override any opt-in, stored answer or enable variable, and are what the Docker image sets: `ABLETON_MCP_DISABLE_TELEMETRY=true` (also `DISABLE_TELEMETRY`, `MCP_DISABLE_TELEMETRY`) and `ABLETON_MCP_DISABLE_DATASET=true`.
 
-To disable telemetry, set one of these environment variables before starting the MCP server:
+`ableton-music-maker --privacy-status` prints the state of every gate as JSON.
+
+## Development
 
 ```bash
-export ABLETON_MCP_DISABLE_TELEMETRY=true
+cargo test                      # unit, tool, privacy and end-to-end stdio tests
+cargo clippy --all-targets      # lints
+docker build --target test .    # the same suite inside the image
 ```
 
-Or use any of these alternatives:
-
-- `DISABLE_TELEMETRY=true`
-- `MCP_DISABLE_TELEMETRY=true`
-
-For Claude Desktop, add the environment variable to your config:
-
-```json
-{
-    "mcpServers": {
-        "AbletonMCP": {
-            "command": "uvx",
-            "args": ["ableton-mcp"],
-            "env": {
-                "ABLETON_MCP_DISABLE_TELEMETRY": "true"
-            }
-        }
-    }
-}
-```
-
----
+The Remote Script lives in `AbletonMusicMaker_Remote_Script/__init__.py` and is embedded into the binary at build time; its `SCRIPT_VERSION` is the version the server expects. Edit the script, bump that constant when the command surface changes, and rebuild.
 
 ## Join the Community
 
 Give feedback, get inspired, and build on top of the MCP: [**Discord**](https://discord.gg/JK4hNKGprW)
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
 ## Disclaimer
 
 This is a third-party integration and not made by Ableton. Made by [Siddharth](https://x.com/sidahuj).
-
----
-
-<div align="center">
-
-**If Ableton MCP is useful to you, consider starring the repo**
-
-</div>

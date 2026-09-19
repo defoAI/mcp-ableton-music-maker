@@ -1,0 +1,58 @@
+# Build and run the mcp-ableton-music-maker image.
+#
+# The MCP client (Claude Desktop, Claude Code, Cursor) does not go through
+# compose: it launches `docker run` itself so it owns the process's stdio (see
+# docker/claude_desktop_config.example.json and .mcp.json). Compose is for:
+#
+#   docker compose build                                  build mcp-ableton-music-maker:local
+#   docker build --target test .                          run the test suite
+#   docker compose --profile install run --rm install-script
+#                                                         install the Remote Script into
+#                                                         Live's User Library on the host
+#   docker compose run --rm ableton-music-maker           run the server interactively
+#
+# Live runs on the host and is reached at host.docker.internal:9877. Set
+# ABLETON_HOST / ABLETON_PORT in the shell or an .env file to override.
+
+services:
+  ableton-music-maker:
+    build:
+      context: .
+      target: runtime
+    image: mcp-ableton-music-maker:local
+    stdin_open: true
+    tty: false
+    environment:
+      ABLETON_HOST: ${ABLETON_HOST:-host.docker.internal}
+      ABLETON_PORT: ${ABLETON_PORT:-9877}
+    extra_hosts:
+      # No-op on Docker Desktop, which defines host.docker.internal itself.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ableton-music-maker-state:/state
+    # The container can write nowhere except /state.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    init: true
+
+  install-script:
+    profiles: [install]
+    image: mcp-ableton-music-maker:local
+    entrypoint: ["/app/ableton-music-maker-install-script"]
+    command: ["--target", "/user-library/Remote Scripts"]
+    volumes:
+      # Live's User Library on the host. Override for a moved library:
+      #   ABLETON_USER_LIBRARY="/Volumes/Work/Ableton/User Library" docker compose --profile install run --rm install-script
+      - "${ABLETON_USER_LIBRARY:-${HOME}/Music/Ableton/User Library}:/user-library"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    network_mode: none
+
+volumes:
+  ableton-music-maker-state:
