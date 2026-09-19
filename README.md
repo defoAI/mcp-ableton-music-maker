@@ -184,7 +184,9 @@ Nothing is uploaded, by the server or by the app; there is no code that could. W
 cd app && npm install && npm run dev      # needs Rust 1.85+, Xcode command line tools
 ```
 
-A signed, notarised download follows once the release pipeline exists.
+Every pull request builds and verifies the Apple Silicon disk image, kept as the `mac-app`
+job's artifact. A signed, notarised download follows once the Developer ID certificate is in
+the repository secrets — until then the image opens only on the machine that built it.
 
 ## Documentation
 

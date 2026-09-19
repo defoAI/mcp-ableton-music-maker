@@ -77,7 +77,10 @@ Paths are relative to the repository root.
 | Image size limit | `MAX_SIZE_MB` default in `docker/verify-image.sh` | |
 | Base image and user | `FROM gcr.io/distroless/cc-debian12:nonroot` in the `Dockerfile` | |
 | Where the published image lives | `.github/workflows/ci.yml` — `ghcr.io/defoAI/mcp-ableton-music-maker:<sha>` and `:latest`, pushed on `main` only, linux/amd64 + linux/arm64 | |
-| What CI runs | `.github/workflows/ci.yml`: fmt, clippy `-D warnings`, `cargo test`, the dependency-tree gate, the docs drift check, image test stage, verify-image, trivy on CRITICAL | |
+| What CI runs | `.github/workflows/ci.yml`: fmt, clippy `-D warnings`, `cargo test`, the dependency-tree gate, the docs drift check, image test stage, verify-image, trivy on CRITICAL, and the `mac-app` job — `tauri build` then `verify-dmg.sh` then the `.dmg` as an artifact | |
+| What the Mac disk image guarantees | `app/scripts/verify-dmg.sh` — each check is one promise: it mounts, carries the app and the `/Applications` shortcut, both binaries arm64 and validly signed, the sidecar's `--status` runs out of the mounted image, the Info.plist keys the app needs. `EXPECT_SIGNED=1` adds Developer ID, a stapled ticket and Gatekeeper | `app/scripts/verify-dmg.sh <dmg>` |
+| Which Macs the app is built for | the `--target` in the `mac-app` job and in `release.yml` (`aarch64-apple-darwin` — Apple Silicon), and `minimumSystemVersion` in `app/src-tauri/tauri.conf.json` | `lipo -archs` on the binaries inside the bundle |
+| How the app is signed and published | `.github/workflows/release.yml` — a `v*` tag, six `APPLE_*` repository secrets read by Tauri itself, attached to the GitHub release. No certificate or key is in the repository, and the workflow stops before building when a secret is missing | `gh secret list` |
 | Where the Remote Script is installed | `src/install.rs` — Live's User Library `Remote Scripts/AbletonMusicMaker/`, with a `.bak` of anything replaced | `ableton-music-maker-install-script --list-targets` |
 
 ### Community and lineage

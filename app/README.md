@@ -33,7 +33,8 @@ app/
 │   ├── tests/listen_integration.rs  the commands on Tauri's mock runtime; two tests need Live (--ignored)
 │   ├── binaries/        the sidecar, produced by scripts/build-sidecar.sh (gitignored)
 │   └── icons/
-└── scripts/build-sidecar.sh
+└── scripts/          build-sidecar.sh (the server, for one triple) and verify-dmg.sh (the
+                      assertions CI runs on the built image)
 ```
 
 Not a Cargo workspace member on purpose: it keeps its own `Cargo.lock`, so the root crate's
@@ -66,12 +67,36 @@ The probe asks Live to play if it is stopped and puts the transport back; set
 
 ## Build the bundle
 
+Apple Silicon only — the sidecar, the app and the disk image are all `aarch64-apple-darwin`.
+
 ```bash
-cd app && cargo tauri build            # runs build-sidecar.sh release, then bundles .app and .dmg
+cd app && npm ci && CI=true APPLE_SIGNING_IDENTITY=- npm run tauri -- build --target aarch64-apple-darwin
+app/scripts/verify-dmg.sh "app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/"*.dmg
 ```
 
-Unsigned unless `APPLE_SIGNING_IDENTITY` and the notarisation variables are set; see the
-Tauri docs for the exact names. Certificates and keys are CI secrets, never in the repo.
+Both variables are what CI has anyway, and a local build wants them too. `CI=true` makes
+Tauri pass `--skip-jenkins` to `bundle_dmg.sh`, which skips the AppleScript that arranges the
+window: a terminal that has not been granted Apple Events control of Finder cannot run it, and
+`bundle_dmg.sh` then exits 64 with "Failed running AppleScript" after the `.app` is already
+built. `APPLE_SIGNING_IDENTITY=-` signs ad-hoc, which is what seals the bundle — without any
+identity Tauri skips signing entirely and the app is left with nothing but the linker's own
+signature and no `_CodeSignature`, which `codesign --verify` refuses.
+
+`build-sidecar.sh release` runs first, from `beforeBuildCommand`, and builds the server for
+the triple Tauri passes it; the bundler looks the sidecar up by that exact name. The two
+commands above are what CI runs, so a green `mac-app` job means this works.
+
+`verify-dmg.sh` mounts the image and checks what a download needs: the app and the
+`/Applications` shortcut, both binaries arm64 and signed, `--status` actually running out of
+the mounted image, and the Info.plist keys the app depends on — the bundle identifier and
+`NSAudioCaptureUsageDescription`, without which the Listen screen can never ask.
+
+A build with no certificate is **unsigned**: fine on the machine that built it, refused by
+Gatekeeper on any Mac that downloads it. Signing and notarising happens on a tag, in
+`.github/workflows/release.yml`, from six repository secrets — `APPLE_CERTIFICATE` (base64
+of the Developer ID `.p12`), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+`APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID`. Tauri reads
+them itself. No certificate or key is in the repository.
 
 ## What the server writes, and where the app reads it
 

@@ -196,9 +196,14 @@ N/A — the app adds no MCP tool. The server gains one command-line flag, `--che
       yet — Phase 3, with the signed bundle, since login items need a bundle identifier.*
 
 ### Packaging (Phase 3)
-- [ ] **AC23:** `cargo tauri build` on macOS produces a universal `.dmg`; CI builds it
-      unsigned on every PR (`macos-latest` job) and signed + notarised on a tag, with the
-      Developer ID certificate and notary key from secrets. No secret is in the repository.
+- [~] **AC23:** `tauri build --target aarch64-apple-darwin` produces a `.dmg` for Apple
+      Silicon (not universal — Intel would be a second `--target` and a `lipo` of the
+      sidecar, which nobody has asked for); CI builds it unsigned on every PR and verifies
+      it with `app/scripts/verify-dmg.sh`, and a `v*` tag signs + notarises it with the
+      Developer ID certificate and notary credentials from secrets. No secret is in the
+      repository. *Built and verified. The signed half waits on the certificate: with no
+      `APPLE_*` secrets set, `release.yml` stops before building rather than publishing an
+      image Gatekeeper refuses.*
 - [ ] **AC24:** README's quickstart leads with "Download the app, open it, click Install";
       the Docker section follows unchanged. `docs/technical/feature-matrix.md`,
       `docs/architecture/overview.md` (a section for the app and the activity stream) and

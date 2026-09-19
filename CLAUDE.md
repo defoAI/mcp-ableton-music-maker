@@ -21,6 +21,8 @@ cargo fmt --all
 docker compose build                         # runtime image mcp-ableton-music-maker:local
 docker build --target test .                 # the suite inside the image
 docker/verify-image.sh mcp-ableton-music-maker:local     # the assertions CI runs on the image
+cd app && npm ci && npm run tauri -- build --target aarch64-apple-darwin   # the app + .dmg (Apple Silicon)
+app/scripts/verify-dmg.sh <dmg>              # the assertions CI runs on the disk image
 docker compose --profile install run --rm install-script   # Remote Script -> Live User Library
 ```
 

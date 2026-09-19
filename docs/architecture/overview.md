@@ -239,7 +239,16 @@ surface selected by hand.
 `rust` job: `cargo fmt --check`, `cargo clippy --all-targets -D warnings`, `cargo test`, and
 `scripts/check-docs-facts.sh`. `image` job: build the test stage, build and load the runtime
 stage, `verify-image.sh`, trivy on CRITICAL, and on `main` push to
-`ghcr.io/defoAI/mcp-ableton-music-maker` for amd64 and arm64.
+`ghcr.io/defoAI/mcp-ableton-music-maker` for amd64 and arm64. `mac-app` job, on an Apple
+Silicon runner: `tauri build --target aarch64-apple-darwin`, then `app/scripts/verify-dmg.sh`
+on what it produced, then the `.dmg` as a build artifact — unsigned, so it opens only on a
+machine it was not downloaded to.
+
+`.github/workflows/release.yml` is the same build on a `v*` tag, with Tauri signing against
+the Developer ID certificate and notarising from six repository secrets, verified with
+`EXPECT_SIGNED=1` (Developer ID authority, stapled ticket, Gatekeeper accepts) and attached
+to the GitHub release. It stops before building when a secret is missing: an unsigned
+download is not something to publish.
 
 ## Boundaries worth knowing
 

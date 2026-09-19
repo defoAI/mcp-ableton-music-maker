@@ -40,22 +40,65 @@ jobs:
       - name: Docs fact check
         run: scripts/check-docs-facts.sh
 
+  # macos-latest is Apple Silicon, and the app ships for M-series Macs. The
+  # bundle is signed ad-hoc here, not with a Developer ID and not notarised:
+  # it runs, but a Mac that downloads it refuses it until the quarantine flag
+  # is removed. A tag does it properly — .github/workflows/release.yml.
   mac-app:
     runs-on: macos-latest
     needs: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             . -> target
             app/src-tauri -> target
-      - name: Sidecar
-        run: app/scripts/build-sidecar.sh release
-      - name: Build the app crate (unsigned; bundling happens on a tag)
-        run: cargo build --release --locked
-        working-directory: app/src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Tauri CLI
+        run: npm ci
+        working-directory: app
+      # Two things make this reliable, and both are easy to lose:
+      # GitHub sets CI=true, which is what makes Tauri pass --skip-jenkins to
+      # bundle_dmg.sh — a runner has no Finder to send the cosmetic AppleScript
+      # to, and that step exits 64 when it cannot. And the ad-hoc identity "-"
+      # makes Tauri seal the bundle inside out; without it the app carries only
+      # the linker's own signature, has no _CodeSignature, and `codesign
+      # --verify` refuses it. Notarisation is skipped with a warning here.
+      - name: Bundle the app and the disk image
+        working-directory: app
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: npm run tauri -- build --target aarch64-apple-darwin
+      - name: Verify the disk image
+        run: app/scripts/verify-dmg.sh "$(ls app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ableton-music-maker-dmg-testing-only
+          path: app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+      - name: Say how to open it
+        run: |
+          {
+            echo "### Mac app disk image"
+            echo
+            echo "Artifact \`ableton-music-maker-dmg-testing-only\` — Apple Silicon, ad-hoc"
+            echo "signed, **not notarised**. macOS refuses a downloaded copy until the"
+            echo "quarantine flag is off:"
+            echo
+            echo '```bash'
+            echo 'xattr -dr com.apple.quarantine "/Applications/Ableton Music Maker.app"'
+            echo '```'
+            echo
+            echo "A \`v*\` tag builds the signed, notarised image that needs none of this."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # One native runner per architecture: a Rust release build under QEMU
   # emulation takes hours, a native one minutes.
