@@ -165,7 +165,8 @@ async fn start_performance_sets_quantization_fires_the_scene_and_guards() {
         .run(
             &tools::CAPTURE_MIX,
             CaptureMixParams {
-                start: 0.0,
+                start_bar: None,
+                start: Some(0.0),
                 bars: 4,
                 name: "x".into(),
             },
@@ -759,15 +760,15 @@ async fn every_performance_tool_is_listed_and_refuses_without_the_script() {
         .map(|t| t.name.to_string())
         .collect();
     for n in [
-        "start_performance",
-        "get_performance_state",
-        "cue",
-        "cancel_cue",
-        "fire_scene",
-        "create_scene",
+        "adv_start_performance",
+        "adv_get_performance_state",
+        "adv_cue",
+        "adv_cancel_cue",
+        "adv_fire_scene",
+        "adv_create_scene",
         "record_clip",
-        "set_launch_quantization",
-        "set_crossfader",
+        "adv_set_launch_quantization",
+        "adv_set_crossfader",
         "end_performance",
     ] {
         assert!(names.contains(&n.to_string()), "{n} missing");
@@ -776,7 +777,7 @@ async fn every_performance_tool_is_listed_and_refuses_without_the_script() {
     let cue = server
         .tool_list()
         .into_iter()
-        .find(|t| t.name == "cue")
+        .find(|t| t.name == "adv_cue")
         .unwrap();
     let schema = serde_json::to_string(&cue.input_schema).unwrap();
     for k in [
@@ -1207,7 +1208,7 @@ async fn listen_reads_meters_over_a_bar_without_touching_the_transport() {
     );
     let t = text_of(&r);
     assert!(t.starts_with("Listened for 0.25 bars from bar 15"), "{t}");
-    assert!(t.contains("Kick") && t.contains("peak 0.60"), "{t}");
+    assert!(t.contains("Kick") && t.contains("peak −4.4"), "{t}");
     assert!(t.contains("within 0.5 dB of clipping"), "{t}");
 }
 

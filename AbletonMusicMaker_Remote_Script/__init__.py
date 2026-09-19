@@ -28,7 +28,7 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.19.0"
+SCRIPT_VERSION = "1.22.0"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
@@ -125,6 +125,12 @@ SCRIPT_CAPABILITIES = [
     "get_grooves",
     "set_clip_groove",
     "set_device_parameters",
+    "place_clips",
+    "delete_arrangement_clips",
+    "duplicate_arrangement_clip",
+    "create_return_track",
+    "create_tracks",
+    "write_clips",
 ]
 
 def create_instance(c_instance):
@@ -415,7 +421,9 @@ class AbletonMCP(ControlSurface):
                                  "set_performance_mode", "set_scene", "start_live_capture",
                                  "snapshot_mix", "restore_mix",
                                  "capture_scene", "duplicate_scene", "set_clip_groove",
-                                 "set_device_parameters",
+                                 "set_device_parameters", "place_clips", "delete_arrangement_clips",
+                                 "duplicate_arrangement_clip", "create_return_track",
+                                 "create_tracks", "write_clips",
                                  # reads that touch a clip while it records: main thread only
                                  "capture_status", "list_captures",
                                  # output meters read as zero off the main thread
@@ -436,7 +444,7 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "set_track_name":
                             track_index = params.get("track_index", 0)
                             name = params.get("name", "")
-                            result = self._set_track_name(track_index, name)
+                            result = self._set_track_name(track_index, name, params.get("kind", "track"))
                         elif command_type == "create_clip":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -523,7 +531,8 @@ class AbletonMCP(ControlSurface):
                             result = self._set_track_mixer(
                                 params.get("track_index", 0), params.get("kind", "track"),
                                 params.get("volume"), params.get("pan"),
-                                params.get("mute"), params.get("solo"), params.get("arm"))
+                                params.get("mute"), params.get("solo"), params.get("arm"),
+                                params.get("volume_db"))
                         elif command_type == "set_send":
                             result = self._set_send(
                                 params.get("track_index", 0), params.get("kind", "track"),
@@ -577,6 +586,24 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "duplicate_scene":
                             result = self._duplicate_scene(
                                 params.get("index", 0), params.get("name"), params.get("phrase_bars"))
+                        elif command_type == "place_clips":
+                            result = self._place_clips(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("times", []))
+                        elif command_type == "delete_arrangement_clips":
+                            result = self._delete_arrangement_clips(
+                                params.get("track_index", 0), params.get("indices"),
+                                params.get("all", False), params.get("from_beat"), params.get("to_beat"))
+                        elif command_type == "duplicate_arrangement_clip":
+                            result = self._duplicate_arrangement_clip(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("times", []))
+                        elif command_type == "create_return_track":
+                            result = self._create_return_track(params.get("name"))
+                        elif command_type == "create_tracks":
+                            result = self._create_tracks(params.get("tracks", []))
+                        elif command_type == "write_clips":
+                            result = self._write_clips(params.get("clips", []))
                         elif command_type == "set_device_parameters":
                             result = self._set_device_parameters(
                                 params.get("track_index", 0), params.get("device_index", 0),
@@ -652,7 +679,8 @@ class AbletonMCP(ControlSurface):
                 
                 # create_audio_clip decodes/imports the file on the main
                 # thread and needs more than the default headroom.
-                long_running_commands = {"create_audio_clip": 60.0}
+                long_running_commands = {"create_audio_clip": 60.0, "create_tracks": 180.0,
+                                         "write_clips": 60.0}
                 queue_timeout = long_running_commands.get(command_type, 10.0)
                 try:
                     task_response = response_queue.get(timeout=queue_timeout)
@@ -942,14 +970,10 @@ class AbletonMCP(ControlSurface):
             raise
 
 
-    def _set_track_name(self, track_index, name):
-        """Set the name of a track"""
+    def _set_track_name(self, track_index, name, kind="track"):
+        """Set the name of a track (or a return track with kind 'return')"""
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            
-            # Set the name
-            track = self._song.tracks[track_index]
+            track = self._resolve_track(track_index, kind)
             track.name = name
             
             result = {
@@ -1510,10 +1534,49 @@ class AbletonMCP(ControlSurface):
             raise IndexError("%s index %d out of range (0-%d)" % (kind, track_index, len(tracks) - 1))
         return tracks[track_index]
 
+    def _volume_db(self, param):
+        """Live's own reading of a volume fader ("-6.0 dB") as a number; -inf as -80."""
+        try:
+            text = "%s" % param.value_string
+        except Exception:
+            try:
+                text = "%s" % param.str_for_value(param.value)
+            except Exception:
+                return None
+        text = text.replace("dB", "").strip()
+        if "inf" in text:
+            return -80.0
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def _value_for_db(self, param, db):
+        """The fader value whose display reads `db`, by bisection over Live's own curve."""
+        target = float(db)
+        if target <= -70.0:
+            return float(param.min)
+        lo, hi = float(param.min), float(param.max)
+        for _ in range(40):
+            mid = (lo + hi) / 2.0
+            try:
+                text = ("%s" % param.str_for_value(mid)).replace("dB", "").strip()
+                shown = -80.0 if "inf" in text else float(text)
+            except Exception:
+                return max(lo, min(hi, 0.85 + target / 60.0))
+            if shown < target:
+                lo = mid
+            else:
+                hi = mid
+            if hi - lo < 1e-6:
+                break
+        return (lo + hi) / 2.0
+
     def _mixer_state(self, track):
         state = {
             "name": track.name,
             "volume": float(track.mixer_device.volume.value),
+            "volume_db": self._volume_db(track.mixer_device.volume),
             "panning": float(track.mixer_device.panning.value),
             "sends": self._serialize_sends(track),
         }
@@ -1529,11 +1592,16 @@ class AbletonMCP(ControlSurface):
             pass
         return state
 
-    def _set_track_mixer(self, track_index, kind, volume, pan, mute, solo, arm):
+    def _set_track_mixer(self, track_index, kind, volume, pan, mute, solo, arm, volume_db=None):
         """Volume, pan, mute, solo and arm in one call; unspecified values stay."""
         try:
             track = self._resolve_track(track_index, kind)
             is_master = str(kind or "track").lower() == "master"
+            if volume_db is not None:
+                db = float(volume_db)
+                if db > 6.0:
+                    raise ValueError("a fader goes up to +6 dB")
+                track.mixer_device.volume.value = self._value_for_db(track.mixer_device.volume, db)
             if volume is not None:
                 v = float(volume)
                 if v < 0.0 or v > 1.0:
@@ -1572,6 +1640,7 @@ class AbletonMCP(ControlSurface):
                     "letter": letters[i] if i < len(letters) else str(i),
                     "name": track.name,
                     "volume": float(track.mixer_device.volume.value),
+                    "volume_db": self._volume_db(track.mixer_device.volume),
                     "mute": bool(track.mute),
                     "devices": [d.name for d in track.devices],
                 })
@@ -1723,6 +1792,209 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error reading drum rack pads: " + str(e))
+            raise
+
+    def _place_clips(self, track_index, clip_index, times):
+        """A Session clip placed at several Arrangement times in one round trip."""
+        try:
+            track = self._resolve_track(track_index)
+            slots = list(track.clip_slots)
+            ci = int(clip_index)
+            if ci < 0 or ci >= len(slots) or not slots[ci].has_clip:
+                raise ValueError("slot %d on '%s' holds no clip" % (ci, track.name))
+            clip = slots[ci].clip
+            placed, failed = [], []
+            for t in list(times or []):
+                try:
+                    track.duplicate_clip_to_arrangement(clip, float(t))
+                    placed.append(float(t))
+                except Exception as e:
+                    failed.append({"time": float(t), "error": str(e)})
+            return {"track": "%s" % track.name, "clip": "%s" % clip.name, "length": float(clip.length),
+                    "placed": placed, "failed": failed,
+                    "arrangement_clips": len(list(track.arrangement_clips))}
+        except Exception as e:
+            self.log_message("Error placing clips: " + str(e))
+            raise
+
+    def _delete_arrangement_clips(self, track_index, indices=None, all_clips=False, from_beat=None, to_beat=None):
+        """Several Arrangement clips of one track in one round trip: by index,
+        every one, or every one that starts inside [from_beat, to_beat)."""
+        try:
+            track = self._resolve_track(track_index)
+            clips = list(track.arrangement_clips)
+            chosen = []
+            if all_clips:
+                chosen = list(range(len(clips)))
+            elif indices is not None:
+                chosen = [int(i) for i in indices]
+            else:
+                lo = float(from_beat) if from_beat is not None else float("-inf")
+                hi = float(to_beat) if to_beat is not None else float("inf")
+                chosen = [i for i, c in enumerate(clips) if lo <= float(c.start_time) < hi]
+            for i in chosen:
+                if i < 0 or i >= len(clips):
+                    raise IndexError("Arrangement clip index %d out of range; track has %d" % (i, len(clips)))
+            removed = []
+            for i in sorted(set(chosen), reverse=True):
+                c = clips[i]
+                removed.append({"index": i, "name": "%s" % c.name, "start_time": float(c.start_time),
+                                "end_time": float(c.end_time)})
+                track.delete_clip(c)
+            removed.reverse()
+            return {"track": "%s" % track.name, "removed": removed,
+                    "remaining": len(list(track.arrangement_clips))}
+        except Exception as e:
+            self.log_message("Error deleting arrangement clips: " + str(e))
+            raise
+
+    def _duplicate_arrangement_clip(self, track_index, clip_index, times):
+        """Copies of an Arrangement clip at other Arrangement times (Live 11+)."""
+        try:
+            track = self._resolve_track(track_index)
+            clips = list(track.arrangement_clips)
+            ci = int(clip_index)
+            if ci < 0 or ci >= len(clips):
+                raise IndexError("Arrangement clip index %d out of range; track has %d" % (ci, len(clips)))
+            clip = clips[ci]
+            placed, failed = [], []
+            for t in list(times or []):
+                try:
+                    track.duplicate_clip_to_arrangement(clip, float(t))
+                    placed.append(float(t))
+                except Exception as e:
+                    failed.append({"time": float(t), "error": str(e)})
+            return {"track": "%s" % track.name, "clip": "%s" % clip.name,
+                    "length": float(clip.end_time) - float(clip.start_time),
+                    "placed": placed, "failed": failed,
+                    "arrangement_clips": len(list(track.arrangement_clips))}
+        except Exception as e:
+            self.log_message("Error duplicating arrangement clip: " + str(e))
+            raise
+
+    def _live_notes(self, notes):
+        """Note objects as the tuples clip.set_notes takes."""
+        out = []
+        for note in notes or []:
+            out.append((int(note.get("pitch", 60)), float(note.get("start_time", 0.0)),
+                        float(note.get("duration", 0.25)), int(round(float(note.get("velocity", 100)))),
+                        bool(note.get("mute", False))))
+        return tuple(out)
+
+    def _create_tracks(self, tracks):
+        """Several tracks in one round trip: create, name, load the instrument
+        or effect by URI, set the fader (dB or raw), pan, colour and sends.
+        Stops at the first failure and reports how far it got."""
+        created = []
+        try:
+            for spec in list(tracks or []):
+                kind = str(spec.get("kind") or "midi").lower()
+                if kind == "audio":
+                    self._create_audio_track(-1)
+                else:
+                    self._create_midi_track(-1)
+                index = len(self._song.tracks) - 1
+                track = self._song.tracks[index]
+                entry = {"index": index, "name": "%s" % track.name}
+                name = spec.get("name")
+                if name:
+                    track.name = "%s" % name
+                    entry["name"] = "%s" % track.name
+                uri = spec.get("instrument_uri")
+                if uri:
+                    loaded = self._load_browser_item(index, uri, "track")
+                    dev = loaded.get("loaded_device") or {}
+                    entry["device"] = dev.get("name")
+                if spec.get("volume_db") is not None or spec.get("volume") is not None or spec.get("pan") is not None:
+                    self._set_track_mixer(index, "track", spec.get("volume"), spec.get("pan"),
+                                          None, None, None, spec.get("volume_db"))
+                for send in list(spec.get("sends") or []):
+                    self._set_send(index, "track", send.get("index"), send.get("name"), send.get("value", 0.0))
+                if spec.get("color_index") is not None:
+                    try:
+                        track.color_index = int(spec.get("color_index"))
+                    except Exception as e:
+                        entry["color_error"] = str(e)
+                created.append(entry)
+            return {"created": created}
+        except Exception as e:
+            self.log_message("Error creating tracks: " + str(e))
+            raise RuntimeError("after %d of %d tracks (%s): %s" % (
+                len(created), len(list(tracks or [])), ", ".join(c["name"] for c in created), str(e)))
+
+    def _write_clips(self, clips):
+        """Several Session clips in one round trip: each entry creates the
+        clip at {track_index, clip_index} with `length`, names it and writes
+        its `notes`; an entry with `copy_of` copies the notes of that slot on
+        the same track inside Live instead (the notes travel once). Every
+        slot is checked before the first clip is made."""
+        try:
+            song = self._song
+            specs = list(clips or [])
+            for i, spec in enumerate(specs):
+                ti, ci = int(spec.get("track_index", -1)), int(spec.get("clip_index", -1))
+                if ti < 0 or ti >= len(song.tracks):
+                    raise IndexError("clip %d: track index %d out of range" % (i + 1, ti))
+                slots = list(song.tracks[ti].clip_slots)
+                if ci < 0 or ci >= len(slots):
+                    raise IndexError("clip %d: slot %d out of range on '%s' (create_scene adds rows)" % (i + 1, ci, song.tracks[ti].name))
+                if slots[ci].has_clip:
+                    raise ValueError("clip %d: slot %d on '%s' already holds a clip" % (i + 1, ci, song.tracks[ti].name))
+            written = []
+            try:
+                for spec in specs:
+                    ti, ci = int(spec.get("track_index")), int(spec.get("clip_index"))
+                    track = song.tracks[ti]
+                    slot = track.clip_slots[ci]
+                    source = spec.get("copy_of")
+                    notes = spec.get("notes")
+                    length = spec.get("length")
+                    if source is not None:
+                        src_slot = track.clip_slots[int(source)]
+                        if not src_slot.has_clip:
+                            raise ValueError("copy_of: slot %d on '%s' holds no clip" % (int(source), track.name))
+                        src = src_slot.clip
+                        if length is None:
+                            length = float(src.length)
+                        if notes is None:
+                            notes = self._notes_from_clip(src)
+                        if not spec.get("name"):
+                            spec = dict(spec, name="%s" % src.name)
+                    slot.create_clip(float(length or 4.0))
+                    clip = slot.clip
+                    if spec.get("name"):
+                        clip.name = "%s" % spec.get("name")
+                    live_notes = self._live_notes(notes)
+                    if live_notes:
+                        clip.set_notes(live_notes)
+                    written.append({"track_index": ti, "clip_index": ci, "name": "%s" % clip.name,
+                                    "length": float(clip.length), "notes": len(live_notes),
+                                    "copied": source is not None})
+            except Exception as e:
+                raise RuntimeError("after %d of %d clips: %s" % (len(written), len(specs), str(e)))
+            return {"written": written}
+        except Exception as e:
+            self.log_message("Error writing clips: " + str(e))
+            raise
+
+    def _create_return_track(self, name=None):
+        """A new return track at the end (Song.create_return_track), optionally named."""
+        try:
+            song = self._song
+            before = len(song.return_tracks)
+            song.create_return_track()
+            returns = list(song.return_tracks)
+            if len(returns) <= before:
+                raise RuntimeError("Live did not add a return track (the limit is 12)")
+            track = returns[-1]
+            if name:
+                track.name = "%s" % name
+            letters = "ABCDEFGHIJKL"
+            i = len(returns) - 1
+            return {"index": i, "letter": letters[i] if i < len(letters) else str(i),
+                    "name": "%s" % track.name, "return_count": len(returns)}
+        except Exception as e:
+            self.log_message("Error creating return track: " + str(e))
             raise
 
     def _delete_arrangement_clip(self, track_index, clip_index):
@@ -3514,7 +3786,9 @@ class AbletonMCP(ControlSurface):
                 cur = {"bar": bar, "master": 0.0, "tracks": [0.0] * len(tracks)}
                 self._bar_peaks = cur
             if len(cur["tracks"]) != len(tracks):
+                # tracks were added or removed: the old peaks name the wrong rows
                 cur["tracks"] = [0.0] * len(tracks)
+                self._last_bar_peaks = None
             cur["master"] = max(cur["master"], master)
             cur["tracks"] = [max(a, b) for a, b in zip(cur["tracks"], tracks)]
             idx = self._current_scene
@@ -3705,6 +3979,8 @@ class AbletonMCP(ControlSurface):
         if s["action"] == "ramp":
             out["end_beat"] = s.get("end_beat")
             out["to"] = s.get("to")
+            if s.get("to_db") is not None:
+                out["to_db"] = s.get("to_db")
         return out
 
     def _public_cue(self, c):
@@ -3978,6 +4254,7 @@ class AbletonMCP(ControlSurface):
                     "mute": bool(self._safe_attr(t, "mute", bool, False)),
                     "solo": bool(self._safe_attr(t, "solo", bool, False)),
                     "volume": float(t.mixer_device.volume.value),
+                    "volume_db": self._volume_db(t.mixer_device.volume),
                     "panning": float(t.mixer_device.panning.value),
                     "color_index": self._safe_attr(t, "color_index", int, None),
                     "devices": devices,
@@ -3997,6 +4274,7 @@ class AbletonMCP(ControlSurface):
                     "name": str(r.name),
                     "devices": [str(d.name) for d in r.devices],
                     "volume": float(r.mixer_device.volume.value),
+                    "volume_db": self._volume_db(r.mixer_device.volume),
                 })
             scenes = []
             for sc in perf.get("scenes", []):
@@ -4026,6 +4304,7 @@ class AbletonMCP(ControlSurface):
                     "loop_length": self._safe_song_property("loop_length", float, 0.0),
                     "song_length": self._safe_song_property("song_length", float, 0.0),
                     "master_volume": float(song.master_track.mixer_device.volume.value),
+                    "master_volume_db": self._volume_db(song.master_track.mixer_device.volume),
                 },
                 "tracks": tracks,
                 "returns": returns,
@@ -4065,8 +4344,10 @@ class AbletonMCP(ControlSurface):
                 raise ValueError("target must be one of %s" % ", ".join(self.CUE_TARGETS))
             self._perf_param(step)  # raises if the track, device or parameter is missing
             key = "value" if action == "set" else "to"
-            if step.get(key) is None:
-                raise ValueError("a %s step needs '%s'" % (action, key))
+            if step.get(key) is None and step.get(key + "_db") is None:
+                raise ValueError("a %s step needs '%s' (or '%s_db' for a fader)" % (action, key, key))
+            if step.get(key + "_db") is not None and step.get("target") != "volume":
+                raise ValueError("'%s_db' is for volume steps" % key)
             if step.get("target") == "tempo":
                 t = float(step.get(key))
                 if t < 20.0 or t > 999.0:
@@ -4241,7 +4522,10 @@ class AbletonMCP(ControlSurface):
             elif action == "stop_playback":
                 self._song.stop_playing()
             elif action == "set":
-                self._perf_write(step, float(step.get("value")))
+                if step.get("value_db") is not None:
+                    self._perf_write(step, self._value_for_db(self._perf_param(step)[1], float(step.get("value_db"))))
+                else:
+                    self._perf_write(step, float(step.get("value")))
             elif action == "restore_mix":
                 self._restore_mix(step.get("snapshot_id"))
             self._perf_event("cue_step_fired", detail)
@@ -4256,6 +4540,9 @@ class AbletonMCP(ControlSurface):
                   "label": step.get("label"), "target": step.get("target"), "to": step.get("to")}
         try:
             if step.get("from_value") is None:
+                if step.get("to_db") is not None:
+                    # A fader ramp given in dB: the target on Live's own curve.
+                    step["to"] = self._value_for_db(self._perf_param(step)[1], float(step.get("to_db")))
                 step["from_value"] = self._perf_read(step)
                 detail["from"] = step["from_value"]
                 self._perf_event("ramp_started", dict(detail, action="ramp", issued_at=now))

@@ -868,31 +868,31 @@ async fn make_section_captures_copies_with_changes_or_writes_from_clips() {
     let cmds = b.commands()[before..].to_vec();
     assert_eq!(
         cmds,
-        vec![
-            "get_performance_state",
-            "create_scene",
-            "create_clip",
-            "set_clip_name",
-            "add_notes_to_clip",
-            "create_clip",
-            "set_clip_name",
-            "add_notes_to_clip"
-        ]
+        vec!["get_performance_state", "create_scene", "write_clips"]
     );
     let sent = b.sent();
     assert_eq!(
         sent[before + 1].1,
         json!({"index": 4, "name": "Dark · 8", "tempo": null})
     );
+    let written = sent[before + 2].1["clips"].as_array().unwrap().clone();
+    assert_eq!(written.len(), 2, "both clips in one round trip");
     assert_eq!(
-        sent[before + 2].1,
-        json!({"track_index": 2, "clip_index": 4, "length": 8.0}),
+        (
+            written[0]["track_index"].as_i64(),
+            written[0]["clip_index"].as_i64(),
+            written[0]["length"].as_f64()
+        ),
+        (Some(2), Some(4), Some(8.0)),
         "Bass: the given length"
     );
-    assert_eq!(sent[before + 3].1["name"], "Dark/Bass");
+    assert_eq!(written[0]["name"], "Dark/Bass");
     assert_eq!(
-        sent[before + 5].1,
-        json!({"track_index": 0, "clip_index": 4, "length": 4.0}),
+        (
+            written[1]["track_index"].as_i64(),
+            written[1]["length"].as_f64()
+        ),
+        (Some(0), Some(4.0)),
         "Kick: a 16-step string is one bar"
     );
     let t = text_of(&r);

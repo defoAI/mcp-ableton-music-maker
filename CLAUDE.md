@@ -14,7 +14,7 @@ Rust MCP server that lets Claude drive Ableton Live. Two processes:
 ## Commands
 
 ```bash
-cargo test                                   # 15 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, library, local-only, activity, stdio
+cargo test                                   # 16 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, local-only, activity, stdio
 cd app && npm run dev                        # the Mac app against this checkout (Tauri 2)
 cargo clippy --all-targets -- -D warnings    # CI runs this
 cargo fmt --all
@@ -31,7 +31,7 @@ No Rust toolchain on the machine? Build inside `rust:1-slim-bookworm` with the r
 ```
 src/connection.rs      LiveBridge trait, AbletonConnection (TCP), RealBridge (reconnecting), LiveError
 src/handshake.rs       get_script_info handshake, ScriptInfoCache, per-command capability check
-src/tools.rs           Server, ToolSpec, the 94 tool bodies and their #[tool] bindings, run() wrapper
+src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 99 tool bodies and their #[tool] bindings, run() wrapper
 src/activity.rs        the local activity log: one JSON line per tool call, payloads off by default
 src/state.rs           state_dir / activity_dir / sessions_dir — the only places the server writes
 src/install.rs         installer logic (Library.cfg discovery, install with .bak)
@@ -48,7 +48,8 @@ src/sections.rs        make_section, set_song and its edits, play_song, the stee
 src/transition.rs      a jump's transition (tempo, retime, crossfade, fill, drop, sweep) composed into cue primitives
 src/sound.rs           the sound vocabulary: words → rack macros, the per-instrument table, or a parameter name — pure
 src/sets.rs            export_set / import_set: a rebuildable document under state_dir()/sets, written only on request
-tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, library.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
+src/arrange.rs         the artist-facing tools: arrange (bars), feel (one tool, one undo), set_key, create_return, clear_captures
+tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
 docker/                verify-image.sh, Claude Desktop example config
 .github/workflows/ci.yml   fmt, clippy, test; image build, verify, trivy, push to GHCR on main
 ```
@@ -86,6 +87,43 @@ docker/                verify-image.sh, Claude Desktop example config
   are the Mac app's API; a signature change there breaks `app/src-tauri`. The app is not a
   workspace member — it has its own `Cargo.lock` so the Dockerfile's dependency layer stays
   untouched.
+
+## The tool surface — decision 0006, do not drift from it
+
+The server presents **the artist's set** and keeps the raw layer served but marked. The
+rule set lives in [`docs/decisions/0006`](docs/decisions/0006-one-artist-surface-raw-layer-marked-advanced.md);
+the short form:
+
+- **`CORE_TOOLS` in `src/tools.rs` is the surface**: Look (`get_context`), Build
+  (`build_song`, `make_section`, `create_clip`, `add_notes_to_clip`, `load_instrument_or_effect`,
+  `search_browser`, `set_key`, `set_tempo`), Shape (`shape_sound`, `feel`, `set_track_mixer`,
+  `set_send`, `create_return`), Arrange (`set_song`, `add_to_song`, `remove_from_song`,
+  `arrange`, `create_locator`), Play (`play_song`, `go`, `jump_to`, `back`, `hold_section`,
+  `next_section`, `previous_section`, `record_clip`, `capture_mix`, `clear_captures`,
+  `end_performance`), plus `delete_track`, `delete_clip`, `export_set`, `import_set`, `batch`.
+  Every other tool is served as `adv_<name>` (`adv_fire_scene`, `adv_cue`) — never hidden,
+  never gated by an environment variable (that was tried and rejected: the person at the
+  client decides). The prefix keeps the two sets from competing in a client's list and in a
+  tool search; `batch` accepts either spelling. `tests/artist.rs` pins both.
+- **Before adding a tool, extend an artist tool.** Feel is `feel` (modes, one undo); sound is
+  `shape_sound` (words, then any parameter by name); the Arrangement is `arrange` (actions);
+  sections and songs are `make_section` / `set_song` / `play_song` and the steering verbs. A
+  new capability becomes a mode or an action there first; only a new *intent* becomes a tool,
+  and the PR says which group it joins or that it is advanced.
+- **Units are the artist's**: faders and levels in dB — `volume` *is* dB everywhere it is
+  written or read, `fader` is Live's raw 0–1 parameter, meters read dB with 0 dB the top —
+  Arrangement positions as Live's 1-based bars (`at_bar`, `from_bar`, `start_bar`), note
+  times inside a clip in beats. A beat form may stay as the optional second parameter. Say
+  "section", not "scene", outside the `adv_` tools.
+- **Descriptions say what the artist gets.** No round-trip counts, no "the Remote Script
+  executes on its own clock" — that belongs in `docs/architecture/overview.md`. What the
+  Live API cannot do (save the set, automate an Arrangement clip) is said once: in the
+  instructions and in the one tool concerned.
+- **Every tool carries the MCP annotations** (`readOnlyHint`, `destructiveHint`,
+  `openWorldHint: false`), set from its name in `annotations_for`; a new `get_*`, `list_*`,
+  `delete_*` or `clear_*` name gets them for free.
+- **Stories and issues are read against this list.** A proposal that says "new tool X" is
+  answered with the artist tool it extends, or with "advanced", before any code.
 
 ## Product management — `docs/`
 

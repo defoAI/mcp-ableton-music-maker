@@ -9,6 +9,7 @@
 | Field | Value |
 |-------|-------|
 | Status | `In Progress` |
+| Surface | [Decision 0006](../../decisions/0006-one-artist-surface-raw-layer-marked-advanced.md): the app adds no tool; its activity view sees every tool name, the `adv_` ones included, and "Delete all local data" removes the set exports and the library index too |
 | Priority | P1 — the first thing a producer sees; today's first thing is Docker Desktop |
 | Size | L — split into the three phases in Implementation Notes; each ships on its own |
 | Tracker | — |

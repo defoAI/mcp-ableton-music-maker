@@ -9,6 +9,7 @@
 | Field | Value |
 |-------|-------|
 | Status | `In Progress` — phases 1 and 2 built; awaiting the real-Live pass |
+| Surface | [Decision 0006](../../decisions/0006-one-artist-surface-raw-layer-marked-advanced.md): `capture_mix` is the artist's tool and takes `start_bar`; `clear_captures` removes the Capture track it makes; `list_captures`, `measure_capture`, `play_and_measure` and `get_track_meters` are the raw layer (served as `adv_…`) and report dB. "The set is unsaved" is said once, in the instructions, not per reply |
 | Priority | P1 — the artist's session ended with "I never heard the track"; `play_and_measure` reports levels, not sound |
 | Size | L — three phases below; the Live-side capture ships first and is useful alone |
 | Tracker | [#26](https://github.com/defoAI/mcp-ableton-music-maker/issues/26) |

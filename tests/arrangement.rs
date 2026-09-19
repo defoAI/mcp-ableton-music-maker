@@ -131,6 +131,9 @@ async fn duplicate_places_a_range_in_one_call() {
         start: Some(32.0),
         end: Some(96.0),
         step: Some(4.0),
+        at_bar: None,
+        until_bar: None,
+        every_bars: None,
     };
     let r = server
         .run(
@@ -143,12 +146,14 @@ async fn duplicate_places_a_range_in_one_call() {
     let sent: Vec<Value> = bridge
         .sent()
         .into_iter()
-        .filter(|(c, _)| c == "duplicate_session_clip_to_arrangement")
+        .filter(|(c, _)| c == "place_clips")
         .map(|(_, a)| a)
         .collect();
-    assert_eq!(sent.len(), 16);
-    assert_eq!(sent[0]["destination_time"], 32.0);
-    assert_eq!(sent[15]["destination_time"], 92.0);
+    assert_eq!(sent.len(), 1, "every copy in one round trip");
+    let times = sent[0]["times"].as_array().unwrap();
+    assert_eq!(times.len(), 16);
+    assert_eq!(times[0], 32.0);
+    assert_eq!(times[15], 92.0);
     assert_eq!(
         bridge.commands()[0],
         "get_arrangement_clips",
@@ -169,6 +174,9 @@ async fn duplicate_single_and_list_forms_still_work() {
         start: None,
         end: None,
         step: None,
+        at_bar: None,
+        until_bar: None,
+        every_bars: None,
     };
     let r = server
         .run(
@@ -181,8 +189,8 @@ async fn duplicate_single_and_list_forms_still_work() {
     let times: Vec<Value> = bridge
         .sent()
         .iter()
-        .filter(|(c, _)| c == "duplicate_session_clip_to_arrangement")
-        .map(|(_, a)| a["destination_time"].clone())
+        .filter(|(c, _)| c == "place_clips")
+        .flat_map(|(_, a)| a["times"].as_array().cloned().unwrap_or_default())
         .collect();
     assert_eq!(times, vec![json!(0.0), json!(8.0), json!(16.0)]);
     assert!(text_of(&r).contains("0, 8, 16"), "{}", text_of(&r));
@@ -195,6 +203,9 @@ async fn duplicate_single_and_list_forms_still_work() {
         start: Some(0.0),
         end: None,
         step: None,
+        at_bar: None,
+        until_bar: None,
+        every_bars: None,
     };
     let r = server
         .run(
@@ -220,11 +231,18 @@ async fn duplicate_reports_how_far_it_got_on_failure() {
         start: None,
         end: None,
         step: None,
+        at_bar: None,
+        until_bar: None,
+        every_bars: None,
     };
-    // Call 0 is the overlap read; placements are calls 1, 2, 3.
-    bridge.fail_from(
-        3,
-        mcp_ableton_music_maker::connection::LiveError::Ableton("Track is frozen".into()),
+    // Call 0 is the overlap read; call 1 places every copy in one round trip
+    // and the script reports the ones Live refused.
+    bridge.script(
+        "place_clips",
+        vec![
+            json!({"track": "Drums", "clip": "Kick", "length": 4.0, "placed": [0.0, 4.0],
+                    "failed": [{"time": 8.0, "error": "Track is frozen"}], "arrangement_clips": 2}),
+        ],
     );
     let r = server
         .run(
@@ -235,9 +253,12 @@ async fn duplicate_reports_how_far_it_got_on_failure() {
         .await;
     assert!(is_error(&r));
     let t = text_of(&r);
-    assert!(t.contains("Placed 2 of 3 (at beats 0, 4)"), "{t}");
+    assert!(
+        t.contains("Placed 2 of 3, but 1 could not be placed"),
+        "{t}"
+    );
     assert!(t.contains("beat 8") && t.contains("Track is frozen"), "{t}");
-    assert_eq!(bridge.sent().len(), 4, "stops at the first failure");
+    assert_eq!(bridge.sent().len(), 2, "one read, one placement round trip");
 }
 
 #[tokio::test]
@@ -303,7 +324,7 @@ async fn schema_defaults_make_snapshot_compact_and_notes_optional() {
     let tools = server.tool_list();
     let snap = tools
         .iter()
-        .find(|t| t.name == "get_session_snapshot")
+        .find(|t| t.name == "adv_get_session_snapshot")
         .unwrap();
     let schema = serde_json::to_value(&snap.input_schema).unwrap();
     assert_eq!(schema["properties"]["compact"]["default"], true, "{schema}");

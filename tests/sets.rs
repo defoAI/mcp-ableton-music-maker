@@ -220,15 +220,8 @@ async fn import_set_validates_refuses_an_occupied_set_and_rebuilds_through_build
                "tracks": [{"index": 0, "name": "Kick", "slots_with_clips": [0, 1]}, {"index": 1, "name": "Bass", "slots_with_clips": [1]}]}),
     ]);
     b.script(
-        "create_midi_track",
-        vec![
-            json!({"index": 0, "name": "1-MIDI"}),
-            json!({"index": 1, "name": "2-MIDI"}),
-        ],
-    );
-    b.script(
-        "create_audio_track",
-        vec![json!({"index": 2, "name": "3-Audio"})],
+        "create_tracks",
+        vec![json!({"created": [{"index": 0, "name": "Kick"}, {"index": 1, "name": "Bass"}, {"index": 2, "name": "Vox"}]})],
     );
     b.script(
         "set_scale",
@@ -258,22 +251,36 @@ async fn import_set_validates_refuses_an_occupied_set_and_rebuilds_through_build
     let cmds = b.commands()[before..].to_vec();
     assert_eq!(
         cmds[..3],
-        ["get_context", "set_tempo", "get_performance_state"]
+        ["get_context", "set_scale", "set_tempo"],
+        "the key is set before anything is written"
     );
     assert_eq!(
         cmds.iter().filter(|c| *c == "create_scene").count(),
         3,
         "two sections and the Setlist: scene: {cmds:?}"
     );
-    assert_eq!(cmds.iter().filter(|c| *c == "create_midi_track").count(), 2);
+    let tracks = b
+        .sent()
+        .iter()
+        .find(|(c, _)| c == "create_tracks")
+        .map(|(_, p)| p["tracks"].clone())
+        .unwrap();
     assert_eq!(
-        cmds.iter().filter(|c| *c == "create_audio_track").count(),
-        1
-    );
-    assert_eq!(
-        cmds.iter().filter(|c| *c == "create_clip").count(),
+        tracks.as_array().unwrap().len(),
         3,
-        "the audio clip is not rebuilt"
+        "every track in one round trip"
+    );
+    assert_eq!(tracks[2]["kind"], "audio");
+    let clips = b
+        .sent()
+        .iter()
+        .find(|(c, _)| c == "write_clips")
+        .map(|(_, p)| p["clips"].clone())
+        .unwrap();
+    assert_eq!(
+        clips.as_array().unwrap().len(),
+        3,
+        "the audio clip is not rebuilt; the MIDI clips go in one round trip"
     );
     assert!(cmds.contains(&"set_scale".to_string()));
     let scene_names: Vec<String> = b.sent()[before..]
@@ -288,7 +295,7 @@ async fn import_set_validates_refuses_an_occupied_set_and_rebuilds_through_build
     let t = text_of(&r);
     assert!(t.starts_with("Rebuilding 'friday' ("), "{t}");
     assert!(
-        t.contains("Key F Minor set in Live.") && t.contains("Song: Intro×2 → Groove."),
+        t.contains("Key F Minor") && t.contains("Song: Intro×2 → Groove."),
         "{t}"
     );
     assert!(

@@ -12,20 +12,24 @@ use serde_json::Value;
 /// do not.
 pub const INSTRUCTIONS: &str = "AbletonMusicMaker drives a running Ableton Live set through its Remote Script (third-party, not made by Ableton).
 
-START with get_context: one call returns the set (tempo, key, position, quantization), every track with its devices, clips by slot and play state, the returns, the scenes, and the performance clock. Only reach for get_session_info, get_session_snapshot or get_library_status when you need notes, device parameters or the full browser inventory.
+START with get_context: one call returns the set (tempo, key, position), every track with its devices, clips by slot and play state, the returns, the sections and the song, and the performance clock.
 
-MAKING MUSIC: build_song builds a whole set from one document: tracks (instrument as a browser URI or plain words, searched for you), Session clips with notes in compact forms (step strings per pitch, notes_csv lines, patterns, loop_every tiling), `slots` for copies in several scene rows, Arrangement placements and locators. It validates everything before the first command reaches Live; dry_run previews. Edit afterwards with create_clip and add_notes_to_clip (same note forms), set_track_mixer (0.85 = 0 dB), set_send, load_instrument_or_effect, set_clip_automation, duplicate_to_arrangement. Tracks and scenes are addressed by name or index wherever asked.
+UNITS: faders and levels are in dB (0 dB is unity; the master's meter tops at 0 dB); positions in the arrangement are Live's 1-based bars; note times inside a clip are beats. Live's API cannot save the set: the producer presses Cmd+S in Live, and that is said once here, not in every reply.
 
-HEARING IT: capture_mix records N bars of the master through a Capture track and reports peak, RMS per bar, silent bars, clipping and stereo width; play_and_measure is the cheap meter-only check. Nothing leaves the machine.
+MAKING MUSIC: build_song builds a whole set from one document: key, tempo, sections (scene rows with phrase lengths), tracks (instrument as plain words, searched for you, or a browser URI), Session clips with notes in compact forms (step strings per pitch, notes_csv lines, patterns, loop_every tiling), `slots` for copies in several rows, Arrangement placements and locators. It validates everything before the first command reaches Live; dry_run previews. Afterwards: create_clip and add_notes_to_clip (same note forms), set_key, set_tempo, load_instrument_or_effect (words or URI; kind return/master for effects), create_return, set_track_mixer (volume_db), set_send, shape_sound (cutoff, attack, reverb … as words, or any parameter by name), feel (swing, humanize, groove, retime, a variation; undo: true), arrange (place, repeat, move, delete, shorten, list — in bars). Tracks and sections are addressed by name.
+
+HEARING IT: capture_mix records N bars of the master through a Capture track and reports peak, RMS per bar, silent bars, clipping and stereo width; clear_captures removes that track when you are done. Nothing leaves the machine.
 
 SECTIONS AND SONGS: a section is a scene row named \"<name> · <bars>\" (its phrase length; Live's Save keeps it). make_section makes one from what plays, as a copy of another with per-track changes, or from clips per track. set_song writes the setlist into the 'Setlist:' scene: an entry without repeats loops until the performer says go. play_song fires the first section and cues the counted jumps; then go (end of the playing phrase, or at: next_bar which cuts it short and says so), hold_section, next_section, previous_section, back (the jump history) and jump_to {section, repeats, at, transition} steer it — each is one state read and one cue, and a jump into a section that ran more than 3 dB hotter warns. The level line (🔊) rides under the clock line on every reply while performing.
 
 PERFORMING: start_performance (1-bar launch quantization, disarms tracks, sets the key, fires the first scene, turns on guards). Then cue for anything timed: steps at bar numbers (\"next_bar\", {\"bar\": N}, {\"bars_after\": k}) with fire_scene, fire_clip, stop_clip, set, or a ramp of tempo, crossfader or volume over bars. The Remote Script runs cues on Live's own clock, so plan two bars ahead and never try to hit a beat with a tool call. get_performance_state tells you the bar, what plays, what is queued and what fired since you last asked. keep_track_playing lets a layer added mid-set survive scene changes. record_clip records the producer playing. While a performance runs, stop_playback, set_tempo, playhead moves, capture_mix and deleting playing clips are refused with the on-the-bar alternative; end_performance stops on the bar, fades, or now.
 
-RULES: Live's bar numbers are 1-based. Every launch lands on the next bar. A scene launch stops tracks without a clip in that row (unless keep_track_playing). A fresh Live 12 set sits in its default C Major scale: pass the key you mean. Live arms new MIDI tracks by itself: an armed track with an empty slot records on a scene launch.";
+RULES: Live's bar numbers are 1-based. Every launch lands on the next bar. A section launch stops tracks without a clip in that row (unless keep_track_playing). A fresh Live 12 set sits in its default C Major scale: set_key first. Live arms new MIDI tracks by itself: an armed track with an empty slot records on a scene launch.
+
+THE SURFACE: the tools without a prefix are the artist's set and cover the whole workflow; the adv_ tools are the raw layer of scenes, clips, cues, meters, snapshots and the browser underneath, for when the artist's set has no word for it.";
 
 /// The short form appended to every get_context result.
-pub const FOOTER: &str = "Workflow: build_song (tracks with instrument words or URI; clips as step strings, notes_csv or patterns; `slots` for copies) → hear it with capture_mix or play_and_measure → perform with start_performance, cue (timed moves on Live's clock, two bars ahead), get_performance_state, keep_track_playing, record_clip, end_performance. Sections are scene rows named '<name> · <bars>'; make_section, set_song, play_song, then go / hold_section / next_section / back / jump_to steer them. Tracks and scenes by name or index.";
+pub const FOOTER: &str = "Workflow: build_song (key, tempo, sections, tracks with instrument words, clips as step strings, notes_csv or patterns) → shape_sound and feel → arrange in bars → hear it with capture_mix → play_song, then go / hold_section / next_section / back / jump_to steer the sections; end_performance stops. Faders and levels in dB, positions in bars. Live's Save is yours (Cmd+S); the API cannot save.";
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
@@ -131,13 +135,17 @@ pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
         } else {
             devices.join(" › ")
         };
+        let vol = match t.get("volume_db").and_then(Value::as_f64) {
+            Some(db) if db <= -70.0 => "-inf dB".to_string(),
+            Some(db) => format!("{db:.1} dB"),
+            None => num(f(t, "volume")),
+        };
         let mut line = format!(
-            "  {} {} [{}] {} · vol {}",
+            "  {} {} [{}] {} · vol {vol}",
             i(t, "index"),
             s(t, "name"),
             flags.join(", "),
-            devices,
-            num(f(t, "volume"))
+            devices
         );
         let pan = f(t, "panning");
         if pan.abs() > 0.005 {
@@ -201,8 +209,11 @@ pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
         out.push_str(&format!("Returns: {}", list.join(" · ")));
     }
     out.push_str(&format!(
-        " · master vol {}\n",
-        num(f(&session, "master_volume"))
+        " · master {}\n",
+        match session.get("master_volume_db").and_then(Value::as_f64) {
+            Some(db) => format!("{db:.1} dB"),
+            None => format!("vol {}", num(f(&session, "master_volume"))),
+        }
     ));
 
     let scenes = arr(ctx, "scenes");

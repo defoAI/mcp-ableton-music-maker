@@ -625,27 +625,21 @@ fn make_from_clips(
             )
         }
     };
+    // Every clip of the row in one round trip.
+    require(live, "write_clips")?;
     let mut filled: Vec<String> = Vec::new();
+    let mut specs: Vec<Value> = Vec::new();
     for (ti, tname, clip, notes) in planned {
         let length = clip_length(&notes, state.beats_per_bar(), clip.length);
-        tools::create_clip_body(
-            live,
-            &CreateClipParams {
-                track_index: ti,
-                clip_index: index,
-                length,
-                name: clip
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("{name}/{tname}")),
-                input: NotesInput {
-                    notes,
-                    ..Default::default()
-                },
-            },
-        )?;
+        specs.push(json!({
+            "track_index": ti, "clip_index": index, "length": length,
+            "name": clip.name.clone().unwrap_or_else(|| format!("{name}/{tname}")),
+            "notes": notes,
+        }));
         filled.push(tname);
     }
+    live.send_command("write_clips", Some(json!({"clips": specs})))
+        .map_err(|e| live_err("write the section's clips", e))?;
     let empty: Vec<String> = state
         .tracks
         .iter()
@@ -1186,8 +1180,24 @@ fn steer(live: &LiveState, m: Move) -> ToolResult {
     for c in ["get_performance_state", "schedule_cue"] {
         require(live, c)?;
     }
+    let started_now = performance_running(live).is_none() && matches!(m.target, Target::Named(_));
+    if started_now {
+        // A jump with no performance running starts one (start_performance's defaults).
+        tools::start_performance_body(
+            live,
+            &StartPerformanceParams {
+                scene: None,
+                quantization: "1_bar".into(),
+                key: None,
+                tempo: None,
+                disarm: true,
+                limiter: false,
+                follow_key: false,
+            },
+        )?;
+    }
     let Some(running) = performance_running(live) else {
-        return Err("No performance is running: play_song starts one from the setlist, or start_performance and then jump_to a section.".into());
+        return Err("No performance is running: play_song starts one from the setlist, or jump_to a section to begin.".into());
     };
     let state = read_perf_state(live)?;
     if !state.is_playing {
@@ -1365,6 +1375,9 @@ fn steer(live: &LiveState, m: Move) -> ToolResult {
     );
     // The reply.
     let mut text = String::new();
+    if started_now {
+        text.push_str("Performance started (1-bar launch quantization, guards on). ");
+    }
     for w in &warnings {
         if w.contains("hotter") {
             text.push_str("Warning: ");

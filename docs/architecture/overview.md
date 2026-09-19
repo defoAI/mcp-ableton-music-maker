@@ -120,6 +120,15 @@ script is loaded and up to date. Both are for CI and the Mac app.
   context into a rebuildable document under `state_dir()/sets/` and nothing else creates that
   folder; `import_set` rebuilds through `build_song`, `set_scale` and `set_song`. The Live set
   (its scene names) stays the memory.
+- **The surface is one list, prefixed** (decision 0006). `Server::tool_router` builds every
+  tool, then re-keys each one outside `CORE_TOOLS` as `adv_<name>` and sets the MCP
+  annotations from the name; `run_named` strips the prefix, so `batch` takes either spelling. Nothing is gated: the client's user chooses. The
+  artist tools in `src/arrange.rs` compose the raw bodies (`feel` runs the note rewrites in
+  order and keeps one undo; `arrange` converts bars to beats once and sends one
+  `place_clips` / `delete_arrangement_clips` / `duplicate_arrangement_clip` per track, the
+  script looping on Live's main thread so a 200-clip change is one round trip). Faders in dB
+  are the script's doing: it bisects Live's own fader curve with `str_for_value`, so the
+  number the artist reads in Live is the number they said.
 - **The library index.** `src/library.rs` pages the script's browser walk in the background
   after the handshake (one-second pages so tool calls interleave on the shared socket),
   keeps it under `state_dir()/library/` and answers `search_browser` and every internal
@@ -129,6 +138,12 @@ script is loaded and up to date. Both are for CI and the Mac app.
   renders it and holds the MCP `instructions` string the server sends at `initialize` (the
   `get_info` override in `tools.rs`), so a client's model knows the workflow before its first
   call.
+- **Whole sections in one round trip.** `create_tracks` and `write_clips` take the document
+  `build_song` (and `make_section`) validated on the server and do every create, name,
+  instrument load, fader and note write in one main-thread task; a copy in another row is
+  made inside Live from the first clip (`copy_of`), so the notes cross the socket once. With
+  `place_clips` and `delete_arrangement_clips` this is the answer to the 200 ms floor below:
+  the count of round trips, not the size of any one, is what a producer waits for.
 - **A round trip costs about 200 ms, whatever it does.** Measured on Live 12.4.6 over one
   persistent socket: an unknown command, a tiny read and `get_context` all answer in the same
   200 ms, with or without the per-command log line and with `TCP_NODELAY` on both ends. The

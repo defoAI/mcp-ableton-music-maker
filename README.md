@@ -19,7 +19,7 @@ Prompt-assisted music production, end-to-end track creation, and Live session an
 
 Two pieces:
 
-1. **`ableton-music-maker`**, a single Rust binary that speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio to Claude Desktop, Claude Code or Cursor. It exposes 94 tools for reading, editing and performing the Live set, and talks to Live over a TCP socket on port 9877.
+1. **`ableton-music-maker`**, a single Rust binary that speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio to Claude Desktop, Claude Code or Cursor. It exposes 99 tools for reading, editing and performing the Live set: an artist's set of 36 (look, build, shape, arrange, play) and, named `adv_…`, the raw layer underneath, and talks to Live over a TCP socket on port 9877.
 2. **The AbletonMusicMaker Remote Script**, a control surface that runs inside Live and executes the commands. Live only loads control surfaces through its embedded Python interpreter, so this one file stays Python. It is embedded in the binary and installed with `ableton-music-maker-install-script`.
 
 ```
@@ -130,13 +130,13 @@ Checked by `docker/verify-image.sh` and by CI on every build:
 | Session | `get_context` (start here: the whole set in one call), `get_session_info`, `get_session_snapshot`, `set_tempo`, `start_playback`, `stop_playback`, `back_to_arrangement`, `set_arrangement_loop` |
 | Tracks | `get_track_info`, `create_midi_track`, `create_audio_track`, `delete_track`, `set_track_name`, `set_track_mixer`, `set_send`, `get_returns`, `set_color` |
 | Clips | `create_clip`, `create_audio_clip`, `get_clip_notes`, `add_notes_to_clip`, `clear_notes_from_clip`, `set_clip_name`, `delete_clip`, `fire_clip`, `stop_clip`, `get_clip_info`, `set_clip_loop`, `set_clip_launch`, `set_clip_automation`, `get_clip_automation` |
-| Devices | `get_device_parameters`, `set_device_parameter` (by index or by name), `shape_sound` (cutoff, resonance, attack … as words, resolved against a rack's macros first), `load_instrument_or_effect`, `load_drum_kit`, `get_drum_rack_pads` |
+| Devices | `shape_sound` (cutoff, resonance, attack … as words, resolved against a rack's macros first; any parameter by name), `load_instrument_or_effect` (words or URI; onto a track, a return or the master), `create_return`, `set_key`; advanced: `get_device_parameters`, `set_device_parameter`, `load_drum_kit`, `get_drum_rack_pads` |
 | Browser | `search_browser` (many queries per call, answered from the server's own index once it has walked the library), `get_library_status`, `get_browser_tree`, `get_browser_items_at_path` |
-| Arrangement | `switch_to_arrangement_view`, `set_arrangement_time`, `get_arrangement_clips`, `duplicate_to_arrangement`, `set_arrangement_clip_name`, `delete_arrangement_clip`, `create_locator`, `delete_locator` |
-| Listening | `capture_mix`, `list_captures`, `measure_capture`, `get_track_meters`, `play_and_measure` |
+| Arrangement | `arrange` (place, repeat, move, delete, shorten, list — in bars, one round trip per track), `create_locator` (at a bar); advanced: `switch_to_arrangement_view`, `set_arrangement_time`, `get_arrangement_clips`, `duplicate_to_arrangement`, `set_arrangement_clip_name`, `delete_arrangement_clip`, `delete_locator` |
+| Listening | `capture_mix` (from a bar), `clear_captures`; advanced: `list_captures`, `measure_capture`, `get_track_meters`, `play_and_measure`, `listen` (levels in dB) |
 | Performing | `start_performance`, `get_performance_state`, `cue` (with gestures: breakdown, drop, mute_except, sweep, build, panic, restore_mix), `cancel_cue`, `fire_scene`, `create_scene`, `set_scene`, `record_clip`, `set_launch_quantization`, `set_crossfader`, `keep_track_playing`, `listen`, `vary_clip`, `undo_vary`, `follow_key`, `snapshot_mix`, `restore_mix`, `panic`, `end_performance` — every result carries the clock while a performance runs; launches report the bar they made; timed moves run by the Remote Script's own clock |
 | Sections and songs | `make_section` (from what plays, as a copy with changes, or from clips), `set_song`, `add_to_song`, `remove_from_song`, `play_song`, `hold_section`, `go`, `next_section`, `previous_section`, `back`, `jump_to` (with a `transition`: tempo, retime, crossfade, fill, drop, sweep) — a section is a scene row named `<name> · <bars>`, the song is the `Setlist:` scene, Live's Save keeps both; every move lands at the end of the playing section's phrase unless told otherwise, and the 🔊 level line rides under the clock |
-| Feel | `groove_clip` (Live's Groove Pool), `groove_amount`, `humanize`, `swing_notes`, `retime_clip` |
+| Feel | `feel` (swing, humanize, a Groove Pool groove, retime, a variation — one call, one undo); advanced: `vary_clip`, `undo_vary`, `groove_clip`, `groove_amount`, `humanize`, `swing_notes`, `retime_clip` |
 | Set memory | `export_set`, `import_set` — a rebuildable document under the state dir, only on request |
 | Orchestration | `batch`, `build_song` |
 | Bridge | `get_remote_script_info` |

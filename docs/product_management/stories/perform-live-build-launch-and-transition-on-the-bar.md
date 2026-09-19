@@ -11,6 +11,7 @@ on the bar without the music ever stopping,
 | Field | Value |
 |-------|-------|
 | Status | `In Progress` — phases 1–3 built against the assumed answers below; awaiting the real-Live pass and the producer's answers to open questions 1, 2, 4 and 7 |
+| Surface | [Decision 0006](../../decisions/0006-one-artist-surface-raw-layer-marked-advanced.md): `start_performance`, `cue`, `cancel_cue`, `fire_scene`, `create_scene`, `set_launch_quantization`, `set_crossfader` and `get_performance_state` are the raw layer (served as `adv_…`) under the artist's `play_song` / `go` / `jump_to` / `back` / `hold_section` / `next_section` / `previous_section` / `end_performance`; `jump_to` starts a performance when none runs, so the artist never needs `start_performance` |
 | Priority | P1 — the first use of the product that is a performance rather than a session; it is what "drive Live" means to a performer |
 | Size | L — three phases below; phase 1 alone makes a bar-accurate performance possible |
 | Tracker | none yet — an issue is opened when the story is `Ready` |

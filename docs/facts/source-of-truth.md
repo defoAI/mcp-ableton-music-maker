@@ -35,6 +35,7 @@ Paths are relative to the repository root.
 | Fact | Authoritative source | How to check |
 |---|---|---|
 | How many MCP tools there are | `src/tools.rs` — one `#[tool(name = …)]` per tool; the unit test `tool_count_and_schema_defaults` pins the count | `grep -c '#\[tool(name = ' src/tools.rs` |
+| Which tools are the artist's surface and which are advanced | `CORE_TOOLS` in `src/tools.rs` (decision 0006); every other tool is served as `adv_<name>`; `tests/artist.rs` pins it | `sed -n '/^pub const CORE_TOOLS/,/^\];/p' src/tools.rs` |
 | Which tools exist and what they do | The `#[tool]` doc comments in `src/tools.rs` — they *are* the descriptions the client shows | `cargo test` lists them; the README table is a copy |
 | Which Remote Script commands exist | `SCRIPT_CAPABILITIES` in `AbletonMusicMaker_Remote_Script/__init__.py`; `tools::ALL_REMOTE_COMMANDS` is the server's cross-check and a test fails if the two disagree | `grep -A40 'SCRIPT_CAPABILITIES = \[' AbletonMusicMaker_Remote_Script/__init__.py` |
 | The Remote Script version the server expects | `SCRIPT_VERSION` in the same file — the binary reads it out of the embedded source at startup (`handshake::expected_remote_script_version`) | `grep '^SCRIPT_VERSION' AbletonMusicMaker_Remote_Script/__init__.py` |
@@ -97,13 +98,13 @@ matches on them.
 
 | | Verified value | Source |
 |---|---|---|
-| MCP tools | **94** | `src/tools.rs` |
-| Remote Script commands | **80** | `SCRIPT_CAPABILITIES` |
-| Remote Script version | **1.19.0** | `SCRIPT_VERSION` |
+| MCP tools | **99** | `src/tools.rs` |
+| Remote Script commands | **86** | `SCRIPT_CAPABILITIES` |
+| Remote Script version | **1.22.0** | `SCRIPT_VERSION` |
 | Server version | **2.0.0** | `Cargo.toml` |
 | Image size limit | **50** MB | `docker/verify-image.sh` |
 | Port | **9877** | `DEFAULT_PORT` |
-| Timeouts | 65 s `create_audio_clip` · 25 s `search_browser` · 15 s modifying commands · 10 s reads · 5 s connect | `src/connection.rs` |
+| Timeouts | 190 s `create_tracks` · 65 s `create_audio_clip` and `write_clips` · 25 s `search_browser` · 15 s modifying commands · 10 s reads · 5 s connect | `src/connection.rs` |
 | Uploads | **none** — no code path exists | `tests/local_only.rs`, CI dependency gate |
 | Activity log | on by default, payloads off; `ABLETON_MCP_ACTIVITY=false` / `ABLETON_MCP_ACTIVITY_PAYLOADS=true` | `tests/activity.rs` |
 | Transport | stdio only | `src/app.rs` |

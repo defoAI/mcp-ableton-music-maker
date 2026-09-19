@@ -13,6 +13,7 @@ sound never costs a round trip once the library has been seen once.
 | Field | Value |
 |-------|-------|
 | Status | `In Progress` — all seven phases built against the assumed answers (Remote Script 1.16.0); real-Live pass pending; open questions 1, 3, 6, 9 and 11 still want the producer's word |
+| Surface | [Decision 0006](../../decisions/0006-one-artist-surface-raw-layer-marked-advanced.md): the clock and level lines ride on every reply of every tool; `vary_clip`, `undo_vary`, `listen`, `snapshot_mix`, `restore_mix`, `follow_key`, `cue` gestures and `set_scene` are the raw layer (served as `adv_…`). The artist reaches them through `feel` (variations, one undo), `capture_mix`, and the song verbs; `listen` reports dB |
 | Priority | P1 — the first real set (2026-09-19) named this as the remaining gap after `get_context`, `slots` and `keep_track_playing`; item 1 is the foundation the other items stand on |
 | Size | L — seven phases below; phase 1 alone delivers the core ask and must ship first; phase 6 (browser search) is independent of the others and can ship in any order. Each phase gets its own `-impl` plan |
 | Tracker | none yet — an issue per phase when the story is `Ready` |

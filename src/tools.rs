@@ -102,9 +102,92 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "get_grooves",
     "set_clip_groove",
     "set_device_parameters",
+    "place_clips",
+    "delete_arrangement_clips",
+    "duplicate_arrangement_clip",
+    "create_return_track",
+    "create_tracks",
+    "write_clips",
 ];
 
 pub type ToolResult = Result<String, String>;
+
+/// The standard MCP hints for a tool, from its name: reads are read-only,
+/// deletions are destructive, everything stays inside the machine.
+fn annotations_for(name: &str) -> rmcp::model::ToolAnnotations {
+    let read_only = name.starts_with("get_")
+        || name.starts_with("list_")
+        || name.starts_with("search_")
+        || name.starts_with("measure_")
+        || name == "listen";
+    let destructive = name.starts_with("delete_")
+        || name.starts_with("clear_")
+        || name.starts_with("remove_")
+        || matches!(
+            name,
+            "import_set"
+                | "end_performance"
+                | "panic"
+                | "stop_playback"
+                | "stop_clip"
+                | "undo_vary"
+        );
+    let mut a = rmcp::model::ToolAnnotations::new().read_only(read_only);
+    a.destructive_hint = Some(destructive);
+    a.idempotent_hint = Some(read_only);
+    a.open_world_hint = Some(false);
+    a
+}
+
+/// The raw layer's tools are served under this prefix (`adv_fire_scene`).
+pub const ADVANCED_PREFIX: &str = "adv_";
+
+/// The artist's set, in five groups — look, build, shape, arrange, play —
+/// plus the housekeeping a session needs. Every other tool is the raw
+/// layer: still served, as `adv_<name>`.
+pub const CORE_TOOLS: &[&str] = &[
+    // look
+    "get_context",
+    // build
+    "build_song",
+    "make_section",
+    "create_clip",
+    "add_notes_to_clip",
+    "load_instrument_or_effect",
+    "search_browser",
+    "set_key",
+    "set_tempo",
+    // shape
+    "shape_sound",
+    "feel",
+    "set_track_mixer",
+    "set_send",
+    "create_return",
+    // arrange
+    "set_song",
+    "add_to_song",
+    "remove_from_song",
+    "arrange",
+    "create_locator",
+    // play
+    "play_song",
+    "go",
+    "jump_to",
+    "back",
+    "hold_section",
+    "next_section",
+    "previous_section",
+    "record_clip",
+    "capture_mix",
+    "clear_captures",
+    "end_performance",
+    // housekeeping
+    "delete_track",
+    "delete_clip",
+    "export_set",
+    "import_set",
+    "batch",
+];
 
 /// The one thing the wrapper knows about a tool: its name, for the activity
 /// line. Everything else (which commands it sent, how long Live took) is
@@ -280,6 +363,9 @@ params!(ShapeSoundParams {
     track: Value,
     /// The device, by name (a substring) or index; default: the first instrument, rack or drum rack on the track
     device: Option<Value>,
+    /// Any parameter by its own name (or a substring of it): {"LP Mod Amt 2": 0.5, "Glide Time": "+10%"}
+    #[serde(default)]
+    set: BTreeMap<String, Value>,
     /// Each word: a fraction 0–1 of the parameter's range, or "±N%" relative to where it sits
     cutoff: Option<Value>,
     resonance: Option<Value>,
@@ -405,10 +491,12 @@ params!(SetTempoParams {
     tempo: f64,
 });
 params!(LoadInstrumentParams {
-    /// The index of the track to load the instrument on
+    /// The track (or return) index
     track_index: i64,
-    /// The URI of the instrument or effect to load (e.g. 'query:Synths#Instrument%20Rack:Bass:FileId_5116')
+    /// The instrument or effect: a browser URI, or plain words ("reverb", "analog bass") searched in the library
     uri: String,
+    /// "track" (default), "return" (an effect on a return track) or "master" (an effect on the master)
+    kind: String = "track_kind",
 });
 params!(BrowserTreeParams {
     /// Type of categories to get ('all', 'instruments', 'sounds', 'drums', 'audio_effects', 'midi_effects')
@@ -428,8 +516,10 @@ params!(LoadDrumKitParams {
     kit_path: String,
 });
 params!(ArrangementTimeParams {
-    /// Position in beats from the start of the arrangement (e.g. 8.0 = bar 3 in 4/4)
-    time: f64,
+    /// The bar to move the playhead to (Live's 1-based bars; 3.5 is halfway through bar 3)
+    bar: Option<f64>,
+    /// Or a position in beats from the start of the arrangement (8.0 = bar 3 in 4/4)
+    time: Option<f64>,
 });
 params!(DuplicateToArrangementParams {
     /// Index of the track that owns the Session clip
@@ -448,6 +538,11 @@ params!(DuplicateToArrangementParams {
     end: Option<f64>,
     /// Beats between placements in the range (usually the clip length)
     step: Option<f64>,
+    /// Or in bars (Live's 1-based bars): the bar to place at
+    at_bar: Option<f64>,
+    /// With `until_bar`: place a copy every `every_bars` (default the clip's length) from at_bar up to until_bar (exclusive)
+    until_bar: Option<f64>,
+    every_bars: Option<f64>,
 });
 params!(SetTrackMixerParams {
     /// Index of the track (among the song's tracks, or among the return
@@ -455,8 +550,12 @@ params!(SetTrackMixerParams {
     track_index: i64,
     /// "track" (default), "return" or "master"
     kind: String = "track_kind",
-    /// Fader level as Live's mixer parameter, 0.0-1.0; 0.85 is 0 dB
+    /// Fader in dB, e.g. -6 (0 is unity, +6 the top); the reply reads it back in dB
     volume: Option<f64>,
+    /// The same, for callers that spell it out
+    volume_db: Option<f64>,
+    /// Or Live's raw fader parameter 0.0-1.0 (0.85 is 0 dB)
+    fader: Option<f64>,
     /// Pan, -1.0 (left) to 1.0 (right)
     pan: Option<f64>,
     mute: Option<bool>,
@@ -644,9 +743,15 @@ pub struct SongTrack {
     /// Or words to search for; the first browser hit is loaded
     #[serde(default)]
     pub instrument_query: Option<String>,
-    /// Fader 0.0-1.0 (0.85 = 0 dB)
+    /// Fader in dB (0 is unity)
     #[serde(default)]
     pub volume: Option<f64>,
+    /// The same, spelled out
+    #[serde(default)]
+    pub volume_db: Option<f64>,
+    /// Or Live's raw fader 0.0-1.0 (0.85 = 0 dB)
+    #[serde(default)]
+    pub fader: Option<f64>,
     #[serde(default)]
     pub pan: Option<f64>,
     /// Live palette index 0-69
@@ -724,6 +829,8 @@ pub struct SongScene {
 params!(BuildSongParams {
     /// Tempo in BPM (optional)
     tempo: Option<f64>,
+    /// The key, e.g. "F minor": set in Live's scale settings before anything is written
+    key: Option<String>,
     /// Scenes (rows) to name in order: row 0 gets scenes[0]; rows that do not exist yet are created
     #[serde(default)]
     scenes: Vec<SongScene>,
@@ -743,16 +850,22 @@ params!(BuildSongParams {
     dry_run: bool = "bool::default",
 });
 params!(SetArrangementLoopParams {
-    /// Loop start in beats
+    /// The bar the loop starts on (Live's 1-based bars)
+    start_bar: Option<f64>,
+    /// How many bars it loops
+    bars: Option<f64>,
+    /// Or the loop start in beats
     start: Option<f64>,
-    /// Loop length in beats
+    /// Or the loop length in beats
     length: Option<f64>,
     /// Loop on or off
     enabled: Option<bool>,
 });
 params!(CaptureMixParams {
-    /// Beat to start capturing from (a bar boundary, e.g. 128 for bar 33 in 4/4)
-    start: f64,
+    /// The bar to start capturing from (Live's 1-based bars; default: bar 1)
+    start_bar: Option<f64>,
+    /// Or a beat position (a bar boundary, e.g. 128 for bar 33 in 4/4)
+    start: Option<f64>,
     /// How many bars to capture (default 8, max 64)
     bars: i64 = "eight",
     /// A name for the capture, e.g. "drop" — the clip is called "<name> @ <start>"
@@ -765,8 +878,10 @@ params!(MeasureCaptureParams {
 params!(CreateLocatorParams {
     /// The locator label (e.g. "Chorus", "Verse 1", "Drop")
     name: String,
-    /// Beat position where the locator should sit
-    time: f64,
+    /// The bar it marks (Live's 1-based bars)
+    bar: Option<f64>,
+    /// Or a beat position from the start of the arrangement
+    time: Option<f64>,
 });
 
 // ── Tool specs ──────────────────────────────────────────────────────────────
@@ -849,6 +964,11 @@ pub const PANIC: ToolSpec = ToolSpec::new("panic");
 pub const RETIME_CLIP: ToolSpec = ToolSpec::new("retime_clip");
 pub const SHAPE_SOUND: ToolSpec = ToolSpec::new("shape_sound");
 pub const EXPORT_SET: ToolSpec = ToolSpec::new("export_set");
+pub const SET_KEY: ToolSpec = ToolSpec::new("set_key");
+pub const CREATE_RETURN: ToolSpec = ToolSpec::new("create_return");
+pub const CLEAR_CAPTURES: ToolSpec = ToolSpec::new("clear_captures");
+pub const FEEL: ToolSpec = ToolSpec::new("feel");
+pub const ARRANGE: ToolSpec = ToolSpec::new("arrange");
 pub const IMPORT_SET: ToolSpec = ToolSpec::new("import_set");
 pub const GROOVE_CLIP: ToolSpec = ToolSpec::new("groove_clip");
 pub const GROOVE_AMOUNT: ToolSpec = ToolSpec::new("groove_amount");
@@ -1040,9 +1160,9 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
     .into_iter()
     .filter_map(|(w, v)| v.as_ref().filter(|v| !v.is_null()).map(|v| (w, v)))
     .collect();
-    if given.is_empty() {
+    if given.is_empty() && p.set.is_empty() {
         return Err(format!(
-            "Give at least one word: {} (a fraction 0–1 of the range, or \"±N%\").",
+            "Give at least one word: {} (a fraction 0–1 of the range, or \"±N%\"), or set: {{\"<parameter name>\": value}}.",
             crate::sound::WORDS.join(", ")
         ));
     }
@@ -1062,6 +1182,25 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
                 resolved.push((word.to_string(), param.clone(), via, target));
             }
             None => unresolved.push(word),
+        }
+    }
+    for (name, v) in &p.set {
+        match crate::sound::by_name(name, &params) {
+            Some(param) => {
+                let target = crate::sound::target_value(param, v)?;
+                values.push(json!({"index": param.index, "value": target}));
+                resolved.push((name.clone(), param.clone(), crate::sound::Via::Name, target));
+            }
+            None => {
+                return Err(format!(
+                    "no parameter named '{name}' on '{dname}'; its parameters: {}",
+                    params
+                        .iter()
+                        .map(|q| q.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
         }
     }
     let param_names = || -> String {
@@ -1579,10 +1718,27 @@ pub fn set_tempo_body(live: &LiveState, p: &SetTempoParams) -> ToolResult {
 
 pub fn load_instrument_or_effect_body(live: &LiveState, p: &LoadInstrumentParams) -> ToolResult {
     require(live, "load_browser_item")?;
+    let kind = p.kind.trim().to_lowercase();
+    if !matches!(kind.as_str(), "track" | "return" | "master") {
+        return Err(format!(
+            "kind must be track, return or master, not '{}'",
+            p.kind
+        ));
+    }
+    // Plain words are a search; a URI carries a ':'.
+    let uri = if p.uri.contains(':') {
+        p.uri.clone()
+    } else {
+        let hits = find_items(live, &p.uri, "all", 1)?;
+        match hits.first() {
+            Some(h) => h.uri.clone(),
+            None => return Err(format!("nothing in the browser matches \"{}\"", p.uri)),
+        }
+    };
     let r = live
         .send_command(
             "load_browser_item",
-            Some(json!({"track_index": p.track_index, "item_uri": p.uri})),
+            Some(json!({"track_index": p.track_index, "item_uri": uri, "kind": kind})),
         )
         .map_err(|e| live_err("load instrument by URI", e))?;
     if !r.get("loaded").and_then(Value::as_bool).unwrap_or(false) {
@@ -1918,6 +2074,41 @@ pub fn switch_to_arrangement_view_body(live: &LiveState, _p: &Empty) -> ToolResu
     Ok("Switched to Arrangement view".to_string())
 }
 
+/// A position given as a bar (Live's 1-based bars) or in beats, as beats
+/// plus the beats per bar it was converted with.
+fn beats_from(
+    live: &LiveState,
+    bar: Option<f64>,
+    time: Option<f64>,
+    tool: &str,
+) -> Result<(f64, f64), String> {
+    // The signature is read only when a bar has to be converted.
+    let bpb = if bar.is_some() {
+        tempo_and_meter(live).1
+    } else {
+        4.0
+    };
+    match (bar, time) {
+        (Some(b), _) if b >= 1.0 => Ok(((b - 1.0) * bpb, bpb)),
+        (Some(b), _) => Err(format!(
+            "{tool}: bar {b} is before bar 1 (Live's bars start at 1)"
+        )),
+        (None, Some(t)) if t >= 0.0 => Ok((t, bpb)),
+        (None, Some(t)) => Err(format!("{tool}: beat {t} is before the start")),
+        (None, None) => Err(format!("{tool}: give `bar` (Live's 1-based bar number)")),
+    }
+}
+
+/// `33` or `33.5`: a beat position as a bar.
+fn bar_text(beat: f64, bpb: f64) -> String {
+    let bar = beat / bpb.max(1.0) + 1.0;
+    if (bar - bar.round()).abs() < 1e-6 {
+        format!("{}", bar.round() as i64)
+    } else {
+        format!("{bar:.2}")
+    }
+}
+
 pub fn set_arrangement_time_body(live: &LiveState, p: &ArrangementTimeParams) -> ToolResult {
     guard_performance(
         live,
@@ -1925,18 +2116,21 @@ pub fn set_arrangement_time_body(live: &LiveState, p: &ArrangementTimeParams) ->
         "would move the playhead under the playing clips",
     )?;
     require(live, "set_current_song_time")?;
+    let (time, bpb) = beats_from(live, p.bar, p.time, "set_arrangement_time")?;
     let r = live
-        .send_command("set_current_song_time", Some(json!({"time": p.time})))
+        .send_command("set_current_song_time", Some(json!({"time": time})))
         .map_err(|e| live_err("set arrangement time", e))?;
     let was = r
         .get("previous_song_time")
-        .map(|v| format!(" (was at beat {})", display(v)))
+        .and_then(Value::as_f64)
+        .map(|v| format!(" (was at bar {})", bar_text(v, bpb)))
         .unwrap_or_default();
     Ok(format!(
-        "Playhead moved to beat {}{was}",
+        "Playhead moved to bar {}{was}",
         r.get("current_song_time")
-            .map(display)
-            .unwrap_or_else(|| p.time.to_string())
+            .and_then(Value::as_f64)
+            .map(|v| bar_text(v, bpb))
+            .unwrap_or_else(|| bar_text(time, bpb))
     ))
 }
 
@@ -1992,7 +2186,46 @@ pub fn duplicate_to_arrangement_body(
     p: &DuplicateToArrangementParams,
 ) -> ToolResult {
     require(live, "duplicate_session_clip_to_arrangement")?;
-    let times = placement_times(p)?;
+    let times = if p.at_bar.is_some() {
+        let (_, bpb) = tempo_and_meter(live);
+        let at = p.at_bar.unwrap_or(1.0);
+        if at < 1.0 {
+            return Err(format!("at_bar {at} is before bar 1"));
+        }
+        match p.until_bar {
+            Some(until) => {
+                let step = match p.every_bars {
+                    Some(b) if b > 0.0 => b,
+                    Some(b) => return Err(format!("every_bars must be positive, got {b}")),
+                    None => {
+                        require(live, "get_clip_info")?;
+                        live.send_command(
+                            "get_clip_info",
+                            Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "arrangement": false})),
+                        )
+                        .ok()
+                        .and_then(|i| i.get("length").and_then(Value::as_f64))
+                        .filter(|l| *l > 0.0)
+                        .unwrap_or(4.0)
+                            / bpb
+                    }
+                };
+                let mut t = Vec::new();
+                let mut b = at;
+                while b < until - 1e-9 && t.len() < 512 {
+                    t.push((b - 1.0) * bpb);
+                    b += step;
+                }
+                if t.is_empty() {
+                    return Err("until_bar is not after at_bar".into());
+                }
+                t
+            }
+            None => vec![(at - 1.0) * bpb],
+        }
+    } else {
+        placement_times(p)?
+    };
     // Existing clips on the track, to warn when a placement lands inside one
     // (Live trims or splits the earlier clip).
     let existing: Vec<(f64, f64)> = live
@@ -2011,34 +2244,45 @@ pub fn duplicate_to_arrangement_body(
         .copied()
         .filter(|t| existing.iter().any(|(s, e)| *t > s - 1e-6 && *t < e - 1e-6))
         .collect();
-    let mut placed: Vec<f64> = Vec::new();
-    let mut clip_name = String::from("clip");
-    let mut track_name = format!("track {}", p.track_index);
-    for t in &times {
-        let r = live
-            .send_command(
-                "duplicate_session_clip_to_arrangement",
-                Some(json!({
-                    "track_index": p.track_index,
-                    "clip_index": p.clip_index,
-                    "destination_time": t,
-                })),
-            )
-            .map_err(|e| {
-                if placed.is_empty() {
-                    live_err("duplicate clip to arrangement", e)
-                } else {
-                    format!(
-                        "Placed {} of {} (at beats {}), then could not place at beat {t}: {e}",
-                        placed.len(),
-                        times.len(),
-                        list_beats(&placed),
-                    )
-                }
-            })?;
-        clip_name = get_display(&r, "clip_name", &clip_name);
-        track_name = get_display(&r, "track_name", &track_name);
-        placed.push(*t);
+    // Every placement in one round trip (the script loops on Live's main thread).
+    require(live, "place_clips")?;
+    let r = live
+        .send_command(
+            "place_clips",
+            Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "times": times})),
+        )
+        .map_err(|e| live_err("place the clip in the arrangement", e))?;
+    // A reply without `placed` (an older script's shape) means every time landed.
+    let placed: Vec<f64> = r
+        .get("placed")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_f64).collect())
+        .unwrap_or_else(|| times.clone());
+    let clip_name = get_display(&r, "clip", "clip");
+    let track_name = get_display(&r, "track", &format!("track {}", p.track_index));
+    if let Some(failed) = r
+        .get("failed")
+        .and_then(Value::as_array)
+        .filter(|f| !f.is_empty())
+    {
+        return Err(format!(
+            "Placed {} of {}, but {} could not be placed: {}",
+            placed.len(),
+            times.len(),
+            failed.len(),
+            failed
+                .iter()
+                .map(|f| format!(
+                    "beat {}: {}",
+                    get_display(f, "time", "?"),
+                    get_display(f, "error", "?")
+                ))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if placed.is_empty() {
+        return Err("nothing was placed".into());
     }
     let warn = if overlaps.is_empty() {
         String::new()
@@ -2084,26 +2328,42 @@ fn list_beats(times: &[f64]) -> String {
 
 pub fn create_locator_body(live: &LiveState, p: &CreateLocatorParams) -> ToolResult {
     require(live, "create_locator")?;
+    let (time, bpb) = beats_from(live, p.bar, p.time, "create_locator")?;
     let r = live
         .send_command(
             "create_locator",
-            Some(json!({"name": p.name, "time": p.time})),
+            Some(json!({"name": p.name, "time": time})),
         )
         .map_err(|e| live_err("create locator", e))?;
     Ok(format!(
-        "Locator '{}' set at beat {}",
+        "Locator '{}' set at bar {}",
         get_display(&r, "name", &p.name),
         r.get("time")
-            .map(display)
-            .unwrap_or_else(|| p.time.to_string())
+            .and_then(Value::as_f64)
+            .map(|v| bar_text(v, bpb))
+            .unwrap_or_else(|| bar_text(time, bpb))
     ))
 }
 
 // ── Mixer, colours, drum pads, deletion ─────────────────────────────────────
 
+/// `-6.0 dB`, from the script's reading of the fader.
+pub(crate) fn db_text(v: Option<f64>) -> Option<String> {
+    v.map(|db| {
+        if db <= -70.0 {
+            "-inf dB".to_string()
+        } else {
+            format!("{db:.1} dB")
+        }
+    })
+}
+
 fn mixer_summary(r: &Value) -> String {
     let mut parts = vec![
-        format!("volume {}", get_display(r, "volume", "?")),
+        match db_text(r.get("volume_db").and_then(Value::as_f64)) {
+            Some(db) => format!("volume {db}"),
+            None => format!("volume {}", get_display(r, "volume", "?")),
+        },
         format!("pan {}", get_display(r, "panning", "?")),
     ];
     if let Some(m) = r.get("mute").and_then(Value::as_bool) {
@@ -2139,20 +2399,34 @@ fn mixer_summary(r: &Value) -> String {
 
 pub fn set_track_mixer_body(live: &LiveState, p: &SetTrackMixerParams) -> ToolResult {
     require(live, "set_track_mixer")?;
-    if p.volume.is_none()
+    let volume_db = p.volume_db.or(p.volume);
+    if volume_db.is_none()
+        && p.fader.is_none()
         && p.pan.is_none()
         && p.mute.is_none()
         && p.solo.is_none()
         && p.arm.is_none()
     {
-        return Err("Nothing to set: give volume, pan, mute, solo or arm.".into());
+        return Err("Nothing to set: give volume (dB), pan, mute, solo or arm.".into());
+    }
+    if let Some(db) = volume_db {
+        if !(-80.0..=6.0).contains(&db) {
+            return Err(format!(
+                "volume is in dB: between -80 and +6 (0 is unity), got {db}"
+            ));
+        }
+    }
+    if let Some(f) = p.fader {
+        if !(0.0..=1.0).contains(&f) {
+            return Err(format!("fader is Live's raw 0–1 parameter, got {f}"));
+        }
     }
     let r = live
         .send_command(
             "set_track_mixer",
             Some(json!({
                 "track_index": p.track_index, "kind": p.kind,
-                "volume": p.volume, "pan": p.pan, "mute": p.mute, "solo": p.solo, "arm": p.arm,
+                "volume": p.fader, "volume_db": volume_db, "pan": p.pan, "mute": p.mute, "solo": p.solo, "arm": p.arm,
             })),
         )
         .map_err(|e| live_err("set the track mixer", e))?;
@@ -2288,50 +2562,48 @@ pub fn delete_arrangement_clip_body(
 ) -> ToolResult {
     require(live, "delete_arrangement_clip")?;
     if p.all || !p.clip_indices.is_empty() {
-        let mut indices: Vec<i64> = if p.all {
-            require(live, "get_arrangement_clips")?;
-            let r = live
-                .send_command(
-                    "get_arrangement_clips",
-                    Some(json!({"track_index": p.track_index})),
-                )
-                .map_err(|e| live_err("list the arrangement clips", e))?;
-            let n = r.get("clip_count").and_then(Value::as_i64).unwrap_or(0);
-            (0..n).collect()
+        // Every clip in one round trip (the script loops on Live's main thread).
+        require(live, "delete_arrangement_clips")?;
+        let params = if p.all {
+            json!({"track_index": p.track_index, "all": true})
         } else {
-            p.clip_indices.clone()
+            json!({"track_index": p.track_index, "indices": p.clip_indices})
         };
-        if indices.is_empty() {
+        let r = live
+            .send_command("delete_arrangement_clips", Some(params))
+            .map_err(|e| live_err("delete the arrangement clips", e))?;
+        let removed: Vec<String> = r
+            .get("removed")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .map(|c| {
+                        format!(
+                            "'{}' ({}–{})",
+                            get_display(c, "name", "clip"),
+                            beat(c.get("start_time")),
+                            beat(c.get("end_time"))
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if removed.is_empty() {
             return Ok(format!("Track {} has no Arrangement clips.", p.track_index));
         }
-        // Highest first, so earlier indices stay valid as clips disappear.
-        indices.sort_unstable();
-        indices.dedup();
-        let mut removed = Vec::new();
-        for i in indices.iter().rev() {
-            let r = live
-                .send_command(
-                    "delete_arrangement_clip",
-                    Some(json!({"track_index": p.track_index, "clip_index": i})),
-                )
-                .map_err(|e| {
-                    format!(
-                        "Removed {} clip(s), then could not remove index {i}: {e}",
-                        removed.len()
-                    )
-                })?;
-            removed.push(format!(
-                "'{}' ({}–{})",
-                get_display(&r, "name", "clip"),
-                beat(r.get("start_time")),
-                beat(r.get("end_time"))
-            ));
-        }
         return Ok(format!(
-            "Removed {} Arrangement clip(s) from track {}: {}",
+            "Removed {} Arrangement clip(s) from track {} in one round trip: {}",
             removed.len(),
             p.track_index,
-            removed.join(", ")
+            if removed.len() > 12 {
+                format!(
+                    "{} … {}",
+                    removed[..6].join(", "),
+                    removed[removed.len() - 3..].join(", ")
+                )
+            } else {
+                removed.join(", ")
+            }
         ));
     }
     if p.clip_index < 0 {
@@ -2788,7 +3060,10 @@ fn meters_text(r: &Value) -> String {
         }
     }
     if let Some(m) = r.get("master") {
-        out.push_str(&format!("master: {:.2}\n", meter_peak(m)));
+        out.push_str(&format!(
+            "master: {} dB\n",
+            crate::song::fmt_db(crate::song::meter_db(meter_peak(m)), 1)
+        ));
     }
     out
 }
@@ -2803,7 +3078,7 @@ pub fn get_track_meters_body(live: &LiveState, _p: &Empty) -> ToolResult {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     Ok(format!(
-        "Levels right now ({}; 0.0 silent, 1.0 clipping):\n{}",
+        "Levels right now ({}; peaks in dB from Live's meters, 0 dB is the top):\n{}",
         if playing {
             "playing"
         } else {
@@ -2884,7 +3159,7 @@ pub fn play_and_measure_body(live: &LiveState, p: &PlayAndMeasureParams) -> Tool
         ));
     }
     let mut out = format!(
-        "Played {seconds:.1} s{} and took {readings} readings. Peak per track (0.0 silent, 1.0 clipping):\n",
+        "Played {seconds:.1} s{} and took {readings} readings. Peak per track (dB, 0 dB is the top):\n",
         match p.start_time {
             Some(t) if live.script.has_capability("play_from") => format!(" from beat {t}"),
             Some(t) => format!(" from the start marker (this Remote Script cannot play from beat {t}; reinstall it)"),
@@ -2894,7 +3169,10 @@ pub fn play_and_measure_body(live: &LiveState, p: &PlayAndMeasureParams) -> Tool
     let mut silent = Vec::new();
     for (id, (name, peak)) in &peaks {
         let id = id.trim_start_matches("zz ");
-        out.push_str(&format!("  {id} '{name}': {peak:.2}\n"));
+        out.push_str(&format!(
+            "  {id} '{name}': {} dB\n",
+            crate::song::fmt_db(crate::song::meter_db(*peak), 1)
+        ));
         if *peak < 0.01 && id.starts_with("track") {
             silent.push(name.clone());
         }
@@ -2922,6 +3200,9 @@ fn automation_target_json(t: &AutomationTarget) -> Result<Value, String> {
 
 pub fn set_clip_automation_body(live: &LiveState, p: &SetClipAutomationParams) -> ToolResult {
     require(live, "set_clip_automation")?;
+    if p.arrangement {
+        return Err("Live's API writes automation into Session clips only (an Arrangement clip answers \"Not a session clip\"). Automate the Session clip, then place it with arrange or duplicate_to_arrangement: the envelope travels with the clip.".into());
+    }
     let target = automation_target_json(&p.target)?;
     let mut points: Vec<Value> = p
         .points
@@ -3045,10 +3326,14 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
     if !(1..=64).contains(&p.bars) {
         return Err(format!("bars must be between 1 and 64, got {}", p.bars));
     }
-    if p.start < 0.0 {
-        return Err("start must be 0 or later".into());
-    }
     let (tempo, beats_per_bar) = tempo_and_meter(live);
+    let start = match (p.start_bar, p.start) {
+        (Some(b), _) if b >= 1.0 => (b - 1.0) * beats_per_bar,
+        (Some(b), _) => return Err(format!("start_bar {b} is before bar 1")),
+        (None, Some(s)) if s >= 0.0 => s,
+        (None, Some(_)) => return Err("start must be 0 or later".into()),
+        (None, None) => 0.0,
+    };
     let seconds_per_bar = 60.0 / tempo * beats_per_bar;
     let ensured = live
         .send_command("ensure_capture_track", None)
@@ -3061,7 +3346,7 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
     let started = live
         .send_command(
             "start_capture",
-            Some(json!({"start": p.start, "bars": p.bars, "name": p.name})),
+            Some(json!({"start": start, "bars": p.bars, "name": p.name})),
         )
         .map_err(|e| live_err("start the capture", e))?;
     let slot = started.get("slot").and_then(Value::as_i64).unwrap_or(0);
@@ -3109,7 +3394,7 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
     let clip_name = format!(
         "{} @ {} | {:.1} dBFS",
         p.name,
-        beat(Some(&json!(p.start))),
+        bar_text(start, beats_per_bar),
         m.peak_dbfs
     );
     if live.script.has_capability("set_clip_name") && track_index >= 0 {
@@ -3125,7 +3410,7 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
         ));
     }
     text.push_str(&capture_text(
-        &format!("{} @ {}", p.name, beat(Some(&json!(p.start)))),
+        &format!("{} @ bar {}", p.name, bar_text(start, beats_per_bar)),
         slot,
         &path,
         &m,
@@ -3240,13 +3525,21 @@ pub fn back_to_arrangement_body(live: &LiveState, _p: &Empty) -> ToolResult {
 
 pub fn set_arrangement_loop_body(live: &LiveState, p: &SetArrangementLoopParams) -> ToolResult {
     require(live, "set_arrangement_loop")?;
-    if p.start.is_none() && p.length.is_none() && p.enabled.is_none() {
-        return Err("Give start, length or enabled.".into());
+    if p.start_bar.is_none()
+        && p.bars.is_none()
+        && p.start.is_none()
+        && p.length.is_none()
+        && p.enabled.is_none()
+    {
+        return Err("Give start_bar and bars (or start and length in beats), or enabled.".into());
     }
+    let (_, bpb) = tempo_and_meter(live);
+    let start = p.start.or_else(|| p.start_bar.map(|b| (b - 1.0) * bpb));
+    let length = p.length.or_else(|| p.bars.map(|b| b * bpb));
     let r = live
         .send_command(
             "set_arrangement_loop",
-            Some(json!({"start": p.start, "length": p.length, "enabled": p.enabled})),
+            Some(json!({"start": start, "length": length, "enabled": p.enabled})),
         )
         .map_err(|e| live_err("set the arrangement loop", e))?;
     let start = r.get("loop_start").and_then(Value::as_f64).unwrap_or(0.0);
@@ -3766,16 +4059,32 @@ pub fn listen_body(live: &LiveState, p: &ListenParams) -> ToolResult {
     for name in &order {
         let (peak, sum, n) = peaks[name];
         let avg = if n > 0 { sum / n as f64 } else { 0.0 };
+        if peak <= 0.0001 {
+            continue;
+        }
         let flag = if name == "Master" && peak > 0.944 {
             "   ← within 0.5 dB of clipping"
         } else {
             ""
         };
         out.push_str(&format!(
-            "  {name:<width$} peak {peak:.2}  avg {avg:.2}{flag}\n"
+            "  {name:<width$} peak {}  avg {}{flag}\n",
+            crate::song::fmt_db(crate::song::meter_db(peak), 1),
+            crate::song::fmt_db(crate::song::meter_db(avg), 1)
         ));
     }
-    out.push_str("Levels are Live's output meters (0–1), not audio; listen {\"capture\": true} records the bars through the Capture track (the transport is never touched) and adds RMS and low/mid/high balance.");
+    let silent: Vec<&String> = order.iter().filter(|n| peaks[*n].0 <= 0.0001).collect();
+    if !silent.is_empty() {
+        out.push_str(&format!(
+            "  silent: {}\n",
+            silent
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    out.push_str("Peaks in dB from Live's meters (0 dB is the top). listen {\"capture\": true} records the bars instead and adds RMS and low/mid/high balance.");
     Ok(out)
 }
 
@@ -5026,6 +5335,8 @@ pub fn end_performance_body(live: &LiveState, p: &EndPerformanceParams) -> ToolR
 /// dispatcher. Every Live-facing tool is here; batch itself is not.
 pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
     let args = if args.is_null() { json!({}) } else { args };
+    // The raw layer is served as adv_<name>; batch steps may use either.
+    let name = name.strip_prefix(ADVANCED_PREFIX).unwrap_or(name);
     named_tools!(live, name, args;
         "get_session_info" => (Empty, get_session_info_body),
         "get_remote_script_info" => (Empty, get_remote_script_info_body),
@@ -5103,6 +5414,11 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "retime_clip" => (RetimeClipParams, retime_clip_body),
         "shape_sound" => (ShapeSoundParams, shape_sound_body),
         "export_set" => (crate::sets::ExportSetParams, crate::sets::export_set_body),
+        "set_key" => (crate::arrange::SetKeyParams, crate::arrange::set_key_body),
+        "create_return" => (crate::arrange::CreateReturnParams, crate::arrange::create_return_body),
+        "clear_captures" => (crate::arrange::ClearCapturesParams, crate::arrange::clear_captures_body),
+        "feel" => (crate::arrange::FeelParams, crate::arrange::feel_body),
+        "arrange" => (crate::arrange::ArrangeParams, crate::arrange::arrange_body),
         "import_set" => (crate::sets::ImportSetParams, crate::sets::import_set_body),
         "groove_clip" => (GrooveClipParams, groove_clip_body),
         "groove_amount" => (GrooveAmountParams, groove_amount_body),
@@ -5308,6 +5624,9 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
             start: pl.start,
             end: pl.end,
             step: pl.step,
+            at_bar: None,
+            until_bar: None,
+            every_bars: None,
         })
         .map_err(|e| format!("placement {}: {e}", i + 1))?;
         placements.push((i, times));
@@ -5330,6 +5649,13 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     // ── execute, stopping at the first failure ──
     let mut done = plan;
     let fail = |done: &str, what: String| -> String { format!("{done}Stopped: {what}") };
+    if let Some(k) = p.key.as_ref().filter(|k| !k.trim().is_empty()) {
+        let text =
+            crate::arrange::set_key_body(live, &crate::arrange::SetKeyParams { key: k.clone() })
+                .map_err(|e| fail(&done, e))?;
+        done.push_str(text.split(':').next().unwrap_or("Key set"));
+        done.push_str(".\n");
+    }
     if let Some(t) = p.tempo {
         set_tempo_body(live, &SetTempoParams { tempo: t }).map_err(|e| fail(&done, e))?;
         done.push_str(&format!("Tempo {t}.\n"));
@@ -5365,147 +5691,139 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
                 .join(", ")
         ));
     }
+    // Every track in one round trip: the instruments are resolved to URIs
+    // here (the library index), the script creates, names, loads and mixes.
     let mut created: BTreeMap<String, i64> = BTreeMap::new();
-    for t in &p.tracks {
-        let (index, _) = create_track(live, &t.kind, -1).map_err(|e| fail(&done, e))?;
-        let index = index.ok_or_else(|| {
-            fail(
-                &done,
-                format!(
-                    "Live did not report the index of the new track '{}'",
-                    t.name
-                ),
-            )
-        })?;
-        set_track_name_body(
-            live,
-            &SetTrackNameParams {
-                track_index: index,
-                name: t.name.clone(),
-            },
-        )
-        .map_err(|e| fail(&done, e))?;
-        created.insert(t.name.clone(), index);
-        let mut line = format!("Track {index} '{}'", t.name);
-        // A browser URI always carries a ':' (query:Synths#…); plain words in
-        // `instrument` are what the model meant by instrument_query.
-        let query = match (&t.instrument, &t.instrument_query) {
-            (Some(u), None) if !u.contains(':') => Some(u),
-            (_, q) => q.as_ref(),
-        };
-        let uri = match (&t.instrument, query) {
-            (Some(u), _) if u.contains(':') => Some(u.clone()),
-            (_, Some(q)) => {
-                let hits = find_items(live, q, "all", 1).map_err(|e| fail(&done, e))?;
-                let hit = hits.first().map(|h| (h.uri.clone(), h.name.clone()));
-                match hit {
-                    Some((u, name)) => {
-                        line.push_str(&format!(", found '{name}' for \"{q}\""));
-                        Some(u)
-                    }
-                    None => {
-                        return Err(fail(
-                            &done,
-                            format!("track '{}': nothing in the browser matches \"{q}\"", t.name),
-                        ))
+    if !p.tracks.is_empty() {
+        require(live, "create_tracks").map_err(|e| fail(&done, e))?;
+        let mut specs: Vec<Value> = Vec::new();
+        let mut found: Vec<String> = Vec::new();
+        for t in &p.tracks {
+            // A browser URI always carries a ':' (query:Synths#…); plain words in
+            // `instrument` are what the model meant by instrument_query.
+            let query = match (&t.instrument, &t.instrument_query) {
+                (Some(u), None) if !u.contains(':') => Some(u),
+                (_, q) => q.as_ref(),
+            };
+            let uri = match (&t.instrument, query) {
+                (Some(u), _) if u.contains(':') => Some(u.clone()),
+                (_, Some(q)) => {
+                    let hits = find_items(live, q, "all", 1).map_err(|e| fail(&done, e))?;
+                    match hits.first() {
+                        Some(h) => {
+                            found.push(format!("'{}' for \"{q}\"", h.name));
+                            Some(h.uri.clone())
+                        }
+                        None => {
+                            return Err(fail(
+                                &done,
+                                format!(
+                                    "track '{}': nothing in the browser matches \"{q}\"",
+                                    t.name
+                                ),
+                            ))
+                        }
                     }
                 }
-            }
-            _ => None,
-        };
-        if let Some(uri) = uri {
-            let text = load_instrument_or_effect_body(
-                live,
-                &LoadInstrumentParams {
-                    track_index: index,
-                    uri,
-                },
-            )
-            .map_err(|e| fail(&done, e))?;
-            line.push_str(&format!(
-                ", {}",
-                text.split('.').next().unwrap_or("").to_lowercase()
+                _ => None,
+            };
+            let sends: Vec<Value> = t
+                .sends
+                .iter()
+                .map(|(name, value)| json!({"name": name, "value": value}))
+                .collect();
+            specs.push(json!({
+                "name": t.name, "kind": t.kind, "instrument_uri": uri,
+                "volume": t.fader, "volume_db": t.volume_db.or(t.volume), "pan": t.pan,
+                "color_index": t.color_index, "sends": sends,
+            }));
+        }
+        let r = live
+            .send_command("create_tracks", Some(json!({"tracks": specs})))
+            .map_err(|e| fail(&done, live_err("create the tracks", e)))?;
+        let entries = r
+            .get("created")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if entries.len() != p.tracks.len() {
+            return Err(fail(
+                &done,
+                format!(
+                    "Live reported {} of {} tracks created",
+                    entries.len(),
+                    p.tracks.len()
+                ),
             ));
         }
-        if t.volume.is_some() || t.pan.is_some() {
-            set_track_mixer_body(
-                live,
-                &SetTrackMixerParams {
-                    track_index: index,
-                    kind: "track".into(),
-                    volume: t.volume,
-                    pan: t.pan,
-                    mute: None,
-                    solo: None,
-                    arm: None,
-                },
-            )
-            .map_err(|e| fail(&done, e))?;
+        for (t, e) in p.tracks.iter().zip(entries.iter()) {
+            let index = e.get("index").and_then(Value::as_i64).unwrap_or(-1);
+            created.insert(t.name.clone(), index);
+            done.push_str(&format!(
+                "Track {index} '{}'{}\n",
+                t.name,
+                e.get("device")
+                    .and_then(Value::as_str)
+                    .map(|d| format!(" with {d}"))
+                    .unwrap_or_default()
+            ));
         }
-        for (send, value) in &t.sends {
-            set_send_body(
-                live,
-                &SetSendParams {
-                    track_index: index,
-                    kind: "track".into(),
-                    send_name: send.clone(),
-                    send_index: None,
-                    value: *value,
-                },
-            )
-            .map_err(|e| fail(&done, e))?;
+        if !found.is_empty() {
+            done.push_str(&format!("Found in the library: {}.\n", found.join(", ")));
         }
-        if let Some(c) = t.color_index {
-            set_color_body(
-                live,
-                &SetColorParams {
-                    track_index: index,
-                    color_index: c,
-                    clip_index: None,
-                    arrangement: false,
-                    kind: "track".into(),
-                },
-            )
-            .map_err(|e| fail(&done, e))?;
-        }
-        done.push_str(&line);
-        done.push('\n');
     }
-    for (c, notes) in p.clips.iter().zip(planned_notes.iter()) {
-        let track_index = song_track_index(&c.track, &created).map_err(|e| fail(&done, e))?;
-        let mut slots: Vec<i64> = match c.slot {
-            Some(s) => vec![s],
-            None if !c.slots.is_empty() => Vec::new(),
-            None => vec![0],
-        };
-        for s in &c.slots {
-            if !slots.contains(s) {
-                slots.push(*s);
-            }
-        }
-        for slot in &slots {
-            let params = CreateClipParams {
-                track_index,
-                clip_index: *slot,
-                length: c.length,
-                name: c.name.clone(),
-                input: NotesInput {
-                    notes: notes.clone(),
-                    ..Default::default()
-                },
+    // Every clip in one round trip; copies in other rows are made inside
+    // Live from the first one, so the notes travel once.
+    if !p.clips.is_empty() {
+        require(live, "write_clips").map_err(|e| fail(&done, e))?;
+        let mut specs: Vec<Value> = Vec::new();
+        let mut lines: Vec<String> = Vec::new();
+        for (c, notes) in p.clips.iter().zip(planned_notes.iter()) {
+            let track_index = song_track_index(&c.track, &created).map_err(|e| fail(&done, e))?;
+            let mut slots: Vec<i64> = match c.slot {
+                Some(s) => vec![s],
+                None if !c.slots.is_empty() => Vec::new(),
+                None => vec![0],
             };
-            create_clip_body(live, &params).map_err(|e| fail(&done, e))?;
+            for s in &c.slots {
+                if !slots.contains(s) {
+                    slots.push(*s);
+                }
+            }
+            let first = slots[0];
+            for (i, slot) in slots.iter().enumerate() {
+                if i == 0 {
+                    specs.push(json!({"track_index": track_index, "clip_index": slot, "name": c.name, "length": c.length, "notes": notes}));
+                } else {
+                    specs.push(json!({"track_index": track_index, "clip_index": slot, "name": c.name, "copy_of": first}));
+                }
+            }
+            lines.push(format!(
+                "Clip '{}' on track {track_index} slot{} {} ({} notes).",
+                c.name,
+                if slots.len() == 1 { "" } else { "s" },
+                slots
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                notes.len()
+            ));
+        }
+        let r = live
+            .send_command("write_clips", Some(json!({"clips": specs})))
+            .map_err(|e| fail(&done, live_err("write the clips", e)))?;
+        let written = r
+            .get("written")
+            .and_then(Value::as_array)
+            .map_or(specs.len(), Vec::len);
+        for l in &lines {
+            done.push_str(l);
+            done.push('\n');
         }
         done.push_str(&format!(
-            "Clip '{}' on track {track_index} slot{} {} ({} notes).\n",
-            c.name,
-            if slots.len() == 1 { "" } else { "s" },
-            slots
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-                .join(", "),
-            notes.len()
+            "{written} clip{} written in one round trip.\n",
+            if written == 1 { "" } else { "s" }
         ));
     }
     for (i, times) in &placements {
@@ -5519,6 +5837,9 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
             start: None,
             end: None,
             step: None,
+            at_bar: None,
+            until_bar: None,
+            every_bars: None,
         };
         duplicate_to_arrangement_body(live, &params).map_err(|e| fail(&done, e))?;
         done.push_str(&format!(
@@ -5532,7 +5853,8 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
             live,
             &CreateLocatorParams {
                 name: l.name.clone(),
-                time: l.time,
+                bar: None,
+                time: Some(l.time),
             },
         )
         .map_err(|e| fail(&done, e))?;
@@ -5586,6 +5908,10 @@ fn run_blocking<P: Serialize>(
 }
 
 impl Server {
+    /// Every tool is always served: the artist's set ([`CORE_TOOLS`]) under
+    /// its own names, the raw layer as `adv_<name>` so the two sets do not
+    /// compete in a client's list and a search for the artist's words finds
+    /// the artist's tools first. Nothing is hidden by the server.
     pub fn new(live: Arc<LiveState>) -> Self {
         Self {
             live,
@@ -5593,9 +5919,25 @@ impl Server {
         }
     }
 
-    /// Every tool in one router: the main table plus the section and song tools.
+    /// Every tool in one router: the main table plus the section and song
+    /// tools; the raw layer renamed `adv_<name>`, every tool annotated.
     pub fn tool_router() -> ToolRouter<Self> {
-        Self::main_tool_router() + Self::section_tool_router()
+        let mut router = Self::main_tool_router() + Self::section_tool_router();
+        let names: Vec<String> = router.map.keys().map(|k| k.to_string()).collect();
+        for name in names {
+            let Some(mut route) = router.map.remove(name.as_str()) else {
+                continue;
+            };
+            route.attr.annotations = Some(annotations_for(&name));
+            let served = if CORE_TOOLS.contains(&name.as_str()) {
+                name.clone()
+            } else {
+                format!("{ADVANCED_PREFIX}{name}")
+            };
+            route.attr.name = served.clone().into();
+            router.map.insert(served.into(), route);
+        }
+        router
     }
 
     pub fn live(&self) -> &Arc<LiveState> {
@@ -5632,16 +5974,14 @@ impl Server {
 
 #[tool_router(router = main_tool_router)]
 impl Server {
-    /// Start here. One call, one round trip to Live: the set (Live and script
-    /// versions, tempo, signature, position, launch quantization, key, loop),
-    /// every track with its kind, arm/mute/solo, volume and pan, device
-    /// chain, clips by slot with lengths, what plays and what is queued,
-    /// Arrangement clip count; the returns and their devices; the scenes with
-    /// clip counts (playing one in [brackets]); the performance clock (cues,
-    /// pending recording, what fired since the last read); and a one-line
-    /// workflow reminder. include_library adds the browser inventory (slower).
-    /// json: true returns the raw payload. Prefer this over get_session_info +
-    /// get_session_snapshot + get_library_status.
+    /// Start here. One call: the set (tempo, key, signature, where the
+    /// transport is), every track with its instrument and effects, fader in
+    /// dB, pan, clips by slot with lengths, what plays and what is queued;
+    /// the returns; the sections (scene rows with their phrase lengths, the
+    /// playing one in [brackets]) and the song from the Setlist scene; the
+    /// performance clock and what fired since the last read; and a one-line
+    /// workflow reminder. include_library adds the browser inventory (slower);
+    /// json: true returns the raw payload.
     #[tool(name = "get_context")]
     async fn get_context(&self, Parameters(p): Parameters<GetContextParams>) -> CallToolResult {
         self.run(&GET_CONTEXT, p, get_context_body).await
@@ -5816,11 +6156,11 @@ impl Server {
         self.run(&SET_TEMPO, p, set_tempo_body).await
     }
 
-    /// Load a browser item onto a track by URI (from search_browser or
-    /// get_browser_items_at_path). An instrument replaces the track's
-    /// instrument; an audio or MIDI effect is added at the end of the
-    /// track's device chain, so "put an Echo on the pad" is one call. The
-    /// result names the device that was added and its index.
+    /// Load an instrument or effect: by plain words searched in the library
+    /// ("reverb", "analog bass") or by browser URI. An instrument replaces
+    /// the track's instrument; an effect goes at the end of the chain, so
+    /// "put an Echo on the pad" is one call. kind "return" puts an effect on
+    /// a return track, "master" on the master. The result names the device.
     #[tool(name = "load_instrument_or_effect")]
     async fn load_instrument_or_effect(
         &self,
@@ -5930,12 +6270,11 @@ impl Server {
             .await
     }
 
-    /// Copy a Session-view clip into the Arrangement timeline on the same
-    /// track — at one beat position (`destination_time`), at several
-    /// (`destination_times`), or across a range (`start`, `end`, `step`:
-    /// start 32, end 96, step 4 places it on every bar from bar 9 to bar
-    /// 24). One call per section, not one per bar. Placements happen in
-    /// order and stop at the first failure, which the result reports.
+    /// Copy a Session clip into the Arrangement on the same track: at a bar
+    /// (`at_bar`), or every `every_bars` from `at_bar` up to `until_bar`;
+    /// beat positions (`destination_time`, `destination_times`, or `start`,
+    /// `end`, `step`) also work. Every copy goes in one round trip. `arrange`
+    /// is the bar-based tool for placing, repeating, moving and deleting.
     #[tool(name = "duplicate_to_arrangement")]
     async fn duplicate_to_arrangement(
         &self,
@@ -5945,8 +6284,8 @@ impl Server {
             .await
     }
 
-    /// Create a named locator (cue point) in the Arrangement at a beat
-    /// position. A locator already at that beat is renamed instead.
+    /// Create a named locator (cue point) in the Arrangement at a bar. A
+    /// locator already there is renamed instead.
     #[tool(name = "create_locator")]
     async fn create_locator(
         &self,
@@ -5955,10 +6294,9 @@ impl Server {
         self.run(&CREATE_LOCATOR, p, create_locator_body).await
     }
 
-    /// Set a track's volume, pan, mute, solo or arm — any mix, in one call.
-    /// Volume is Live's mixer parameter 0.0-1.0 where 0.85 is 0 dB. Works
-    /// on return tracks (kind "return") and the master (kind "master",
-    /// volume and pan only). The result reports the track's state after.
+    /// Set a track's fader (volume_db, e.g. -6), pan, mute, solo or arm in
+    /// one call; returns (kind "return") and the master (kind "master") too.
+    /// The reply reads the fader back in dB.
     #[tool(name = "set_track_mixer")]
     async fn set_track_mixer(
         &self,
@@ -6063,9 +6401,9 @@ impl Server {
         self.run(&SET_CLIP_LAUNCH, p, set_clip_launch_body).await
     }
 
-    /// One reading of every track's output meter (0.0 silent to 1.0
-    /// clipping), plus returns and master. Only meaningful while Live plays;
-    /// for a proper reading use play_and_measure.
+    /// One reading of every track's output meter in dB, plus returns and
+    /// master. Only meaningful while Live plays; for a reading over time use
+    /// listen or play_and_measure.
     #[tool(name = "get_track_meters")]
     async fn get_track_meters(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
         self.run(&GET_TRACK_METERS, p, get_track_meters_body).await
@@ -6082,12 +6420,13 @@ impl Server {
         self.run(&PLAY_AND_MEASURE, p, play_and_measure_body).await
     }
 
-    /// Write automation into a clip: a filter sweep, a volume fade, a send
-    /// ride. Target a device parameter (device_index + parameter_index from
-    /// get_device_parameters) or a mixer control (volume, pan, send). Give
-    /// points [{time, value}] in clip beats, or one ramp {from, to, over}.
-    /// Values are in the parameter's own range. Works on Session clips and on
-    /// Arrangement clips, which is how Live stores arrangement automation.
+    /// Write automation into a Session clip: a filter sweep, a volume fade,
+    /// a send ride. Target a device parameter (device_index +
+    /// parameter_index from get_device_parameters) or a mixer control
+    /// (volume, pan, send). Give points [{time, value}] in clip beats, or one
+    /// ramp {from, to, over}. Values are in the parameter's own range. Live's
+    /// API cannot write into Arrangement clips: automate the Session clip,
+    /// then place it (the envelope travels with it).
     #[tool(name = "set_clip_automation")]
     async fn set_clip_automation(
         &self,
@@ -6108,11 +6447,6 @@ impl Server {
             .await
     }
 
-    /// Run several tool calls in one round-trip: an ordered list of
-    /// {tool, args}. Stops at the first failure (unless stop_on_error is
-    /// false) and reports each step. Inside args, "$last_track" stands for
-    /// the index of the most recently created track, so "create a track,
-    /// name it, load a sound, fill a clip" is one call.
     /// What this Live can actually use: its version, the instruments and
     /// effects present in the browser (and which Suite instruments are not),
     /// the packs installed, and the drum and sound folders. Call it before
@@ -6126,13 +6460,12 @@ impl Server {
     }
 
     /// Hear the result as numbers: record `bars` bars of the arrangement
-    /// from `start` through a Capture track (created once, input
-    /// Resampling, muted), then report the clip and its levels — peak dBFS,
-    /// RMS, RMS per bar, silent bars, clipped samples, stereo correlation —
-    /// with a one-line reading. The clip stays in the Capture track's slot,
-    /// named "<name> @ <start>", so the producer can play it; the file path
-    /// is returned for the app. Nothing else in the set changes. One capture
-    /// at a time; 1–64 bars.
+    /// from `start_bar` through a Capture track (made once, input
+    /// Resampling, muted), then report the clip and its levels: peak dBFS,
+    /// RMS, RMS per bar, silent bars, clipped samples, stereo correlation,
+    /// with a one-line reading. The clip stays on the Capture track so you
+    /// can play it; clear_captures removes the track when you are done.
+    /// Nothing else in the set changes. One capture at a time; 1–64 bars.
     #[tool(name = "capture_mix")]
     async fn capture_mix(&self, Parameters(p): Parameters<CaptureMixParams>) -> CallToolResult {
         self.run(&CAPTURE_MIX, p, capture_mix_body).await
@@ -6153,8 +6486,8 @@ impl Server {
         self.run(&MEASURE_CAPTURE, p, measure_capture_body).await
     }
 
-    /// Delete a track by index (a wrong instrument choice no longer leaves an
-    /// orphan). Later tracks move down by one.
+    /// Delete a track by index. Later tracks move up by one. Refused while
+    /// a performance runs if the track is playing.
     #[tool(name = "delete_track")]
     async fn delete_track(&self, Parameters(p): Parameters<TrackParams>) -> CallToolResult {
         self.run(&DELETE_TRACK, p, delete_track_body).await
@@ -6321,12 +6654,11 @@ impl Server {
         self.run(&SET_SCENE, p, set_scene_body).await
     }
 
-    /// Listen without stopping the set: reads Live's output meters four times
-    /// a bar from the next bar line for `bars` bars and reports peak and
-    /// average per track, return and master (the master is flagged within
-    /// 0.5 dB of clipping). capture: true records the bars through the Capture
-    /// track instead (never touches the transport) and adds peak, RMS per bar
-    /// and low/mid/high balance from the file. Allowed during a performance.
+    /// Listen without stopping the set: the peak and average level of every
+    /// track, return and the master in dB over the next `bars` bars, from
+    /// the next bar line (the master is flagged within 0.5 dB of clipping).
+    /// capture: true records the bars through the Capture track instead and
+    /// adds RMS per bar and low/mid/high balance. Allowed during a performance.
     #[tool(name = "listen")]
     async fn listen(&self, Parameters(p): Parameters<ListenParams>) -> CallToolResult {
         self.run(&LISTEN, p, listen_body).await
@@ -6393,6 +6725,11 @@ impl Server {
             .await
     }
 
+    /// Run several tool calls in one round-trip: an ordered list of
+    /// {tool, args}. Stops at the first failure (unless stop_on_error is
+    /// false) and reports each step. Inside args, "$last_track" stands for
+    /// the index of the most recently created track, so "create a track,
+    /// name it, load a sound, fill a clip" is one call.
     #[tool(name = "batch")]
     async fn batch(&self, Parameters(p): Parameters<BatchParams>) -> CallToolResult {
         self.run(&BATCH, p, batch_body).await
@@ -6529,6 +6866,64 @@ impl Server {
         Parameters(p): Parameters<crate::sections::SteerParams>,
     ) -> CallToolResult {
         self.run(&BACK, p, crate::sections::back_body).await
+    }
+
+    /// Set the key: "F minor", "D dorian", "G". Written into Live 12's scale
+    /// settings, so the clip editor shows it and everything written follows
+    /// it. A fresh set sits in C Major until you do.
+    #[tool(name = "set_key")]
+    async fn set_key(
+        &self,
+        Parameters(p): Parameters<crate::arrange::SetKeyParams>,
+    ) -> CallToolResult {
+        self.run(&SET_KEY, p, crate::arrange::set_key_body).await
+    }
+
+    /// A new return track, optionally with an effect on it ("reverb",
+    /// "ping pong delay", or a URI). Feed it with set_send.
+    #[tool(name = "create_return")]
+    async fn create_return(
+        &self,
+        Parameters(p): Parameters<crate::arrange::CreateReturnParams>,
+    ) -> CallToolResult {
+        self.run(&CREATE_RETURN, p, crate::arrange::create_return_body)
+            .await
+    }
+
+    /// Remove the Capture track that capture_mix and listen record into
+    /// (keep_track: true removes only its clips). The audio files stay in
+    /// the project's Samples/Recorded folder.
+    #[tool(name = "clear_captures")]
+    async fn clear_captures(
+        &self,
+        Parameters(p): Parameters<crate::arrange::ClearCapturesParams>,
+    ) -> CallToolResult {
+        self.run(&CLEAR_CAPTURES, p, crate::arrange::clear_captures_body)
+            .await
+    }
+
+    /// Make a clip feel played: swing (delay the off-beats by a fraction of
+    /// the step), humanize_ms (hits drift early or late, velocities vary),
+    /// groove (one from the set's Groove Pool, Live's own, non-destructive),
+    /// groove_amount, retime (half_time / double_time), or a variation
+    /// (fill_last_bar, ghost_notes, invert_chords, thin). Any mix in one
+    /// call, seeded; undo: true puts the clip back as it was before.
+    #[tool(name = "feel")]
+    async fn feel(&self, Parameters(p): Parameters<crate::arrange::FeelParams>) -> CallToolResult {
+        self.run(&FEEL, p, crate::arrange::feel_body).await
+    }
+
+    /// The Arrangement in bars: place a Session clip at a bar (or every N
+    /// bars up to a bar), repeat an Arrangement clip after itself, move one
+    /// to a bar, delete the clips that start in a bar range, shorten the
+    /// whole arrangement to end at a bar, or list what is there. One round
+    /// trip per track, however many clips.
+    #[tool(name = "arrange")]
+    async fn arrange(
+        &self,
+        Parameters(p): Parameters<crate::arrange::ArrangeParams>,
+    ) -> CallToolResult {
+        self.run(&ARRANGE, p, crate::arrange::arrange_body).await
     }
 
     /// Write the whole set as a rebuildable document under the server's
@@ -6708,7 +7103,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 94);
+        assert_eq!(tools.len(), 99);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();
