@@ -264,6 +264,7 @@ const MODIFYING_COMMANDS: &[&str] = &[
     "capture_scene",
     "duplicate_scene",
     "set_clip_groove",
+    "set_device_parameters",
 ];
 // get_context and get_browser_index are reads: the default budget applies.
 

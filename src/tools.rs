@@ -101,6 +101,7 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "duplicate_scene",
     "get_grooves",
     "set_clip_groove",
+    "set_device_parameters",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -267,10 +268,31 @@ params!(SetDeviceParameterParams {
     track_index: i64,
     /// Index into the track's device chain
     device_index: i64,
-    /// Index into device.parameters
-    parameter_index: i64,
+    /// Index into device.parameters (or give `parameter` by name)
+    parameter_index: Option<i64>,
+    /// The parameter by name: an exact name, or a substring of one ("Cutoff", "atk")
+    parameter: Option<String>,
     /// New parameter value (Live parameter units)
     value: f64,
+});
+params!(ShapeSoundParams {
+    /// Track name or index
+    track: Value,
+    /// The device, by name (a substring) or index; default: the first instrument, rack or drum rack on the track
+    device: Option<Value>,
+    /// Each word: a fraction 0–1 of the parameter's range, or "±N%" relative to where it sits
+    cutoff: Option<Value>,
+    resonance: Option<Value>,
+    attack: Option<Value>,
+    decay: Option<Value>,
+    sustain: Option<Value>,
+    release: Option<Value>,
+    drive: Option<Value>,
+    detune: Option<Value>,
+    width: Option<Value>,
+    lfo_rate: Option<Value>,
+    reverb: Option<Value>,
+    delay: Option<Value>,
 });
 params!(SnapshotParams {
     /// Include MIDI note arrays in clips (default true)
@@ -808,6 +830,7 @@ pub const SNAPSHOT_MIX: ToolSpec = ToolSpec::new("snapshot_mix");
 pub const RESTORE_MIX: ToolSpec = ToolSpec::new("restore_mix");
 pub const PANIC: ToolSpec = ToolSpec::new("panic");
 pub const RETIME_CLIP: ToolSpec = ToolSpec::new("retime_clip");
+pub const SHAPE_SOUND: ToolSpec = ToolSpec::new("shape_sound");
 pub const GROOVE_CLIP: ToolSpec = ToolSpec::new("groove_clip");
 pub const GROOVE_AMOUNT: ToolSpec = ToolSpec::new("groove_amount");
 pub const HUMANIZE: ToolSpec = ToolSpec::new("humanize");
@@ -884,15 +907,303 @@ pub fn get_device_parameters_body(live: &LiveState, p: &DeviceParams) -> ToolRes
     .map_err(|e| live_err("get device parameters", e))
 }
 
+/// One device's parameters, as [`crate::sound::Param`]s, with its name and class.
+fn device_params(
+    live: &LiveState,
+    track_index: i64,
+    device_index: i64,
+) -> Result<(String, String, Vec<crate::sound::Param>), String> {
+    require(live, "get_device_parameters")?;
+    let r = live
+        .send_command(
+            "get_device_parameters",
+            Some(json!({"track_index": track_index, "device_index": device_index})),
+        )
+        .map_err(|e| live_err("read the device's parameters", e))?;
+    let d = r.get("device").cloned().unwrap_or(Value::Null);
+    let params: Vec<crate::sound::Param> = d
+        .get("parameters")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(crate::sound::Param::from_value)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((
+        get_display(&d, "name", "device"),
+        get_display(&d, "class_name", ""),
+        params,
+    ))
+}
+
+/// The device `shape_sound` and a sound ramp mean: by name or index, else
+/// the first instrument, rack or drum rack on the track.
+fn pick_device(
+    live: &LiveState,
+    track_index: i64,
+    which: Option<&Value>,
+) -> Result<(i64, String), String> {
+    require(live, "get_track_info")?;
+    let info = live
+        .send_command("get_track_info", Some(json!({"track_index": track_index})))
+        .map_err(|e| live_err("read the track's devices", e))?;
+    let devices: Vec<Value> = info
+        .get("devices")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if devices.is_empty() {
+        return Err(format!(
+            "'{}' has no devices to shape",
+            get_display(&info, "name", "the track")
+        ));
+    }
+    let names: Vec<String> = devices
+        .iter()
+        .map(|d| get_display(d, "name", "?"))
+        .collect();
+    let found = match which {
+        Some(Value::Number(n)) => devices
+            .iter()
+            .find(|d| d.get("index").and_then(Value::as_i64) == n.as_i64()),
+        Some(Value::String(s)) => {
+            let want = s.trim().to_lowercase();
+            devices
+                .iter()
+                .find(|d| get_display(d, "name", "").to_lowercase() == want)
+                .or_else(|| {
+                    devices
+                        .iter()
+                        .find(|d| get_display(d, "name", "").to_lowercase().contains(&want))
+                })
+        }
+        Some(other) => return Err(format!("device must be a name or an index, not {other}")),
+        None => devices
+            .iter()
+            .find(|d| {
+                matches!(
+                    d.get("type").and_then(Value::as_str),
+                    Some("instrument" | "rack" | "drum_machine")
+                )
+            })
+            .or_else(|| devices.first()),
+    };
+    let d = found.ok_or_else(|| {
+        format!(
+            "no device {} on this track; its devices: {}",
+            which.map(display).unwrap_or_default(),
+            names.join(", ")
+        )
+    })?;
+    Ok((
+        d.get("index").and_then(Value::as_i64).unwrap_or(0),
+        get_display(d, "name", "device"),
+    ))
+}
+
+pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
+    require(live, "set_device_parameters")?;
+    let given: Vec<(&str, &Value)> = [
+        ("cutoff", &p.cutoff),
+        ("resonance", &p.resonance),
+        ("attack", &p.attack),
+        ("decay", &p.decay),
+        ("sustain", &p.sustain),
+        ("release", &p.release),
+        ("drive", &p.drive),
+        ("detune", &p.detune),
+        ("width", &p.width),
+        ("lfo_rate", &p.lfo_rate),
+        ("reverb", &p.reverb),
+        ("delay", &p.delay),
+    ]
+    .into_iter()
+    .filter_map(|(w, v)| v.as_ref().filter(|v| !v.is_null()).map(|v| (w, v)))
+    .collect();
+    if given.is_empty() {
+        return Err(format!(
+            "Give at least one word: {} (a fraction 0–1 of the range, or \"±N%\").",
+            crate::sound::WORDS.join(", ")
+        ));
+    }
+    let state = read_perf_state(live)?;
+    let track = state.track_by(&p.track)?;
+    let (di, dname) = pick_device(live, track.index, p.device.as_ref())?;
+    let (_, class, params) = device_params(live, track.index, di)?;
+    let rack = crate::sound::is_rack(&class);
+    let mut values: Vec<Value> = Vec::new();
+    let mut resolved: Vec<(String, crate::sound::Param, crate::sound::Via, f64)> = Vec::new();
+    let mut unresolved: Vec<&str> = Vec::new();
+    for (word, v) in &given {
+        match crate::sound::resolve(word, &class, &params) {
+            Some((param, via)) => {
+                let target = crate::sound::target_value(param, v)?;
+                values.push(json!({"index": param.index, "value": target}));
+                resolved.push((word.to_string(), param.clone(), via, target));
+            }
+            None => unresolved.push(word),
+        }
+    }
+    let param_names = || -> String {
+        params
+            .iter()
+            .map(|q| q.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if resolved.is_empty() {
+        return Err(format!(
+            "{} ('{dname}', {class}) is not in the vocabulary for {}; its parameters by name are: {}. set_device_parameter takes a name substring: {{\"track_index\": {}, \"device_index\": {di}, \"parameter\": \"<name>\", \"value\": …}}.",
+            track.name,
+            unresolved.join(", "),
+            param_names(),
+            track.index
+        ));
+    }
+    let r = live
+        .send_command(
+            "set_device_parameters",
+            Some(json!({"track_index": track.index, "device_index": di, "values": values})),
+        )
+        .map_err(|e| live_err("set the parameters", e))?;
+    let written: Vec<Value> = r
+        .get("parameters")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut moves: Vec<String> = Vec::new();
+    for (word, param, via, _) in &resolved {
+        let after = written
+            .iter()
+            .find(|w| w.get("index").and_then(Value::as_i64) == Some(param.index));
+        let new_display = after
+            .and_then(crate::sound::Param::from_value)
+            .map(|q| q.display())
+            .unwrap_or_else(|| "?".into());
+        moves.push(format!(
+            "{}'{}' {} → {new_display}",
+            match via {
+                crate::sound::Via::Macro => "macro ",
+                _ => "",
+            },
+            param.name,
+            param.display()
+        ));
+        let _ = word;
+    }
+    let vocab = crate::sound::vocabulary(&class, &params);
+    let mut text = format!(
+        "{} ({}'{dname}'{}): {}.",
+        track.name,
+        if rack { "rack " } else { "" },
+        if class.is_empty() {
+            String::new()
+        } else {
+            format!(", {class}")
+        },
+        moves.join(", ")
+    );
+    if !unresolved.is_empty() {
+        text.push_str(&format!(
+            "\nNot found on this device: {}{}. set_device_parameter takes a name substring; the parameters are: {}.",
+            unresolved.join(", "),
+            if rack { " (no macro says it; a rack's own chain devices are reached through their macros)" } else { "" },
+            param_names()
+        ));
+    }
+    if rack {
+        text.push_str("\nRacks are asked first: their macros are how the preset's maker meant it to be shaped.");
+    }
+    text.push_str(&format!(
+        "\nWords this device answers to: {}. Sweep one in a cue: {{\"ramp\": {{\"sound\": \"{}\", \"track\": \"{}\", \"to\": 0.8}}, \"bars\": 8}}.",
+        vocab
+            .iter()
+            .map(|(w, n)| format!("{w} ({n})"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        vocab.first().map(|(w, _)| w.as_str()).unwrap_or("cutoff"),
+        track.name
+    ));
+    Ok(text)
+}
+
+/// A cue step's `ramp {"sound": word, "track": …, "device"?: …, "to": 0–1}`
+/// resolved to the device parameter it means; other steps pass through.
+fn resolve_sound_ramps(
+    live: &LiveState,
+    state: &PerfState,
+    p: &CueParams,
+) -> Result<CueParams, String> {
+    let mut out = p.clone();
+    for (i, step) in out.steps.iter_mut().enumerate() {
+        let Some(ramp) = step.ramp.as_ref().and_then(Value::as_object).cloned() else {
+            continue;
+        };
+        let Some(word) = ramp.get("sound").and_then(Value::as_str) else {
+            continue;
+        };
+        let n = i + 1;
+        let which = ramp
+            .get("track")
+            .ok_or_else(|| format!("step {n}: a sound ramp needs \"track\""))?;
+        let track = state
+            .track_by(which)
+            .map_err(|e| format!("step {n}: {e}"))?;
+        let to = ramp.get("to").and_then(Value::as_f64).ok_or_else(|| {
+            format!("step {n}: a sound ramp needs \"to\" (0–1 of the parameter's range)")
+        })?;
+        if !(0.0..=1.0).contains(&to) {
+            return Err(format!("step {n}: to must be between 0 and 1, got {to}"));
+        }
+        let (di, dname) = pick_device(live, track.index, ramp.get("device"))
+            .map_err(|e| format!("step {n}: {e}"))?;
+        let (_, class, params) =
+            device_params(live, track.index, di).map_err(|e| format!("step {n}: {e}"))?;
+        let (param, _) = crate::sound::resolve(word, &class, &params).ok_or_else(|| {
+            format!(
+                "step {n}: '{word}' is not in the vocabulary for '{dname}' ({class}); its parameters: {}",
+                params.iter().map(|q| q.name.clone()).collect::<Vec<_>>().join(", ")
+            )
+        })?;
+        step.ramp = Some(
+            json!({"target": "device", "track": track.index, "device_index": di,
+                                "parameter_index": param.index, "to": param.at_fraction(to)}),
+        );
+    }
+    Ok(out)
+}
+
 pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams) -> ToolResult {
     require(live, "set_device_parameter")?;
+    let parameter_index = match (p.parameter_index, p.parameter.as_deref()) {
+        (Some(i), _) => i,
+        (None, Some(name)) => {
+            let (dname, _, params) = device_params(live, p.track_index, p.device_index)?;
+            crate::sound::by_name(name, &params)
+                .map(|q| q.index)
+                .ok_or_else(|| {
+                    format!(
+                        "no parameter named '{name}' on '{dname}'; its parameters: {}",
+                        params
+                            .iter()
+                            .map(|q| q.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?
+        }
+        (None, None) => {
+            return Err("give parameter_index, or parameter (a name or a substring of one)".into())
+        }
+    };
     let r = live
         .send_command(
             "set_device_parameter",
             Some(json!({
                 "track_index": p.track_index,
                 "device_index": p.device_index,
-                "parameter_index": p.parameter_index,
+                "parameter_index": parameter_index,
                 "value": p.value,
             })),
         )
@@ -4333,6 +4644,7 @@ fn follow_after_recordings(live: &LiveState, events: &[Value]) -> String {
 pub fn cue_body(live: &LiveState, p: &CueParams) -> ToolResult {
     require(live, "schedule_cue")?;
     let state = read_perf_state(live)?;
+    let p = &resolve_sound_ramps(live, &state, p)?;
     let resolved = perf::resolve_cue(&state, p)?;
     let sent = live
         .send_command(
@@ -4778,6 +5090,7 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "restore_mix" => (RestoreMixParams, restore_mix_body),
         "panic" => (PanicParams, panic_body),
         "retime_clip" => (RetimeClipParams, retime_clip_body),
+        "shape_sound" => (ShapeSoundParams, shape_sound_body),
         "groove_clip" => (GrooveClipParams, groove_clip_body),
         "groove_amount" => (GrooveAmountParams, groove_amount_body),
         "humanize" => (HumanizeParams, humanize_body),
@@ -6205,6 +6518,20 @@ impl Server {
         self.run(&BACK, p, crate::sections::back_body).await
     }
 
+    /// Shape a sound in words: cutoff, resonance, attack, decay, sustain,
+    /// release, drive, detune, width, lfo_rate, reverb, delay, each a
+    /// fraction 0–1 of the parameter's range or "±N%" of where it sits. The
+    /// words are resolved against the device's rack macros first (most Live
+    /// presets are racks), then a table per Live instrument, then parameter
+    /// names; several words are one round trip. The reply names each
+    /// parameter with its before and after in Live's display units and the
+    /// words this device answers to; an unknown device lists its parameters
+    /// for set_device_parameter by name.
+    #[tool(name = "shape_sound")]
+    async fn shape_sound(&self, Parameters(p): Parameters<ShapeSoundParams>) -> CallToolResult {
+        self.run(&SHAPE_SOUND, p, shape_sound_body).await
+    }
+
     /// Give a Session clip a groove from this set's Groove Pool (Live's own,
     /// non-destructive, Live 11+), by name or index, with the groove's
     /// timing/random/velocity amounts; "none" removes it. The API cannot add
@@ -6341,7 +6668,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 91);
+        assert_eq!(tools.len(), 92);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();

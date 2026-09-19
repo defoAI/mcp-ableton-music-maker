@@ -23,6 +23,7 @@
 //! - [`song`]         sections (scene names) and songs (the Setlist: scene): parsing, the plan, the cursor (pure)
 //! - [`sections`]     the section and song tools: make_section, set_song, play_song, the steering verbs
 //! - [`transition`]   a jump's transition (tempo, retime, crossfade, fill, drop, sweep) as cue primitives
+//! - [`sound`]        the sound vocabulary: words → a device's rack macros, the instrument table, or a parameter name (pure)
 //! - [`activity`]     the local activity log (one JSON line per tool call)
 //! - [`state`]        where the server writes on this machine
 //! - [`install`]      the Remote Script installer
@@ -44,6 +45,7 @@ pub mod notes;
 pub mod performance;
 pub mod sections;
 pub mod song;
+pub mod sound;
 pub mod state;
 pub mod tools;
 pub mod transition;

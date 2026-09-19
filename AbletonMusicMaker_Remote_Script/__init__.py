@@ -28,7 +28,7 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.18.0"
+SCRIPT_VERSION = "1.19.0"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
@@ -124,6 +124,7 @@ SCRIPT_CAPABILITIES = [
     "duplicate_scene",
     "get_grooves",
     "set_clip_groove",
+    "set_device_parameters",
 ]
 
 def create_instance(c_instance):
@@ -414,6 +415,7 @@ class AbletonMCP(ControlSurface):
                                  "set_performance_mode", "set_scene", "start_live_capture",
                                  "snapshot_mix", "restore_mix",
                                  "capture_scene", "duplicate_scene", "set_clip_groove",
+                                 "set_device_parameters",
                                  # reads that touch a clip while it records: main thread only
                                  "capture_status", "list_captures"]:
                 # Use a thread-safe approach with a response queue
@@ -573,6 +575,10 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "duplicate_scene":
                             result = self._duplicate_scene(
                                 params.get("index", 0), params.get("name"), params.get("phrase_bars"))
+                        elif command_type == "set_device_parameters":
+                            result = self._set_device_parameters(
+                                params.get("track_index", 0), params.get("device_index", 0),
+                                params.get("values", []))
                         elif command_type == "set_clip_groove":
                             result = self._set_clip_groove(
                                 params.get("track_index"), params.get("clip_index"),
@@ -5106,6 +5112,41 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
+            raise
+
+    def _set_device_parameters(self, track_index, device_index, values):
+        """Several parameters of one device in one round trip: values is a
+        list of {index, value}; each reply entry carries the name, the old
+        and new value, the range and Live's display string."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+            device = track.devices[device_index]
+            params = list(device.parameters)
+            out = []
+            for item in list(values or []):
+                pi = int(item.get("index", -1))
+                if pi < 0 or pi >= len(params):
+                    raise IndexError("Parameter index %d out of range on '%s'" % (pi, device.name))
+                param = params[pi]
+                old = float(param.value)
+                new = max(float(param.min), min(float(param.max), float(item.get("value", old))))
+                param.value = new
+                entry = {"index": pi, "name": "%s" % param.name, "old_value": old,
+                         "value": float(param.value), "min": float(param.min), "max": float(param.max)}
+                try:
+                    entry["value_string"] = "%s" % param.value_string
+                except Exception:
+                    pass
+                out.append(entry)
+            return {"track_index": track_index, "device_index": device_index,
+                    "device": "%s" % device.name, "class_name": "%s" % device.class_name,
+                    "parameters": out}
+        except Exception as e:
+            self.log_message("Error setting device parameters: " + str(e))
             raise
 
     def get_browser_tree(self, category_type="all"):
