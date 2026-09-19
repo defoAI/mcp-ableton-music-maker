@@ -21,7 +21,7 @@ the product rests on.
 | Rust server on `rmcp`, stdio | **Live** | [decision 0002](../decisions/0002-rust-server-remote-script-stays-python.md) |
 | The artist's tool set, with the raw layer served as `adv_` | **Live** | [decision 0006](../decisions/0006-one-artist-surface-raw-layer-marked-advanced.md); the count lives in `src/tools.rs`, see [source-of-truth](../facts/source-of-truth.md) |
 | Capability handshake with the Remote Script | **Live** | `src/handshake.rs` |
-| Hardened Docker image, verified in CI, published to GHCR | **Live** | `docker/verify-image.sh`, `ci.yml` |
+| Hardened Docker image, verified by `verify-image.sh` | **Live, built locally** | CI builds only the Mac app ([decision 0009](../decisions/0009-ci-builds-the-mac-app-only.md)) |
 | Telemetry and dataset tiers | **Removed** | [decision 0004](../decisions/0004-who-publishes-and-holds-the-data.md); no upload path exists, pinned by `tests/local_only.rs` |
 | Mac app: install, status, activity, and listening to Live | **Runs from source** | [0005](../decisions/0005-mac-app-is-tauri-and-bundles-the-server.md) Tauri and the bundled server, [0008](../decisions/0008-app-hears-live-through-a-process-tap.md) the process tap; signing and notarisation are the open phase |
 | Remote Script bound to loopback | **Live** | [decision 0003](../decisions/0003-remote-script-bind-address.md); `bind_host.txt` beside the script overrides it |

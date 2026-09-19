@@ -33,7 +33,7 @@
 
 ## Rollout
 - [ ] PR into `main`
-- [ ] CI green, including the GHCR push
+- [ ] CI green (the Rust gate and the Mac app)
 - [ ] Release notes name the story by slug; `SCRIPT_VERSION` bump called out so users reinstall
 
 ---

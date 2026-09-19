@@ -53,7 +53,7 @@ src/sets.rs            export_set / import_set: a rebuildable document under sta
 src/arrange.rs         the artist-facing tools: arrange (bars), feel (one tool, one undo), set_key, create_return, clear_captures
 tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
 docker/                verify-image.sh, Claude Desktop example config
-.github/workflows/ci.yml   fmt, clippy, test; image build, verify, trivy, push to GHCR on main
+.github/workflows/ci.yml   fmt, clippy, test, docs facts; the Mac app and its .dmg — both jobs on macOS, nothing on Linux
 ```
 
 ## Rules that are easy to break
@@ -88,9 +88,10 @@ docker/                verify-image.sh, Claude Desktop example config
 - **The Live socket is synchronous.** Bodies run on the blocking pool through `spawn_blocking`;
   do not call the bridge from async code directly.
 - **The Docker image is hardened by contract**: distroless, non-root, read-only root, `/state`
-  the only writable path, no upload tier in the binary. Changing the Dockerfile means
-  re-running `docker/verify-image.sh`; anything new the server writes must go under
-  `ABLETON_MCP_STATE_DIR`.
+  the only writable path, no upload tier in the binary. CI no longer builds it
+  ([decision 0009](docs/decisions/0009-ci-builds-the-mac-app-only.md)), so changing the
+  Dockerfile means running `docker/verify-image.sh` yourself before you push; anything new
+  the server writes must go under `ABLETON_MCP_STATE_DIR`.
 - **The app links the crate.** `install`, `handshake`, `connection`, `state` and `app::check`
   are the Mac app's API; a signature change there breaks `app/src-tauri`. The app is not a
   workspace member — it has its own `Cargo.lock` so the Dockerfile's dependency layer stays

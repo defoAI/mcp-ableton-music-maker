@@ -17,6 +17,7 @@ Routine calls do not.
 | [0006](0006-one-artist-surface-raw-layer-marked-advanced.md) | Which tools does the server present, and in what units? | **Decided** — the artist's set (`CORE_TOOLS`) in five groups, dB and bars; the raw layer is served too, as `adv_<name>`, never hidden (2026-09-19) |
 | [0007](0007-live-main-thread-only-in-slices.md) | Where does the Remote Script run its work, and how long may it hold Live? | **Decided** — one executor on Live's main thread, long work sliced per tick (8 ms while playing), one undo step per mutating command, `main_ms` on every reply and activity line (2026-09-19) |
 | [0008](0008-app-hears-live-through-a-process-tap.md) | How does the Mac app hear what Live is playing? | **Decided** — a Core Audio process tap of Live's process only; the app's minimum macOS stays 12 (2026-09-19) |
+| [0009](0009-ci-builds-the-mac-app-only.md) | What does CI build? | **Decided** — the Rust gate and the Mac app, both on macOS; the Docker image is built where it is used, not published (2026-09-19) |
 
 ## Already settled, recorded where they bind
 

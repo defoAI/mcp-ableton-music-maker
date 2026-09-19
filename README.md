@@ -38,7 +38,7 @@ Docker Desktop must be running whenever the MCP client starts the server.
 git clone https://github.com/defoAI/mcp-ableton-music-maker.git
 cd mcp-ableton-music-maker
 docker compose build
-docker/verify-image.sh mcp-ableton-music-maker:local   # optional: the checks CI runs
+docker/verify-image.sh mcp-ableton-music-maker:local   # optional: the image's contract
 ```
 
 **2. Install the Remote Script into Live's User Library**
@@ -115,7 +115,7 @@ Then register `ableton-music-maker` as the command in your MCP client, for examp
 
 ## What the image guarantees
 
-Checked by `docker/verify-image.sh` and by CI on every build:
+Checked by `docker/verify-image.sh`, which you run against an image you built:
 
 - distroless runtime: no shell, no package manager, runs as a non-root user
 - read-only root filesystem; the only writable path is the `/state` volume

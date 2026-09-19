@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -18,8 +17,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # On macOS because that is the only platform the product ships for: the app
+  # is Mac-only and the Remote Script runs inside Live. Nothing here is
+  # platform-specific, so this is about matching where it is used, not about
+  # needing a Mac to run it.
   rust:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -106,96 +109,3 @@ jobs:
             echo
             echo "A \`v*\` tag builds the signed, notarised image that needs none of this."
           } >> "$GITHUB_STEP_SUMMARY"
-
-  # One native runner per architecture: a Rust release build under QEMU
-  # emulation takes hours, a native one minutes.
-  image:
-    needs: rust
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
-    env:
-      IMAGE_LOCAL: mcp-ableton-music-maker:local
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build test stage (runs the suite inside the image)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: test
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
-
-      - name: Build runtime stage
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: runtime
-          load: true
-          tags: ${{ env.IMAGE_LOCAL }}
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
-
-      - name: Verify runtime image
-        run: docker/verify-image.sh ${{ env.IMAGE_LOCAL }}
-
-      - name: Scan for critical CVEs
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.IMAGE_LOCAL }}
-          format: table
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-
-      - name: Image name for GHCR (must be lowercase)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: echo "IMAGE_GHCR=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-
-      - name: Log in to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push per-architecture image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: runtime
-          push: true
-          tags: ${{ env.IMAGE_GHCR }}:${{ github.sha }}-${{ matrix.arch }}
-          cache-from: type=gha,scope=${{ matrix.arch }}
-
-  manifest:
-    needs: image
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Image name for GHCR (must be lowercase)
-        run: echo "IMAGE_GHCR=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Merge into a multi-architecture image
-        run: |
-          docker buildx imagetools create \
-            -t "$IMAGE_GHCR:${{ github.sha }}" \
-            -t "$IMAGE_GHCR:latest" \
-            "$IMAGE_GHCR:${{ github.sha }}-amd64" \
-            "$IMAGE_GHCR:${{ github.sha }}-arm64"
-          docker buildx imagetools inspect "$IMAGE_GHCR:latest"

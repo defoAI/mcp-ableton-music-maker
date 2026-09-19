@@ -158,7 +158,8 @@ Count the tools before quoting a total; the snapshot in
 
 ## The image contract
 
-Checked by `docker/verify-image.sh` on every CI build: distroless with no shell · non-root ·
+Checked by `docker/verify-image.sh`, run by hand since CI builds only the Mac app
+([decision 0009](../decisions/0009-ci-builds-the-mac-app-only.md)): distroless with no shell · non-root ·
 `--status` reports no uploads and `/state` · the binary carries no upload tier ·
 `initialize` handshake works over stdio with only JSON-RPC on stdout · size under the limit ·
-installer binary present. Published to GHCR on `main` for amd64 and arm64.
+installer binary present. Not published: the image is built where it is used.

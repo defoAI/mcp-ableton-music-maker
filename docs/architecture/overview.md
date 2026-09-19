@@ -248,18 +248,21 @@ surface selected by hand.
 
 ## CI (`.github/workflows/ci.yml`)
 
-`rust` job: `cargo fmt --check`, `cargo clippy --all-targets -D warnings`, `cargo test`, and
-`scripts/check-docs-facts.sh`. `image` job: build the test stage, build and load the runtime
-stage, `verify-image.sh`, trivy on CRITICAL, and on `main` push to
-`ghcr.io/defoAI/mcp-ableton-music-maker` for amd64 and arm64. `mac-app` job, on an Apple
-Silicon runner: `tauri build --target aarch64-apple-darwin`, then `app/scripts/verify-dmg.sh`
-on what it produced, then the `.dmg` as a build artifact — unsigned, so it opens only on a
-machine it was not downloaded to.
+Two jobs, both on macOS, because that is the only platform the product ships for
+([decision 0009](../decisions/0009-ci-builds-the-mac-app-only.md)). `rust` job:
+`cargo fmt --check`, `cargo clippy --all-targets -D warnings`, `cargo test`, the dependency
+gate that fails on an HTTP client, and `scripts/check-docs-facts.sh`. `mac-app` job, on an
+Apple Silicon runner: `tauri build --target aarch64-apple-darwin`, then
+`app/scripts/verify-dmg.sh` on what it produced, then the `.dmg` as a build artifact — ad-hoc
+signed, so it opens only on a machine it was not downloaded to.
 
-Caching: `Swatinem/rust-cache` keeps each job's dependency artifacts (the ubuntu one under
-its own key, the macOS one under `shared-key: mac-dmg`, which the tag build reads so a
-release does not start cold), `setup-node` keeps the npm download cache, and the image job
-keeps its layers in the GitHub Actions cache. Only `main` writes the macOS cache — the
+The Docker image is not built here. `docker build --target test .` and
+`docker/verify-image.sh` still work and are still the contract; they are run by hand now.
+
+Caching: `Swatinem/rust-cache` keeps each job's dependency artifacts (the `rust` job under
+its own key, the `mac-app` one under `shared-key: mac-dmg`, which the tag build reads so a
+release does not start cold) and `setup-node` keeps the npm download cache. Only `main`
+writes the macOS cache — the
 repository has 10 GB for all of it, and a 600 MB cache per branch would evict what matters.
 Workspace crates are deliberately not cached: they change with every commit, so the two
 crates always recompile and that is the floor on the `mac-app` job.

@@ -20,7 +20,7 @@ when that source changes, the claim is re-checked or withdrawn.
 | The installer binary | `ableton-music-maker-install-script` | `Cargo.toml` `[[bin]]` |
 | The control surface, as Live shows it | **AbletonMusicMaker** | the Remote Script folder name |
 | The MCP server name a client sees | `AbletonMusicMaker` | `#[tool_handler(name = …)]` in `src/tools.rs` |
-| The Docker image | `mcp-ableton-music-maker:local`, `ghcr.io/defoAI/mcp-ableton-music-maker` | `docker-compose.yml`, `ci.yml` |
+| The Docker image | `mcp-ableton-music-maker:local` — built where it is used, not published | `docker-compose.yml`; [decision 0009](../decisions/0009-ci-builds-the-mac-app-only.md) |
 
 **Vocabulary debt:** the class and log lines inside the Remote Script still say `AbletonMCP`.
 Do not introduce that name anywhere new; it is the upstream name.
