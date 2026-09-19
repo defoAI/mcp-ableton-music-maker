@@ -39,7 +39,7 @@ fn no_dataset_tool_is_served() {
             "{name} is still served"
         );
     }
-    assert_eq!(tools.len(), 75);
+    assert_eq!(tools.len(), 86);
 }
 
 #[test]

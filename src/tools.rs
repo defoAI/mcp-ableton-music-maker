@@ -97,6 +97,8 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "snapshot_mix",
     "restore_mix",
     "get_browser_index",
+    "capture_scene",
+    "duplicate_scene",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -134,7 +136,7 @@ fn beat(v: Option<&Value>) -> String {
     }
 }
 
-fn get_display(v: &Value, key: &str, default: &str) -> String {
+pub(crate) fn get_display(v: &Value, key: &str, default: &str) -> String {
     v.get(key)
         .map(display)
         .unwrap_or_else(|| default.to_string())
@@ -803,17 +805,28 @@ pub const FOLLOW_KEY: ToolSpec = ToolSpec::new("follow_key");
 pub const SNAPSHOT_MIX: ToolSpec = ToolSpec::new("snapshot_mix");
 pub const RESTORE_MIX: ToolSpec = ToolSpec::new("restore_mix");
 pub const PANIC: ToolSpec = ToolSpec::new("panic");
+pub const MAKE_SECTION: ToolSpec = ToolSpec::new("make_section");
+pub const SET_SONG: ToolSpec = ToolSpec::new("set_song");
+pub const ADD_TO_SONG: ToolSpec = ToolSpec::new("add_to_song");
+pub const REMOVE_FROM_SONG: ToolSpec = ToolSpec::new("remove_from_song");
+pub const PLAY_SONG: ToolSpec = ToolSpec::new("play_song");
+pub const HOLD_SECTION: ToolSpec = ToolSpec::new("hold_section");
+pub const GO: ToolSpec = ToolSpec::new("go");
+pub const NEXT_SECTION: ToolSpec = ToolSpec::new("next_section");
+pub const PREVIOUS_SECTION: ToolSpec = ToolSpec::new("previous_section");
+pub const BACK: ToolSpec = ToolSpec::new("back");
+pub const JUMP_TO: ToolSpec = ToolSpec::new("jump_to");
 
 // ── Tool bodies ─────────────────────────────────────────────────────────────
 
-fn live_err(what: &str, e: LiveError) -> String {
+pub(crate) fn live_err(what: &str, e: LiveError) -> String {
     format!("Could not {what}: {e}")
 }
 
 /// Every tool checks that the loaded Remote Script serves the command it is
 /// about to send; a stale or missing script gets a reinstall message rather
 /// than a half-working session.
-fn require(live: &LiveState, capability: &str) -> Result<(), String> {
+pub(crate) fn require(live: &LiveState, capability: &str) -> Result<(), String> {
     match live
         .script
         .require_capability(live.bridge.as_ref(), capability)
@@ -3104,7 +3117,7 @@ fn no_assign() -> Vec<CrossfadeAssign> {
     Vec::new()
 }
 
-fn read_perf_state(live: &LiveState) -> Result<PerfState, String> {
+pub(crate) fn read_perf_state(live: &LiveState) -> Result<PerfState, String> {
     require(live, "get_performance_state")?;
     let v = live
         .send_command("get_performance_state", None)
@@ -3112,7 +3125,7 @@ fn read_perf_state(live: &LiveState) -> Result<PerfState, String> {
     PerfState::from_value(&v)
 }
 
-fn performance_running(live: &LiveState) -> Option<Performance> {
+pub(crate) fn performance_running(live: &LiveState) -> Option<Performance> {
     live.performance
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -3374,7 +3387,11 @@ pub fn listen_body(live: &LiveState, p: &ListenParams) -> ToolResult {
     Ok(out)
 }
 
-fn clip_notes(live: &LiveState, track_index: i64, clip_index: i64) -> Result<Vec<Value>, String> {
+pub(crate) fn clip_notes(
+    live: &LiveState,
+    track_index: i64,
+    clip_index: i64,
+) -> Result<Vec<Value>, String> {
     require(live, "get_clip_notes")?;
     let r = live
         .send_command(
@@ -3388,7 +3405,7 @@ fn clip_notes(live: &LiveState, track_index: i64, clip_index: i64) -> Result<Vec
         .unwrap_or_default())
 }
 
-fn write_notes(
+pub(crate) fn write_notes(
     live: &LiveState,
     track_index: i64,
     clip_index: i64,
@@ -3823,6 +3840,7 @@ pub fn start_performance_body(live: &LiveState, p: &StartPerformanceParams) -> T
         cues_scheduled: 0,
         cues_cancelled: 0,
         follow_key: p.follow_key,
+        song: None,
     };
     *live.performance.lock().unwrap_or_else(|e| e.into_inner()) = Some(started.clone());
     let mut text = format!(
@@ -3921,7 +3939,8 @@ pub fn get_performance_state_body(live: &LiveState, p: &GetPerformanceStateParam
         .as_ref()
         .and_then(|r| r.key.clone())
         .or_else(|| state.key_from_set());
-    let mut text = perf::state_text(&state, since, key.as_deref());
+    let song_lines = crate::sections::song_lines(live, &state);
+    let mut text = perf::state_text_with(&state, since, key.as_deref(), &song_lines);
     if p.bar_map {
         text.push('\n');
         text.push_str(&perf::bar_map_text(&state, state.bar, 32));
@@ -4411,6 +4430,17 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "snapshot_mix" => (Empty, snapshot_mix_body),
         "restore_mix" => (RestoreMixParams, restore_mix_body),
         "panic" => (PanicParams, panic_body),
+        "make_section" => (crate::sections::MakeSectionParams, crate::sections::make_section_body),
+        "set_song" => (crate::sections::SetSongParams, crate::sections::set_song_body),
+        "add_to_song" => (crate::sections::AddToSongParams, crate::sections::add_to_song_body),
+        "remove_from_song" => (crate::sections::RemoveFromSongParams, crate::sections::remove_from_song_body),
+        "play_song" => (crate::sections::PlaySongParams, crate::sections::play_song_body),
+        "hold_section" => (Empty, crate::sections::hold_section_body),
+        "go" => (crate::sections::SteerParams, crate::sections::go_body),
+        "next_section" => (crate::sections::SteerParams, crate::sections::next_section_body),
+        "previous_section" => (crate::sections::SteerParams, crate::sections::previous_section_body),
+        "back" => (crate::sections::SteerParams, crate::sections::back_body),
+        "jump_to" => (crate::sections::JumpToParams, crate::sections::jump_to_body),
     )
 }
 
@@ -4855,8 +4885,16 @@ fn run_blocking<P: Serialize>(
     let result = body(live, params);
     let trace = connection::end_trace();
     // While a performance runs the Remote Script attaches its clock to every
-    // response; it ends every result here, success or error, at no cost.
-    let result = match trace.clock.as_ref().map(perf::clock_line) {
+    // response; it ends every result here, success or error, at no cost. The
+    // level line rides under it, and the song's plan cue reads as "next jump".
+    let plan_cue = live
+        .performance
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|p| p.song.as_ref())
+        .and_then(|s| s.plan_cue_id);
+    let result = match trace.clock.as_ref().map(|c| perf::clock_lines(c, plan_cue)) {
         Some(line) => match result {
             Ok(text) => Ok(format!("{text}\n{line}")),
             Err(text) => Err(format!("{text}\n{line}")),
@@ -4875,6 +4913,11 @@ impl Server {
             live,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Every tool in one router: the main table plus the section and song tools.
+    pub fn tool_router() -> ToolRouter<Self> {
+        Self::main_tool_router() + Self::section_tool_router()
     }
 
     pub fn live(&self) -> &Arc<LiveState> {
@@ -4909,7 +4952,7 @@ impl Server {
     }
 }
 
-#[tool_router]
+#[tool_router(router = main_tool_router)]
 impl Server {
     /// Start here. One call, one round trip to Live: the set (Live and script
     /// versions, tempo, signature, position, launch quantization, key, loop),
@@ -5689,6 +5732,144 @@ impl Server {
     }
 }
 
+#[tool_router(router = section_tool_router)]
+impl Server {
+    /// A new section: a scene row named "<name> · <bars>" (its phrase
+    /// length, kept by Live's Save). Three sources: from: "playing" copies
+    /// what plays into a new row below the playing one (Live's
+    /// capture-and-insert-scene; the set keeps playing); from: {"section":
+    /// "Groove"} copies that row and applies `changes` per track (a
+    /// vary_clip variation name, {"transpose": -12}, "empty", or replacement
+    /// notes); `clips` writes it from notes per track in any compact form
+    /// (tracks not named stay empty and stop when it fires). At the end or
+    /// after a named section. A duplicate name is refused; replace: true
+    /// rewrites a `clips` section in place so the setlist keeps its name.
+    #[tool(name = "make_section")]
+    async fn make_section(
+        &self,
+        Parameters(p): Parameters<crate::sections::MakeSectionParams>,
+    ) -> CallToolResult {
+        self.run(&MAKE_SECTION, p, crate::sections::make_section_body)
+            .await
+    }
+
+    /// The song: an ordered setlist of sections. An entry without repeats
+    /// loops until you say go; with repeats the song moves on by itself.
+    /// Validates every section, refuses one that would leave the set silent,
+    /// and writes the 'Setlist:' scene (an empty row at the bottom, kept by
+    /// Live's Save; edit its name in Live to change the order). A running
+    /// song is re-planned from where it is.
+    #[tool(name = "set_song")]
+    async fn set_song(
+        &self,
+        Parameters(p): Parameters<crate::sections::SetSongParams>,
+    ) -> CallToolResult {
+        self.run(&SET_SONG, p, crate::sections::set_song_body).await
+    }
+
+    /// Put a section into the song: after or before a named entry, or at
+    /// the end; with repeats to pre-plan it. Re-plans a running song.
+    #[tool(name = "add_to_song")]
+    async fn add_to_song(
+        &self,
+        Parameters(p): Parameters<crate::sections::AddToSongParams>,
+    ) -> CallToolResult {
+        self.run(&ADD_TO_SONG, p, crate::sections::add_to_song_body)
+            .await
+    }
+
+    /// Take every entry of a section out of the song. Re-plans a running song.
+    #[tool(name = "remove_from_song")]
+    async fn remove_from_song(
+        &self,
+        Parameters(p): Parameters<crate::sections::RemoveFromSongParams>,
+    ) -> CallToolResult {
+        self.run(&REMOVE_FROM_SONG, p, crate::sections::remove_from_song_body)
+            .await
+    }
+
+    /// Play the song: starts a performance if none runs (start_performance's
+    /// defaults), fires `from` (default the first entry) now, and schedules
+    /// every counted jump as one cue at phrase boundaries, waiting at the
+    /// first entry without a count. Then go, next_section, previous_section,
+    /// back and jump_to steer it; hold_section stops a count. Every reply
+    /// carries the plan, the clock line and the level line.
+    #[tool(name = "play_song")]
+    async fn play_song(
+        &self,
+        Parameters(p): Parameters<crate::sections::PlaySongParams>,
+    ) -> CallToolResult {
+        self.run(&PLAY_SONG, p, crate::sections::play_song_body)
+            .await
+    }
+
+    /// Stop a running count: the playing section loops from here until go.
+    #[tool(name = "hold_section")]
+    async fn hold_section(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+        self.run(&HOLD_SECTION, p, crate::sections::hold_section_body)
+            .await
+    }
+
+    /// Continue the song: the next setlist entry at the end of the playing
+    /// section's phrase (the next multiple of its phrase length from the
+    /// bar it started on, however many passes it looped), or at: "next_bar"
+    /// to cut the phrase short (the reply says by how many bars). With a
+    /// count still running it says so and changes nothing.
+    #[tool(name = "go")]
+    async fn go(&self, Parameters(p): Parameters<crate::sections::SteerParams>) -> CallToolResult {
+        self.run(&GO, p, crate::sections::go_body).await
+    }
+
+    /// The next setlist entry, at the end of this phrase or on the next bar;
+    /// the song continues after it. Warns when the target last ran more
+    /// than 3 dB hotter than this section (force: true skips the warning).
+    #[tool(name = "next_section")]
+    async fn next_section(
+        &self,
+        Parameters(p): Parameters<crate::sections::SteerParams>,
+    ) -> CallToolResult {
+        self.run(&NEXT_SECTION, p, crate::sections::next_section_body)
+            .await
+    }
+
+    /// The previous setlist entry, at the end of this phrase or on the next bar.
+    #[tool(name = "previous_section")]
+    async fn previous_section(
+        &self,
+        Parameters(p): Parameters<crate::sections::SteerParams>,
+    ) -> CallToolResult {
+        self.run(&PREVIOUS_SECTION, p, crate::sections::previous_section_body)
+            .await
+    }
+
+    /// Return to the section before the last jump (the jump history, so a
+    /// mistaken jump_to goes back to where you were, not to the entry
+    /// before it), at the end of this phrase or on the next bar.
+    #[tool(name = "back")]
+    async fn back(
+        &self,
+        Parameters(p): Parameters<crate::sections::SteerParams>,
+    ) -> CallToolResult {
+        self.run(&BACK, p, crate::sections::back_body).await
+    }
+
+    /// Go to any section by name at the end of this phrase (default) or on
+    /// the next bar, optionally for a number of passes, after which the song
+    /// continues from the entry after it. `transition` composes tempo ramps,
+    /// half/double-time rewrites into the target row, crossfades between
+    /// track groups, a fill, a drop or a sweep into the same cue; the
+    /// default is a straight cut. One state read and one cue; the old plan
+    /// is replaced in the same call. Warns when the target last ran more
+    /// than 3 dB hotter (force: true skips it).
+    #[tool(name = "jump_to")]
+    async fn jump_to(
+        &self,
+        Parameters(p): Parameters<crate::sections::JumpToParams>,
+    ) -> CallToolResult {
+        self.run(&JUMP_TO, p, crate::sections::jump_to_body).await
+    }
+}
+
 #[tool_handler(router = self.tool_router, name = "AbletonMusicMaker")]
 impl ServerHandler for Server {
     /// What every client receives at `initialize`: the tools, and the
@@ -5768,7 +5949,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 75);
+        assert_eq!(tools.len(), 86);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();

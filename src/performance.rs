@@ -74,6 +74,41 @@ pub struct SceneState {
     pub phrase_default: bool,
     #[serde(default)]
     pub started_bar: Option<i64>,
+    /// The section name without the phrase suffix (the script parses it)
+    #[serde(default)]
+    pub section: Option<String>,
+}
+
+/// The loudest a track got, in dB from Live's 0–1 output meter.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TrackLevel {
+    #[serde(default)]
+    pub index: i64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub peak_db: f64,
+}
+
+/// The meter peaks the script's tick keeps: this bar (and the last one),
+/// per track, and the master's peak while each scene row played.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Levels {
+    #[serde(default)]
+    pub bar: i64,
+    #[serde(default)]
+    pub master_peak_db: f64,
+    #[serde(default)]
+    pub tracks: Vec<TrackLevel>,
+    /// scene index (as a string) → the master's peak while that row played
+    #[serde(default)]
+    pub section_peaks: std::collections::BTreeMap<String, f64>,
+}
+
+impl Levels {
+    pub fn section_peak(&self, scene_index: i64) -> Option<f64> {
+        self.section_peaks.get(&scene_index.to_string()).copied()
+    }
 }
 
 /// The phrase the set is in: `bars` per phrase from the bar the current
@@ -174,6 +209,8 @@ pub struct PerfState {
     pub phrase: Option<Phrase>,
     #[serde(default)]
     pub current_scene: Option<i64>,
+    #[serde(default)]
+    pub levels: Option<Levels>,
 }
 
 pub const PITCH_CLASSES: [&str; 12] = [
@@ -568,6 +605,42 @@ pub fn resolve_time_ex(state: &PerfState, t: &CueTime) -> Result<(f64, f64, bool
 /// The clock line the Remote Script attaches to every response while a
 /// performance runs, rendered for the end of a tool result.
 pub fn clock_line(clock: &Value) -> String {
+    clock_line_with(clock, None)
+}
+
+/// The clock line and, when the script sent meter peaks, the level line
+/// under it. `plan_cue_id` is the song's plan cue: its next step reads as
+/// "next jump" rather than "next cue".
+pub fn clock_lines(clock: &Value, plan_cue_id: Option<i64>) -> String {
+    let mut s = clock_line_with(clock, plan_cue_id);
+    if let Some(levels) = clock.get("levels").and_then(level_line) {
+        s.push('\n');
+        s.push_str(&levels);
+    }
+    s
+}
+
+/// `🔊 master −4.0 dB peak this bar · Kick −6 · Bass −7`: Live's 0–1 output
+/// meters as dB, the three loudest tracks named.
+pub fn level_line(levels: &Value) -> Option<String> {
+    let l: Levels = serde_json::from_value(levels.clone()).ok()?;
+    let mut s = format!(
+        "🔊 master {} dB peak this bar",
+        crate::song::fmt_db(l.master_peak_db, 1)
+    );
+    let mut tracks: Vec<&TrackLevel> = l.tracks.iter().filter(|t| t.peak_db > -40.0).collect();
+    tracks.sort_by(|a, b| b.peak_db.partial_cmp(&a.peak_db).unwrap());
+    for t in tracks.iter().take(3) {
+        s.push_str(&format!(
+            " · {} {}",
+            t.name,
+            crate::song::fmt_db(t.peak_db, 0)
+        ));
+    }
+    Some(s)
+}
+
+fn clock_line_with(clock: &Value, plan_cue_id: Option<i64>) -> String {
     let bar = clock.get("bar").and_then(Value::as_i64).unwrap_or(0);
     let bib = clock
         .get("beat_in_bar")
@@ -593,14 +666,19 @@ pub fn clock_line(clock: &Value) -> String {
         }
     }
     if let Some(c) = clock.get("next_cue").filter(|c| c.is_object()) {
+        let id = c.get("cue_id").and_then(Value::as_i64).unwrap_or(0);
         s.push_str(&format!(
-            " · next cue: bar {} {} (cue {})",
+            " · {}: bar {} {} (cue {id})",
+            if plan_cue_id == Some(id) {
+                "next jump"
+            } else {
+                "next cue"
+            },
             c.get("bar")
                 .and_then(Value::as_f64)
                 .map(fmt_bar)
                 .unwrap_or_else(|| "?".into()),
             c.get("label").and_then(Value::as_str).unwrap_or(""),
-            c.get("cue_id").and_then(Value::as_i64).unwrap_or(0)
         ));
     }
     s
@@ -1393,6 +1471,16 @@ fn fmt_secs(s: f64) -> String {
 
 /// The full state readout the producer sees.
 pub fn state_text(state: &PerfState, since: Option<(i64, f64)>, key: Option<&str>) -> String {
+    state_text_with(state, since, key, &[])
+}
+
+/// The readout with extra lines (the song line) after the scenes.
+pub fn state_text_with(
+    state: &PerfState,
+    since: Option<(i64, f64)>,
+    key: Option<&str>,
+    extra: &[String],
+) -> String {
     let mut out = header_line(state, since, key);
     out.push('\n');
     let width = state
@@ -1441,8 +1529,12 @@ pub fn state_text(state: &PerfState, since: Option<(i64, f64)>, key: Option<&str
             w = width
         ));
     }
-    let named: Vec<String> = state
+    let rows: Vec<&SceneState> = state
         .scenes
+        .iter()
+        .filter(|s| !crate::song::is_setlist_scene(&s.name))
+        .collect();
+    let named: Vec<String> = rows
         .iter()
         .filter(|s| !s.clip_tracks.is_empty())
         .map(|s| {
@@ -1453,19 +1545,27 @@ pub fn state_text(state: &PerfState, since: Option<(i64, f64)>, key: Option<&str
             } else {
                 s.name.clone()
             };
-            if let Some(pb) = s.phrase_bars.filter(|_| !s.phrase_default) {
+            let (_, suffix) = crate::song::parse_section_name(&s.name);
+            if let Some(pb) = s
+                .phrase_bars
+                .filter(|_| !s.phrase_default && suffix.is_none())
+            {
                 name.push_str(&format!(" (phrase {pb})"));
             }
             name
         })
         .collect();
-    let empty = state.scenes.len() - named.len();
+    let empty = rows.len() - named.len();
     out.push_str("Scenes: ");
     out.push_str(&named.join(" · "));
     if empty > 0 {
         out.push_str(&format!(" · ({empty} empty)"));
     }
     out.push('\n');
+    for line in extra {
+        out.push_str(line);
+        out.push('\n');
+    }
     if state.cues.is_empty() {
         out.push_str("Cues: none pending\n");
     } else {

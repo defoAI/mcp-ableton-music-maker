@@ -20,6 +20,9 @@
 //! - [`context`]      get_context's readout and the server instructions clients receive at initialize
 //! - [`library`]      the server's copy of Live's browser: paged from the script, on disk, searched locally
 //! - [`variation`]    clip variations and the key of a recording (pure)
+//! - [`song`]         sections (scene names) and songs (the Setlist: scene): parsing, the plan, the cursor (pure)
+//! - [`sections`]     the section and song tools: make_section, set_song, play_song, the steering verbs
+//! - [`transition`]   a jump's transition (tempo, retime, crossfade, fill, drop, sweep) as cue primitives
 //! - [`activity`]     the local activity log (one JSON line per tool call)
 //! - [`state`]        where the server writes on this machine
 //! - [`install`]      the Remote Script installer
@@ -39,8 +42,11 @@ pub mod install;
 pub mod library;
 pub mod notes;
 pub mod performance;
+pub mod sections;
+pub mod song;
 pub mod state;
 pub mod tools;
+pub mod transition;
 pub mod variation;
 
 /// Package version, reported to MCP clients and in `--status`.
