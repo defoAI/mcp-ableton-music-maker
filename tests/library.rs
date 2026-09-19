@@ -8,6 +8,15 @@ use common::{is_error, server_with, text_of, FakeBridge};
 use mcp_ableton_music_maker::library;
 use mcp_ableton_music_maker::tools::{self, SearchBrowserParams};
 use serde_json::json;
+use std::sync::LazyLock;
+
+/// `ABLETON_MCP_LIBRARY_INDEX` and `ABLETON_MCP_STATE_DIR` belong to the
+/// process, not to a test, and the harness runs these on several threads at
+/// once. Without this every run is a coin toss: one test clearing the index
+/// switch while another is relying on it turned off makes the search take the
+/// index path and the assertion read the wrong command. A tokio mutex rather
+/// than a std one because it is held across awaits.
+static ENV: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 fn page(offset: usize, items: Vec<(&str, &str, &str)>, complete: bool) -> serde_json::Value {
     json!({
@@ -30,6 +39,8 @@ fn params(query: &str) -> SearchBrowserParams {
 
 #[tokio::test]
 async fn warm_up_pages_the_walk_and_search_needs_no_round_trip() {
+    let _env = ENV.lock().await;
+
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var("ABLETON_MCP_STATE_DIR", dir.path());
     std::env::remove_var("ABLETON_MCP_LIBRARY_INDEX");
@@ -170,6 +181,8 @@ async fn warm_up_pages_the_walk_and_search_needs_no_round_trip() {
 
 #[tokio::test]
 async fn search_falls_back_to_live_while_the_index_walks() {
+    let _env = ENV.lock().await;
+
     std::env::set_var("ABLETON_MCP_LIBRARY_INDEX", "false");
     let b = FakeBridge::responding(json!({}));
     b.script(
