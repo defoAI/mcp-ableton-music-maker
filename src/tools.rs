@@ -68,6 +68,7 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "get_track_meters",
     "set_clip_automation",
     "get_clip_automation",
+    "get_library_status",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -678,6 +679,7 @@ pub const SET_CLIP_AUTOMATION: ToolSpec = ToolSpec::new("set_clip_automation");
 pub const GET_CLIP_AUTOMATION: ToolSpec = ToolSpec::new("get_clip_automation");
 pub const BATCH: ToolSpec = ToolSpec::new("batch");
 pub const BUILD_SONG: ToolSpec = ToolSpec::new("build_song");
+pub const GET_LIBRARY_STATUS: ToolSpec = ToolSpec::new("get_library_status");
 
 // ── Tool bodies ─────────────────────────────────────────────────────────────
 
@@ -1676,10 +1678,96 @@ pub fn search_browser_body(live: &LiveState, p: &SearchBrowserParams) -> ToolRes
     }
     out.push_str("Load one with load_instrument_or_effect(track_index, uri).");
     if r.get("truncated_walk").and_then(Value::as_bool) == Some(true) {
-        out.push_str(
-            " The browser is large; narrow the category if the sound you want is missing.",
-        );
+        out.push_str(&format!(
+            " Searched for {} s and stopped early; narrow the category (e.g. \"instruments\") if the sound you want is missing.",
+            get_display(&r, "seconds", "?")
+        ));
     }
+    Ok(out)
+}
+
+/// Live 12 Suite's instruments. An instrument missing from the browser is
+/// either not in this Live edition or not installed.
+const SUITE_INSTRUMENTS: &[&str] = &[
+    "Analog",
+    "Collision",
+    "Drift",
+    "Drum Rack",
+    "Drum Sampler",
+    "Electric",
+    "External Instrument",
+    "Instrument Rack",
+    "Meld",
+    "Operator",
+    "Sampler",
+    "Simpler",
+    "Tension",
+    "Wavetable",
+];
+
+pub fn get_library_status_body(live: &LiveState, _p: &Empty) -> ToolResult {
+    require(live, "get_library_status")?;
+    let r = live
+        .send_command("get_library_status", None)
+        .map_err(|e| live_err("read the library status", e))?;
+    let names = |key: &str| -> Vec<String> {
+        r.get(key)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().map(|v| get_display(v, "name", "?")).collect())
+            .unwrap_or_default()
+    };
+    let instruments = names("instruments");
+    let missing: Vec<&str> = SUITE_INSTRUMENTS
+        .iter()
+        .copied()
+        .filter(|s| !instruments.iter().any(|i| i.eq_ignore_ascii_case(s)))
+        .collect();
+    let packs = names("packs");
+    let mut out = format!(
+        "Live {}{}.\n",
+        get_display(&r, "live_version", "?"),
+        r.get("edition_hint")
+            .and_then(Value::as_str)
+            .map(|e| format!(" ({e})"))
+            .unwrap_or_default()
+    );
+    out.push_str(&format!(
+        "Instruments available ({}): {}\n",
+        instruments.len(),
+        instruments.join(", ")
+    ));
+    if missing.is_empty() {
+        out.push_str("Every Live 12 Suite instrument is present.\n");
+    } else {
+        out.push_str(&format!(
+            "Not available here ({}): {} — not in this edition or not installed; pick from the list above instead.\n",
+            missing.len(),
+            missing.join(", ")
+        ));
+    }
+    for (label, key) in [
+        ("Audio effects", "audio_effects"),
+        ("MIDI effects", "midi_effects"),
+    ] {
+        let list = names(key);
+        out.push_str(&format!("{label} ({}): {}\n", list.len(), list.join(", ")));
+    }
+    out.push_str(&format!(
+        "Packs installed ({}): {}\n",
+        packs.len(),
+        if packs.is_empty() {
+            "none".to_string()
+        } else {
+            packs.join(", ")
+        }
+    ));
+    for (label, key) in [("Drums folders", "drums"), ("Sounds folders", "sounds")] {
+        let list = names(key);
+        if !list.is_empty() {
+            out.push_str(&format!("{label}: {}\n", list.join(", ")));
+        }
+    }
+    out.push_str("Packs that are not downloaded do not appear in Live's browser API, so they cannot be listed from here: anything you expect but do not see above must be installed from Live's Packs tab (Browser › Packs) or ableton.com/packs first.");
     Ok(out)
 }
 
@@ -2044,6 +2132,7 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "play_and_measure" => (PlayAndMeasureParams, play_and_measure_body),
         "set_clip_automation" => (SetClipAutomationParams, set_clip_automation_body),
         "get_clip_automation" => (GetClipAutomationParams, get_clip_automation_body),
+        "get_library_status" => (Empty, get_library_status_body),
     )
 }
 
@@ -2927,6 +3016,18 @@ impl Server {
     /// false) and reports each step. Inside args, "$last_track" stands for
     /// the index of the most recently created track, so "create a track,
     /// name it, load a sound, fill a clip" is one call.
+    /// What this Live can actually use: its version, the instruments and
+    /// effects present in the browser (and which Suite instruments are not),
+    /// the packs installed, and the drum and sound folders. Call it before
+    /// planning sounds, so nothing is written for a device that is not here.
+    /// Packs that are not downloaded are invisible to Live's API; the result
+    /// says where to install them.
+    #[tool(name = "get_library_status")]
+    async fn get_library_status(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+        self.run(&GET_LIBRARY_STATUS, p, get_library_status_body)
+            .await
+    }
+
     #[tool(name = "batch")]
     async fn batch(&self, Parameters(p): Parameters<BatchParams>) -> CallToolResult {
         self.run(&BATCH, p, batch_body).await
@@ -2993,7 +3094,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 48);
+        assert_eq!(tools.len(), 49);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();

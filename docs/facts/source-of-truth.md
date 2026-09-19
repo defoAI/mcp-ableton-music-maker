@@ -96,13 +96,13 @@ matches on them.
 
 | | Verified value | Source |
 |---|---|---|
-| MCP tools | **48** | `src/tools.rs` |
-| Remote Script commands | **47** | `SCRIPT_CAPABILITIES` |
-| Remote Script version | **1.10.0** | `SCRIPT_VERSION` |
+| MCP tools | **49** | `src/tools.rs` |
+| Remote Script commands | **48** | `SCRIPT_CAPABILITIES` |
+| Remote Script version | **1.10.1** | `SCRIPT_VERSION` |
 | Server version | **2.0.0** | `Cargo.toml` |
 | Image size limit | **50** MB | `docker/verify-image.sh` |
 | Port | **9877** | `DEFAULT_PORT` |
-| Timeouts | 65 s `create_audio_clip` · 15 s modifying commands · 10 s reads · 5 s connect | `src/connection.rs` |
+| Timeouts | 65 s `create_audio_clip` · 25 s `search_browser` · 15 s modifying commands · 10 s reads · 5 s connect | `src/connection.rs` |
 | Uploads | **none** — no code path exists | `tests/local_only.rs`, CI dependency gate |
 | Activity log | on by default, payloads off; `ABLETON_MCP_ACTIVITY=false` / `ABLETON_MCP_ACTIVITY_PAYLOADS=true` | `tests/activity.rs` |
 | Transport | stdio only | `src/app.rs` |

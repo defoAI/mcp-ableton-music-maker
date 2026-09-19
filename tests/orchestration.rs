@@ -388,3 +388,37 @@ async fn build_song_executes_in_order() {
     );
     let _: Value = json!(null);
 }
+
+#[tokio::test]
+async fn library_status_names_what_is_missing() {
+    let bridge = FakeBridge::responding(json!({
+        "live_version": "12.1.5", "edition_hint": "Standard or Intro-level instrument set",
+        "instruments": [{"name": "Drift"}, {"name": "Simpler"}, {"name": "Drum Rack"}],
+        "audio_effects": [{"name": "Reverb"}], "midi_effects": [], "packs": [{"name": "Core Library"}],
+        "drums": [{"name": "Drum Hits"}], "sounds": []
+    }));
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::GET_LIBRARY_STATUS,
+            tools::Empty::default(),
+            tools::get_library_status_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let t = text_of(&r);
+    assert!(
+        t.starts_with("Live 12.1.5 (Standard or Intro-level instrument set)."),
+        "{t}"
+    );
+    assert!(
+        t.contains("Not available here")
+            && t.contains("Wavetable")
+            && !t.contains("here (11): Drift"),
+        "{t}"
+    );
+    assert!(
+        t.contains("Packs installed (1): Core Library") && t.contains("Packs tab"),
+        "{t}"
+    );
+}

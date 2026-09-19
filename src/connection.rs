@@ -157,6 +157,8 @@ const MODIFYING_COMMANDS: &[&str] = &[
 pub fn command_timeout(command_type: &str) -> Duration {
     match command_type {
         "create_audio_clip" => Duration::from_secs(65),
+        // Walks Live's browser; the script stops itself after its own budget.
+        "search_browser" => Duration::from_secs(25),
         c if MODIFYING_COMMANDS.contains(&c) => Duration::from_secs(15),
         _ => Duration::from_secs(10),
     }
