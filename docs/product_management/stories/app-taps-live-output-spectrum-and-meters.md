@@ -15,7 +15,7 @@
 | Tracker | — |
 | Created | 2026-09-19 |
 | Updated | 2026-09-19 |
-| Decisions | [0004](../../decisions/0004-who-publishes-and-holds-the-data.md) local data only · [0005](../../decisions/0005-mac-app-is-tauri-and-bundles-the-server.md) Tauri 2 · [0007](../../decisions/0007-app-hears-live-through-a-process-tap.md) a process tap of Live only, minimum macOS unchanged |
+| Decisions | [0004](../../decisions/0004-who-publishes-and-holds-the-data.md) local data only · [0005](../../decisions/0005-mac-app-is-tauri-and-bundles-the-server.md) Tauri 2 · [0008](../../decisions/0008-app-hears-live-through-a-process-tap.md) a process tap of Live only, minimum macOS unchanged |
 | Prototype | [prototypes/app-taps-live-output-spectrum-and-meters.html](../prototypes/app-taps-live-output-spectrum-and-meters.html) · [review link](https://claude.ai/artifact/L5mpwmGRgwoFE5PzK9XHUS) |
 
 ## Context
@@ -355,7 +355,7 @@ With Live 12 open and playing, on a Developer-ID-signed build of the app, on mac
 | [mac-app-installs-runs-and-watches-the-server](mac-app-installs-runs-and-watches-the-server.md) Phase 3 (signing) | Open | the prompt appears only on a signed build; the spike needs the Developer ID |
 | macOS 14.4 or later on the review Mac | — | for the prototype review of the real prompt |
 | `objc2-core-audio` exposing the tap functions | Ready | verified in the crate's item list |
-| A decision record for the tap (Live only, taps not ScreenCaptureKit, minimum macOS kept) | Not written | write it as `docs/decisions/0007-…` when questions 1–3 are answered |
+| A decision record for the tap (Live only, taps not ScreenCaptureKit, minimum macOS kept) | Written | [0008](../../decisions/0008-app-hears-live-through-a-process-tap.md) |
 
 ## Related Stories
 - `mac-app-installs-runs-and-watches-the-server` — the app this screen joins; its signing phase is the dependency.

@@ -9,7 +9,7 @@ server Claude talks to — the client does — and it opens no socket except the
 
 Design: `docs/product_management/stories/mac-app-installs-runs-and-watches-the-server.md`
 and `app-taps-live-output-spectrum-and-meters.md`, with the prototypes beside them.
-Decisions: `docs/decisions/0005-…` (Tauri, bundled server) and `0007-…` (the tap).
+Decisions: `docs/decisions/0005-…` (Tauri, bundled server) and `0008-…` (the tap).
 
 ## Layout
 

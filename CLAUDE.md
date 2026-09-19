@@ -36,7 +36,7 @@ src/activity.rs        the local activity log: one JSON line per tool call, payl
 src/state.rs           state_dir / activity_dir / sessions_dir — the only places the server writes
 src/install.rs         installer logic (Library.cfg discovery, install with .bak)
 src/app.rs             startup handshake, heartbeat, stdio serve, shutdown, --status, --check
-app/                   the Mac companion app (Tauri 2): src-tauri/ links this crate, src/ is the UI; src-tauri/src/listen/ is the process tap of Live (Objective-C + Rust, decision 0007)
+app/                   the Mac companion app (Tauri 2): src-tauri/ links this crate, src/ is the UI; src-tauri/src/listen/ is the process tap of Live (Objective-C + Rust, decision 0008)
 src/notes.rs           compact note forms (csv, step strings, patterns, tiling) → plain Note objects
 src/audio.rs           WAV/AIFF reader and the capture measurements (peak, RMS per bar, silence, clipping)
 src/performance.rs     performance state, bar arithmetic, cue resolution (bars → beats, silence check), readout text

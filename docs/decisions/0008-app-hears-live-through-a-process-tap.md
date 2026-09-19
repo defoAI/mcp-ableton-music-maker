@@ -1,4 +1,4 @@
-# 0007 — How does the Mac app hear what Live is playing?
+# 0008 — How does the Mac app hear what Live is playing?
 
 | | |
 |---|---|

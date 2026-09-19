@@ -54,7 +54,7 @@ Paths are relative to the repository root.
 | Per-command socket timeouts | `command_timeout` in `src/connection.rs` and the `MODIFYING_COMMANDS` list beside it | The README's troubleshooting row copies these |
 | Connect timeout | `TcpStream::connect_timeout` in `src/connection.rs` | |
 | Where Live is, from inside Docker | `ENV ABLETON_HOST=host.docker.internal` in the `Dockerfile` | |
-| What the Mac app hears | `app/src-tauri/src/listen/tap.m`: a Core Audio process tap of the process whose executable is inside an `Ableton Live*.app` bundle, unmuted; in memory only — [decision 0007](../decisions/0007-app-hears-live-through-a-process-tap.md) | the no-I/O test in `app/src-tauri/src/listen/mod.rs`; `cargo run --example listen_probe` in `app/src-tauri` with Live playing |
+| What the Mac app hears | `app/src-tauri/src/listen/tap.m`: a Core Audio process tap of the process whose executable is inside an `Ableton Live*.app` bundle, unmuted; in memory only — [decision 0008](../decisions/0008-app-hears-live-through-a-process-tap.md) | the no-I/O test in `app/src-tauri/src/listen/mod.rs`; `cargo run --example listen_probe` in `app/src-tauri` with Live playing |
 
 ### Local data
 
