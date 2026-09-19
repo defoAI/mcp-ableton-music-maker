@@ -27,14 +27,12 @@ fn clip(track_index: i64, clip_index: i64) -> ClipParams {
     ClipParams {
         track_index,
         clip_index,
-        user_prompt: String::new(),
     }
 }
 
 async fn read(server: &Server, track: i64, slot: i64) -> rmcp::model::CallToolResult {
     server
         .run(
-            None,
             &tools::GET_CLIP_NOTES,
             clip(track, slot),
             tools::get_clip_notes_body,
@@ -45,7 +43,6 @@ async fn read(server: &Server, track: i64, slot: i64) -> rmcp::model::CallToolRe
 async fn clear(server: &Server, track: i64, slot: i64) -> rmcp::model::CallToolResult {
     server
         .run(
-            None,
             &tools::CLEAR_NOTES_FROM_CLIP,
             clip(track, slot),
             tools::clear_notes_from_clip_body,
@@ -62,12 +59,14 @@ async fn add(
     let params = AddNotesParams {
         track_index: track,
         clip_index: slot,
-        notes,
-        user_prompt: String::new(),
+        clear: false,
+        input: mcp_ableton_music_maker::notes::NotesInput {
+            notes,
+            ..Default::default()
+        },
     };
     server
         .run(
-            None,
             &tools::ADD_NOTES_TO_CLIP,
             params,
             tools::add_notes_to_clip_body,
@@ -153,7 +152,11 @@ async fn add_notes_forwards_track_clip_and_notes() {
         json!([{"pitch": 60, "start_time": 0.0, "duration": 1.0, "velocity": 100, "mute": false}]);
     let notes: Vec<Note> = serde_json::from_value(one.clone()).unwrap();
     let result = add(&server, 3, 7, notes).await;
-    assert_eq!(text_of(&result), "Added 1 notes to clip at track 3, slot 7");
+    assert!(
+        text_of(&result).starts_with("Added 1 notes to clip at track 3, slot 7"),
+        "{}",
+        text_of(&result)
+    );
     assert_eq!(
         bridge.sent(),
         vec![(
@@ -244,7 +247,10 @@ async fn true_replace_loop_read_clear_add() {
 #[tokio::test]
 async fn missing_capability_is_reported_without_touching_live() {
     let bridge = FakeBridge::responding(json!({}));
-    let live = Arc::new(LiveState::new(bridge.clone()));
+    let live = Arc::new(LiveState::with_activity(
+        bridge.clone(),
+        mcp_ableton_music_maker::activity::Activity::disabled(),
+    ));
     live.script
         .set(mcp_ableton_music_maker::handshake::ScriptInfo {
             script_version: Some("0.9.0".into()),

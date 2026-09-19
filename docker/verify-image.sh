@@ -33,25 +33,37 @@ else
   bad "runs as '${user:-root}'"
 fi
 
-# 3. Telemetry and dataset switches are hard-off in the image environment.
-env_list="$(docker image inspect "$IMAGE" --format '{{join .Config.Env "\n"}}')"
-for var in ABLETON_MCP_DISABLE_TELEMETRY=true ABLETON_MCP_DISABLE_DATASET=true; do
-  grep -qx "$var" <<<"$env_list" && pass "$var" || bad "$var missing from image env"
-done
-
-# 4. The binary itself reports every gate off and no credentials baked in.
-status="$(docker run --rm "${hardened[@]}" "$IMAGE" --privacy-status 2>/dev/null || true)"
-check_gate() {
+# 3. Everything the server writes is under /state, and it says so.
+status="$(docker run --rm "${hardened[@]}" "$IMAGE" --status 2>/dev/null || true)"
+check_status() {
   if python3 -c 'import json,sys; s=json.loads(sys.argv[1]); sys.exit(0 if s[sys.argv[2]] == json.loads(sys.argv[3]) else 1)' "$status" "$1" "$2" 2>/dev/null; then
-    pass "privacy status: $1 = $2"
+    pass "status: $1 = $2"
   else
-    bad "privacy status: $1 != $2 (got: ${status:0:300})"
+    bad "status: $1 != $2 (got: ${status:0:300})"
   fi
 }
-check_gate telemetry_enabled false
-check_gate dataset_enabled false
-check_gate has_supabase_credentials false
-check_gate would_prompt_for_consent false
+check_status uploads '"none"'
+check_status state_dir '"/state"'
+if python3 -c 'import json,sys; s=json.loads(sys.argv[1]); sys.exit(1 if any(k.startswith(("telemetry","dataset")) for k in s) else 0)' "$status" 2>/dev/null; then
+  pass "status carries no telemetry or dataset key"
+else
+  bad "status still carries a telemetry/dataset key"
+fi
+
+# 4. No upload path: the server binary contains no trace of the removed
+#    tiers. Distroless has no shell, so copy the binary out to look at it.
+tmp="$(mktemp -d)"; cid="$(docker create "$IMAGE")"
+docker cp "$cid:/app/ableton-music-maker" "$tmp/server" >/dev/null 2>&1; docker rm "$cid" >/dev/null
+if [ -s "$tmp/server" ]; then
+  if grep -aqiE 'supabase|ENABLE_TELEMETRY|DISABLE_DATASET' "$tmp/server"; then
+    bad "server binary still mentions an upload tier"
+  else
+    pass "server binary has no upload tier"
+  fi
+else
+  bad "could not extract the server binary"
+fi
+rm -rf "$tmp"
 
 # 5. The MCP handshake works over stdio without Live present (the server
 #    logs a warning and continues), and stdout carries only JSON-RPC.

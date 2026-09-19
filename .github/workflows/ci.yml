@@ -29,9 +29,30 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --locked
-        env:
-          ABLETON_MCP_DISABLE_TELEMETRY: "true"
-          ABLETON_MCP_DISABLE_DATASET: "true"
+      - name: No HTTP client in the dependency tree
+        run: |
+          if cargo tree -e normal --locked | grep -E '^[^a-zA-Z0-9_-]*(ureq|reqwest|hyper|curl|isahc|attohttpc) '; then
+            echo "an HTTP client entered the dependency tree; the server must have no upload path"; exit 1
+          fi
+      - name: Docs fact check
+        run: scripts/check-docs-facts.sh
+
+  mac-app:
+    runs-on: macos-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            app/src-tauri -> target
+      - name: Sidecar
+        run: app/scripts/build-sidecar.sh release
+      - name: Build the app crate (unsigned; bundling happens on a tag)
+        run: cargo build --release --locked
+        working-directory: app/src-tauri
 
   image:
     runs-on: ubuntu-latest

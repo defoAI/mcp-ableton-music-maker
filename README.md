@@ -19,14 +19,14 @@ Prompt-assisted music production, end-to-end track creation, and Live session an
 
 Two pieces:
 
-1. **`ableton-music-maker`**, a single Rust binary that speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio to Claude Desktop, Claude Code or Cursor. It exposes 37 tools for reading and editing the Live set, and talks to Live over a TCP socket on port 9877.
+1. **`ableton-music-maker`**, a single Rust binary that speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio to Claude Desktop, Claude Code or Cursor. It exposes 31 tools for reading and editing the Live set, and talks to Live over a TCP socket on port 9877.
 2. **The AbletonMusicMaker Remote Script**, a control surface that runs inside Live and executes the commands. Live only loads control surfaces through its embedded Python interpreter, so this one file stays Python. It is embedded in the binary and installed with `ableton-music-maker-install-script`.
 
 ```
 Claude ──stdio──▶ ableton-music-maker ──TCP 9877──▶ Ableton Live (AbletonMusicMaker Remote Script)
 ```
 
-**All telemetry is off by default.** Nothing leaves your machine except the connection to Live unless you explicitly opt in. See [Telemetry](#telemetry).
+**Nothing leaves your machine.** The server has no upload path at all — no telemetry, no analytics, no dataset — and CI fails if one appears. What it keeps locally, and how to delete it, is in [Your data](#your-data).
 
 ## Quickstart (Docker)
 
@@ -119,8 +119,7 @@ Checked by `docker/verify-image.sh` and by CI on every build:
 
 - distroless runtime: no shell, no package manager, runs as a non-root user
 - read-only root filesystem; the only writable path is the `/state` volume
-- telemetry and dataset recording are hard-off via environment variables baked into the image, and off by default in the binary as well
-- no Supabase credentials in the image
+- the server binary carries no upload tier and reports `"uploads": "none"`; everything it writes sits under `/state`
 - the binary completes the MCP handshake over stdio with nothing but JSON-RPC on stdout
 - image size under 50 MB
 
@@ -135,7 +134,8 @@ Checked by `docker/verify-image.sh` and by CI on every build:
 | Browser | `get_browser_tree`, `get_browser_items_at_path` |
 | Arrangement | `switch_to_arrangement_view`, `set_arrangement_time`, `get_arrangement_clips`, `duplicate_to_arrangement`, `set_arrangement_clip_name`, `create_locator` |
 | Bridge | `get_remote_script_info` |
-| Dataset (opt-in) | `set_dataset_consent`, `submit_intent`, `rate_last_action`, `prefer_candidate`, `reject_last_action`, `record_audition` |
+
+Notes can be written compactly: a step string per pitch (`{"36": "x...x...x...x..."}`), a repeating pattern, `notes_csv` lines, and `loop_every`/`until` to tile a bar across a clip; `create_clip` names and fills a clip in one call; `duplicate_to_arrangement` places a clip across a whole range at once.
 
 Every tool checks that the loaded Remote Script advertises the command it needs. A missing or outdated script produces a clear "run `ableton-music-maker-install-script`, then restart Live" error instead of a half-working session. The server also retries the handshake on the first tool call, so starting it before Live is fine.
 
@@ -159,28 +159,34 @@ Every tool checks that the loaded Remote Script advertises the command it needs.
 | The client says the server failed to start | With Docker, Docker Desktop must be running before the client launches the server. |
 | Timeout errors | Break the request into smaller steps. Importing large audio files is given 65 seconds; everything else 10 to 15. |
 
-Diagnostics go to stderr. Set `RUST_LOG=debug` for the full command trace.
+Diagnostics go to stderr. Set `RUST_LOG=debug` for the full command trace. `ableton-music-maker --check` asks Live for the loaded Remote Script and the current session and prints the answer as JSON; `--status` prints versions and paths.
 
-## Telemetry
+## Your data
 
-**All telemetry is off by default.** There are two tiers, both opt-in, and both require Supabase credentials in the environment (`ABLETON_MCP_SUPABASE_URL`, `ABLETON_MCP_SUPABASE_ANON_KEY`) that are not shipped with the binary or the image. See the [Terms & Data Use](TERMS.md) for exactly what each tier collects.
+Nothing is uploaded, by the server or by the app; there is no code that could. What the server keeps on your machine is an **activity log** — one line per tool call with the tool's name, the Live commands it sent, timings, sizes and the result — under `~/.ableton-music-maker/activity/`. Parameters and results (your MIDI and names) are written only if you set `ABLETON_MCP_ACTIVITY_PAYLOADS=true`; `ABLETON_MCP_ACTIVITY=false` turns the log off. Delete the folder to delete the data. Details: [TERMS.md](TERMS.md).
 
-| Tier | What it collects | Off by default | Turn on |
-|---|---|---|---|
-| Anonymous telemetry | Tool names, success/duration, versions, install ID | Yes | `ABLETON_MCP_ENABLE_TELEMETRY=true` |
-| Dataset recording | Prompts, MIDI notes, track and clip names, device settings | Yes | Telemetry on **and** your explicit yes to the consent question, or `ABLETON_MCP_ENABLE_DATASET=true` |
+## Mac app (developer preview)
 
-With telemetry off the dataset consent question is never asked. With telemetry on, you are asked once (as a dialog if your client supports it, otherwise in the chat), and an unanswered or dismissed question means recording stays off.
+`app/` holds a Tauri 2 menu bar app that installs the Remote Script into Live, connects Claude Desktop, Claude Code or Cursor to the bundled server, shows whether Claude, the server and Live are talking, and lists every call with its timing and an estimated token cost. It runs from source today:
 
-The disable variables override any opt-in, stored answer or enable variable, and are what the Docker image sets: `ABLETON_MCP_DISABLE_TELEMETRY=true` (also `DISABLE_TELEMETRY`, `MCP_DISABLE_TELEMETRY`) and `ABLETON_MCP_DISABLE_DATASET=true`.
+```bash
+cd app && npm install && npm run dev      # needs Rust 1.85+, Xcode command line tools
+```
 
-`ableton-music-maker --privacy-status` prints the state of every gate as JSON.
+A signed, notarised download follows once the release pipeline exists.
+
+## Documentation
+
+What the product is, what it does today, the decisions behind it, and how a feature is
+designed before it is built: [docs/](docs/README.md). Numbers in prose are copies; the
+originals are listed in [docs/facts/source-of-truth.md](docs/facts/source-of-truth.md).
 
 ## Development
 
 ```bash
-cargo test                      # unit, tool, privacy and end-to-end stdio tests
+cargo test                      # unit, clip-notes, local-only, activity and end-to-end stdio tests
 cargo clippy --all-targets      # lints
+scripts/check-docs-facts.sh     # docs snapshot vs code (CI runs this)
 docker build --target test .    # the same suite inside the image
 ```
 
@@ -192,4 +198,4 @@ Give feedback, get inspired, and build on top of the MCP: [**Discord**](https://
 
 ## Disclaimer
 
-This is a third-party integration and not made by Ableton. Made by [Siddharth](https://x.com/sidahuj).
+This is a third-party integration and not made by Ableton. Derived from AbletonMCP by [Siddharth Ahuja](https://x.com/sidahuj) (MIT); this fork is maintained by DefoAI UG.

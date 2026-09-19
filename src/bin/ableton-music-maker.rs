@@ -11,9 +11,14 @@ use clap::Parser;
     about = "Ableton Live integration through the Model Context Protocol"
 )]
 struct Cli {
-    /// Print the state of every telemetry and dataset gate as JSON and exit.
+    /// Print version, paths and activity-log settings as JSON and exit.
     #[arg(long)]
-    privacy_status: bool,
+    status: bool,
+    /// Ask Live for the loaded Remote Script and the current session, print
+    /// the result as JSON, and exit 0 if the script is loaded and up to date.
+    /// Changes nothing in the set.
+    #[arg(long)]
+    check: bool,
 }
 
 fn init_logging() {
@@ -30,13 +35,23 @@ fn init_logging() {
 async fn main() {
     let cli = Cli::parse();
     init_logging();
-    if cli.privacy_status {
+    if cli.status {
         println!(
             "{}",
-            serde_json::to_string_pretty(&mcp_ableton_music_maker::app::privacy_status())
+            serde_json::to_string_pretty(&mcp_ableton_music_maker::app::status())
                 .unwrap_or_default()
         );
         return;
+    }
+    if cli.check {
+        let (report, ok) = tokio::task::spawn_blocking(mcp_ableton_music_maker::app::check)
+            .await
+            .unwrap_or_else(|e| (serde_json::json!({"error": e.to_string()}), false));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).unwrap_or_default()
+        );
+        std::process::exit(if ok { 0 } else { 1 });
     }
     if let Err(e) = mcp_ableton_music_maker::app::serve_stdio().await {
         tracing::error!("server error: {}", e);
