@@ -145,6 +145,19 @@ script is loaded and up to date. Both are for CI and the Mac app.
   after the handshake (one-second pages so tool calls interleave on the shared socket),
   keeps it under `state_dir()/library/` and answers `search_browser` and every internal
   lookup locally once complete.
+- **The sample index.** `src/samples.rs` asks the script once where samples live
+  (`list_sample_folders`: the Core Library inside the application, the Packs and the User
+  Library around the script's own folder, the open set's folder from `Song.file_path`, and
+  Live's Places when Live exposes a path for them) and then walks those folders itself,
+  reading each WAV or AIFF header for a length. The walk is on this side because file I/O in
+  Live's embedded interpreter measured about two files a second against Live 12.4.6, against
+  ~5,000 natively: 9,904 files took 2.0 s here and would have taken over an hour there. A
+  server that cannot see the producer's disk — the Docker variant — finds nothing, says so,
+  and Live's browser answers `search_browser` instead. `add_sample` then sends one
+  `place_sample`, which creates the clip and fits it inside a single task so Live records one
+  undo step; the script reads `looping`, `loop_end`, `start_time` and `end_time` back off the
+  clip and the reply states what Live actually did, because Live's own Auto-Warp decides how
+  the material is heard and an Arrangement clip's `end_time` cannot be set at all.
 - **Orientation and instructions.** `get_context` is one Remote Script round trip that returns
   the set, every track, the returns, the scenes and the performance clock; `src/context.rs`
   renders it and holds the MCP `instructions` string the server sends at `initialize` (the
@@ -202,7 +215,8 @@ turns the file off. A write failure is logged to stderr once and never fails the
 ## Where the server writes (`src/state.rs`)
 
 `ABLETON_MCP_STATE_DIR`, else `~/.ableton-music-maker/`, with `activity/`, `sessions/`,
-`library/` and, only after an explicit `export_set`, `sets/` under it. Nothing else. There is no upload path: no HTTP client in the dependency tree (CI
+`library/` (the browser index and the sample index), `sample_folders.json` only after an
+explicit `adv_sample_folders add`, and, only after an explicit `export_set`, `sets/` under it. Nothing else. There is no upload path: no HTTP client in the dependency tree (CI
 fails if one appears), no telemetry, no dataset — `tests/local_only.rs` is the policy and
 [decision 0004](../decisions/0004-who-publishes-and-holds-the-data.md) the reason.
 

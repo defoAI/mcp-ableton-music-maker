@@ -14,7 +14,7 @@ Rust MCP server that lets Claude drive Ableton Live. Two processes:
 ## Commands
 
 ```bash
-cargo test                                   # 16 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, local-only, activity, stdio
+cargo test                                   # 17 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, stdio
 cd app && npm run dev                        # the Mac app against this checkout (Tauri 2)
 cargo clippy --all-targets -- -D warnings    # CI runs this
 cargo fmt --all
@@ -33,7 +33,7 @@ No Rust toolchain on the machine? Build inside `rust:1-slim-bookworm` with the r
 ```
 src/connection.rs      LiveBridge trait, AbletonConnection (TCP), RealBridge (reconnecting), LiveError
 src/handshake.rs       get_script_info handshake, ScriptInfoCache, per-command capability check
-src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 99 tool bodies and their #[tool] bindings, run() wrapper
+src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 101 tool bodies and their #[tool] bindings, run() wrapper
 src/activity.rs        the local activity log: one JSON line per tool call, payloads off by default
 src/state.rs           state_dir / activity_dir / sessions_dir — the only places the server writes
 src/install.rs         installer logic (Library.cfg discovery, install with .bak)
@@ -44,6 +44,7 @@ src/audio.rs           WAV/AIFF reader and the capture measurements (peak, RMS p
 src/performance.rs     performance state, bar arithmetic, cue resolution (bars → beats, silence check), readout text
 src/context.rs         get_context readout and the MCP instructions every client receives at initialize
 src/library.rs         the server's copy of Live's browser: paged from the script, on disk under state_dir, searched locally
+src/samples.rs         the sample index (Live names the folders, the server walks them), add_sample, adv_sample_folders
 src/variation.rs       clip variations (fill, ghosts, inversions, thinning, half/double time), humanize, swing, and the key of a recording
 src/song.rs            sections (scene names "<name> · <bars>") and songs (the Setlist: scene): parsing, the plan, the cursor — pure
 src/sections.rs        make_section, set_song and its edits, play_song, the steering verbs (one state read + one cue each)
@@ -51,7 +52,7 @@ src/transition.rs      a jump's transition (tempo, retime, crossfade, fill, drop
 src/sound.rs           the sound vocabulary: words → rack macros, the per-instrument table, or a parameter name — pure
 src/sets.rs            export_set / import_set: a rebuildable document under state_dir()/sets, written only on request
 src/arrange.rs         the artist-facing tools: arrange (bars), feel (one tool, one undo), set_key, create_return, clear_captures
-tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
+tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, samples.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
 docker/                verify-image.sh, Claude Desktop example config
 .github/workflows/ci.yml   fmt, clippy, test, docs facts; the Mac app and its .dmg — both jobs on macOS, nothing on Linux
 ```
@@ -67,8 +68,10 @@ docker/                verify-image.sh, Claude Desktop example config
 - **Local data is on by default, payloads off.** The activity log (`src/activity.rs`) writes
   tool names, commands, timings and sizes; `ABLETON_MCP_ACTIVITY_PAYLOADS` adds parameters
   and results. `tests/activity.rs` pins the defaults. The library index (`src/library.rs`)
-  keeps browser names, paths and URIs on disk; `ABLETON_MCP_LIBRARY_INDEX=false` keeps it in
-  memory; `tests/library.rs` pins that. Set exports (`src/sets.rs`) are written only by an
+  keeps browser names, paths and URIs on disk, and the sample index (`src/samples.rs`) the
+  names, folders and paths of audio files in the folders Live names; `ABLETON_MCP_LIBRARY_INDEX=false`
+  keeps both in memory; `tests/library.rs` and `tests/samples.rs` pin that. The list of
+  sample folders the producer added is written only by `adv_sample_folders add`. Set exports (`src/sets.rs`) are written only by an
   explicit `export_set` call; `tests/sets.rs` pins that. Anything new the server writes goes
   under `state::state_dir()` and into `TERMS.md`.
 - **Tool bodies are plain functions** `fn(&LiveState, &Params) -> Result<String, String>`; the
@@ -105,7 +108,7 @@ the short form:
 
 - **`CORE_TOOLS` in `src/tools.rs` is the surface**: Look (`get_context`), Build
   (`build_song`, `make_section`, `create_clip`, `add_notes_to_clip`, `load_instrument_or_effect`,
-  `search_browser`, `set_key`, `set_tempo`), Shape (`shape_sound`, `feel`, `set_track_mixer`,
+  `search_browser`, `add_sample`, `set_key`, `set_tempo`), Shape (`shape_sound`, `feel`, `set_track_mixer`,
   `set_send`, `create_return`), Arrange (`set_song`, `add_to_song`, `remove_from_song`,
   `arrange`, `create_locator`), Play (`play_song`, `go`, `jump_to`, `back`, `hold_section`,
   `next_section`, `previous_section`, `record_clip`, `capture_mix`, `clear_captures`,

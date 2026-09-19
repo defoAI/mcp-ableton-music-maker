@@ -19,7 +19,7 @@ Prompt-assisted music production, end-to-end track creation, and Live session an
 
 Two pieces:
 
-1. **`ableton-music-maker`**, a single Rust binary that speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio to Claude Desktop, Claude Code or Cursor. It exposes 99 tools for reading, editing and performing the Live set: an artist's set of 36 (look, build, shape, arrange, play) and, named `adv_…`, the raw layer underneath, and talks to Live over a TCP socket on port 9877.
+1. **`ableton-music-maker`**, a single Rust binary that speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio to Claude Desktop, Claude Code or Cursor. It exposes 101 tools for reading, editing and performing the Live set: an artist's set of 36 (look, build, shape, arrange, play) and, named `adv_…`, the raw layer underneath, and talks to Live over a TCP socket on port 9877.
 2. **The AbletonMusicMaker Remote Script**, a control surface that runs inside Live and executes the commands. Live only loads control surfaces through its embedded Python interpreter, so this one file stays Python. It is embedded in the binary and installed with `ableton-music-maker-install-script`.
 
 ```

@@ -192,6 +192,70 @@ fn decode_pcm(data: &[u8], n: usize, bits: u16, rate: u32, le: bool) -> Result<A
 }
 
 /// The 80-bit IEEE 754 extended float AIFF uses for the sample rate.
+/// How long a sample is, from its header alone: at most 4 KB is read and no
+/// audio is decoded, so a whole sample folder can be measured in the time one
+/// file would take to load. None for a format whose header this does not parse
+/// (MP3, M4A, Ogg, and FLAC) — a missing length is better than a wrong one.
+pub fn header_seconds(path: &Path) -> Option<f64> {
+    let mut head = [0u8; 4096];
+    let read = {
+        use std::io::Read;
+        let mut file = std::fs::File::open(path).ok()?;
+        file.read(&mut head).ok()?
+    };
+    let head = &head[..read];
+    if head.len() < 16 {
+        return None;
+    }
+    match (&head[0..4], &head[8..12]) {
+        (b"RIFF", b"WAVE") => wav_header_seconds(head),
+        (b"FORM", b"AIFF") | (b"FORM", b"AIFC") => aiff_header_seconds(head),
+        _ => None,
+    }
+}
+
+/// `data` bytes over the byte rate the `fmt ` chunk declares.
+fn wav_header_seconds(head: &[u8]) -> Option<f64> {
+    let le16 = |b: &[u8]| u16::from_le_bytes([b[0], b[1]]) as u64;
+    let le32 = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u64;
+    let (mut pos, mut rate, mut channels, mut bits) = (12usize, 0u64, 0u64, 0u64);
+    while pos + 8 <= head.len() {
+        let size = le32(&head[pos + 4..pos + 8]) as usize;
+        let body = &head[pos + 8..(pos + 8 + size).min(head.len())];
+        match &head[pos..pos + 4] {
+            b"fmt " if body.len() >= 16 => {
+                channels = le16(&body[2..4]);
+                rate = le32(&body[4..8]);
+                bits = le16(&body[14..16]);
+            }
+            b"data" => {
+                let per_second = rate * channels * (bits / 8);
+                return (per_second > 0).then(|| size as f64 / per_second as f64);
+            }
+            _ => {}
+        }
+        pos += 8 + size + (size & 1);
+    }
+    None
+}
+
+/// Frames over the sample rate the COMM chunk declares.
+fn aiff_header_seconds(head: &[u8]) -> Option<f64> {
+    let be32 = |b: &[u8]| u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+    let mut pos = 12usize;
+    while pos + 8 <= head.len() {
+        let size = be32(&head[pos + 4..pos + 8]) as usize;
+        let body = &head[pos + 8..(pos + 8 + size).min(head.len())];
+        if &head[pos..pos + 4] == b"COMM" && body.len() >= 18 {
+            let frames = be32(&body[2..6]) as f64;
+            let rate = extended_to_u32(&body[8..18]);
+            return (rate > 0).then(|| frames / rate as f64);
+        }
+        pos += 8 + size + (size & 1);
+    }
+    None
+}
+
 fn extended_to_u32(b: &[u8]) -> u32 {
     let exponent = ((((b[0] & 0x7f) as u16) << 8) | b[1] as u16) as i32;
     let mantissa = u64::from_be_bytes([b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9]]);

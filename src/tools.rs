@@ -111,6 +111,8 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "arrangement_summary",
     "start_arrangement_record",
     "stop_arrangement_record",
+    "place_sample",
+    "list_sample_folders",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -158,6 +160,7 @@ pub const CORE_TOOLS: &[&str] = &[
     "add_notes_to_clip",
     "load_instrument_or_effect",
     "search_browser",
+    "add_sample",
     "set_key",
     "set_tempo",
     // shape
@@ -988,6 +991,8 @@ pub const NEXT_SECTION: ToolSpec = ToolSpec::new("next_section");
 pub const PREVIOUS_SECTION: ToolSpec = ToolSpec::new("previous_section");
 pub const BACK: ToolSpec = ToolSpec::new("back");
 pub const JUMP_TO: ToolSpec = ToolSpec::new("jump_to");
+pub const ADD_SAMPLE: ToolSpec = ToolSpec::new("add_sample");
+pub const SAMPLE_FOLDERS: ToolSpec = ToolSpec::new("sample_folders");
 
 // ── Tool bodies ─────────────────────────────────────────────────────────────
 
@@ -2654,6 +2659,19 @@ pub fn delete_locator_body(live: &LiveState, p: &DeleteLocatorParams) -> ToolRes
 
 /// Search hits from the server's library index when it is complete, else
 /// from the Remote Script (merged with whatever the index has so far).
+/// The best sample Live's browser knows by these words, for the case where
+/// no file on disk matched (a Place Live will not locate, a pack whose files
+/// this does not walk). None when the browser has nothing either.
+pub(crate) fn browser_sample(
+    live: &LiveState,
+    query: &str,
+) -> Result<Option<crate::library::Item>, String> {
+    if require(live, "search_browser").is_err() {
+        return Ok(None);
+    }
+    Ok(find_items(live, query, "samples", 1)?.into_iter().next())
+}
+
 fn find_items(
     live: &LiveState,
     query: &str,
@@ -2730,6 +2748,13 @@ pub fn search_browser_body(live: &LiveState, p: &SearchBrowserParams) -> ToolRes
     } else {
         p.limit.clamp(1, 200) as usize
     };
+    // Samples are files: the sample index answers with paths, which is what
+    // add_sample needs. Live's browser still answers when the index cannot.
+    if p.category.trim().eq_ignore_ascii_case("samples") {
+        if let Some(text) = crate::samples::search_text(live, &queries, limit, p.best)? {
+            return Ok(text);
+        }
+    }
     let ix = live.library.snapshot();
     let from_index = ix.as_ref().is_some_and(|ix| ix.complete)
         && crate::library::WALKED_CATEGORIES.contains(&p.category.as_str());
@@ -5685,6 +5710,8 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "previous_section" => (crate::sections::SteerParams, crate::sections::previous_section_body),
         "back" => (crate::sections::SteerParams, crate::sections::back_body),
         "jump_to" => (crate::sections::JumpToParams, crate::sections::jump_to_body),
+        "add_sample" => (crate::samples::AddSampleParams, crate::samples::add_sample_body),
+        "sample_folders" => (crate::samples::SampleFoldersParams, crate::samples::sample_folders_body),
     )
 }
 
@@ -7330,6 +7357,49 @@ impl Server {
     ) -> CallToolResult {
         self.run(&JUMP_TO, p, crate::sections::jump_to_body).await
     }
+
+    /// Put audio into the song: a sample from your folders or Live's browser
+    /// becomes a clip in a section, or lands in the Arrangement at a bar.
+    /// `sample` is plain words to search for ("break 90", "vinyl crackle"), an
+    /// absolute file path, or a browser URI. Give `section` (a Session row, so
+    /// it plays with the song) or `at_bar` (Live's 1-based bar), not both.
+    /// `track` is an audio track by name or index; leave it out and an audio
+    /// track is made, named after the sample. By default the clip is fitted to
+    /// the song: warping on so it follows the tempo, the loop set to a whole
+    /// number of bars when Live heard one, named after the file — one undo step
+    /// in Live. `bars` forces a loop length, `transpose` shifts it in
+    /// semitones, `fit: false` places it exactly as dragging the file in would.
+    /// The file is referenced where it is: nothing is copied, moved or
+    /// uploaded. Needs Live 12 (Live's own API for placing audio from a file).
+    /// Refuses a MIDI track, both targets at once, a section that does not
+    /// exist, and a browser sample asked for at a bar — Live only reveals a
+    /// browser item's file once it is a clip, so put that one in a section
+    /// first. Find samples with search_browser category "samples"; add a
+    /// folder with adv_sample_folders.
+    #[tool(name = "add_sample")]
+    async fn add_sample(
+        &self,
+        Parameters(p): Parameters<crate::samples::AddSampleParams>,
+    ) -> CallToolResult {
+        self.run(&ADD_SAMPLE, p, crate::samples::add_sample_body)
+            .await
+    }
+
+    /// The folders Claude looks in for samples. action "list" (default) shows
+    /// them with their file counts; "add" with a path adds one and indexes it;
+    /// "remove" takes one out; "refresh" walks them again. Live's own folders —
+    /// the Core Library, your Packs, the User Library, this project — are
+    /// always included and need no adding. The list is kept in
+    /// ~/.ableton-music-maker/sample_folders.json and holds paths only, never
+    /// audio.
+    #[tool(name = "sample_folders")]
+    async fn sample_folders(
+        &self,
+        Parameters(p): Parameters<crate::samples::SampleFoldersParams>,
+    ) -> CallToolResult {
+        self.run(&SAMPLE_FOLDERS, p, crate::samples::sample_folders_body)
+            .await
+    }
 }
 
 #[tool_handler(router = self.tool_router, name = "AbletonMusicMaker")]
@@ -7411,7 +7481,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 99);
+        assert_eq!(tools.len(), 101);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();
@@ -7429,7 +7499,7 @@ mod tests {
         // intent. Keeping a performance is part of playing one.
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 99, "the take must not add a tool");
+        assert_eq!(tools.len(), 101, "the take must not add a tool");
         // start_performance is served as adv_start_performance (decision 0006).
         for name in ["adv_start_performance", "play_song"] {
             let tool = tools.iter().find(|t| t.name == name).unwrap();

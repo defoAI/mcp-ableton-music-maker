@@ -5,6 +5,7 @@ from _Framework.ControlSurface import ControlSurface
 import os
 import math
 import socket
+import sys
 import json
 import threading
 import time
@@ -60,7 +61,7 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.25.0"
+SCRIPT_VERSION = "1.26.0"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
@@ -174,6 +175,8 @@ SCRIPT_CAPABILITIES = [
     "arrangement_summary",
     "start_arrangement_record",
     "stop_arrangement_record",
+    "place_sample",
+    "list_sample_folders",
 ]
 
 def create_instance(c_instance):
@@ -430,7 +433,8 @@ class AbletonMCP(ControlSurface):
     SLICE_MS_STOPPED = 40.0
     SLOW_SLICE_MS = 25.0
     COMMAND_TIMEOUTS = {"create_audio_clip": 60.0, "create_tracks": 180.0, "write_clips": 60.0,
-                        "search_browser": 20.0, "get_browser_index": 20.0, "get_library_status": 20.0}
+                        "search_browser": 20.0, "get_browser_index": 20.0, "get_library_status": 20.0,
+                        "place_sample": 60.0}
     MUTATING_COMMANDS = frozenset([
         "create_midi_track", "create_audio_track", "set_track_name", "create_clip",
         "create_audio_clip", "add_notes_to_clip", "set_clip_name", "set_arrangement_clip_name",
@@ -446,7 +450,7 @@ class AbletonMCP(ControlSurface):
         "restore_mix", "capture_scene", "duplicate_scene", "set_clip_groove", "set_device_parameter",
         "set_device_parameters", "place_clips", "delete_arrangement_clips",
         "duplicate_arrangement_clip", "create_return_track", "create_tracks", "write_clips",
-        "start_arrangement_record", "stop_arrangement_record",
+        "start_arrangement_record", "stop_arrangement_record", "place_sample",
     ])
 
     def _slice_budget(self):
@@ -572,6 +576,10 @@ class AbletonMCP(ControlSurface):
             clip_index = params.get("clip_index", 0)
             length = params.get("length", 4.0)
             result = self._create_clip(track_index, clip_index, length)
+        elif command_type == "place_sample":
+            return self._place_sample(params)
+        elif command_type == "list_sample_folders":
+            return self._list_sample_folders(params.get("roots"))
         elif command_type == "create_audio_clip":
             track_index = params.get("track_index", 0)
             clip_index = params.get("clip_index", 0)
@@ -1128,6 +1136,313 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error creating audio clip: " + str(e))
             raise
+
+    # ── Samples ───────────────────────────────────────────────────────────────
+    #
+    # Finding: _list_sample_folders names the folders that hold samples -- the
+    # Core Library inside the application, the Packs and the User Library
+    # around this script, the open set's own folder, and Live's Places. Only
+    # Live knows where those are; the server walks them itself, because file
+    # I/O in Live's embedded interpreter runs about two files a second
+    # (measured 2026-09-19), which no sample library survives.
+    # Placing: _place_sample creates the clip and fits it inside one task, so
+    # Live wraps the whole thing in a single undo step.
+
+    # A sample this much of a bar or longer is treated as a loop; shorter is a
+    # one-shot and is left exactly as Live loaded it.
+    LOOP_BARS_FLOOR = 0.75
+    # How far Live's own warped length may sit from a whole number of bars and
+    # still be snapped to it.
+    BAR_SNAP_TOLERANCE = 0.10
+
+    def _user_library_dir(self):
+        """Live's User Library: this script sits in
+        <User Library>/Remote Scripts/<this folder>/__init__.py."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        return os.path.dirname(os.path.dirname(here))
+
+    def _core_library_samples_dir(self):
+        """The Core Library ships inside the application, in a different place
+        per platform; the first candidate that exists wins, and none is fine."""
+        try:
+            exe = os.path.abspath(sys.executable or "")
+        except Exception:
+            exe = ""
+        if not exe:
+            return None
+        here = os.path.dirname(exe)
+        contents = os.path.dirname(here)
+        for path in (os.path.join(contents, "App-Resources", "Core Library", "Samples"),
+                     os.path.join(here, "Resources", "Core Library", "Samples"),
+                     os.path.join(contents, "Resources", "Core Library", "Samples")):
+            try:
+                if os.path.isdir(path):
+                    return path
+            except Exception:
+                pass
+        return None
+
+    def _project_dir(self):
+        """The folder of the open set, once it has been saved."""
+        path = self._safe_song_property("file_path", str, "")
+        if not path:
+            return None
+        try:
+            folder = os.path.dirname(os.path.abspath(path))
+            return folder if os.path.isdir(folder) else None
+        except Exception:
+            return None
+
+    def _user_folder_path(self, item):
+        """Where a Live browser Place is on disk, when Live says. Live does not
+        document a path on a browser item, so every likely spelling is tried and
+        only an existing directory is believed."""
+        for attr in ("path", "file_path", "absolute_path", "folder", "directory"):
+            value = self._safe_attr(item, attr, None, None)
+            try:
+                if value and os.path.isdir("%s" % value):
+                    return "%s" % value
+            except Exception:
+                pass
+        uri = self._safe_attr(item, "uri", None, None)
+        if not uri:
+            return None
+        text = "%s" % uri
+        if text.startswith("file://"):
+            text = text[7:]
+        else:
+            cut = text.find(":/")
+            text = text[cut + 1:] if cut >= 0 else text
+        try:
+            return text if text and os.path.isdir(text) else None
+        except Exception:
+            return None
+
+    def _sample_folders(self, roots=None):
+        """Every folder to look in: Live's own (the Core Library, the Packs
+        beside the User Library, the User Library's Samples, this project) plus
+        the ones the server passes. Deduplicated, only what exists."""
+        out, seen = [], set()
+
+        def add(name, path, source):
+            if not path:
+                return
+            try:
+                full = os.path.abspath("%s" % path)
+                if not os.path.isdir(full):
+                    return
+                key = os.path.normcase(full)
+            except Exception:
+                return
+            if key in seen:
+                return
+            seen.add(key)
+            out.append({"name": name, "path": full, "source": source})
+
+        unresolved = []
+        core = self._core_library_samples_dir()
+        add("Core Library", core, "core_library")
+        try:
+            library = self._user_library_dir()
+        except Exception:
+            library = None
+        if library:
+            add("Factory Packs", os.path.join(os.path.dirname(library), "Factory Packs"), "packs")
+            add("User Library", os.path.join(library, "Samples"), "user_library")
+        add("This project", self._project_dir(), "project")
+        try:
+            places = getattr(self.application().browser, "user_folders", None) or []
+        except Exception:
+            places = []
+        for item in list(places):
+            name = "%s" % (self._safe_attr(item, "name", None, "") or "")
+            path = self._user_folder_path(item)
+            if path:
+                add(name or "Place", path, "places")
+            elif name:
+                unresolved.append(name)
+        for path in list(roots or []):
+            add(os.path.basename(("%s" % path).rstrip(os.sep)) or "%s" % path, path, "added")
+        return out, unresolved
+
+    def _list_sample_folders(self, roots=None):
+        """The folders a scan would walk, and the Places Live would not locate."""
+        folders, unresolved = self._sample_folders(roots)
+        return {"folders": folders, "places_without_path": unresolved}
+
+    def _arrangement_clip_at(self, track, at):
+        """The Arrangement clip that starts at this beat, if Live put one there."""
+        best, distance = None, None
+        for clip in list(track.arrangement_clips):
+            start = self._safe_attr(clip, "start_time", float, None)
+            if start is None:
+                continue
+            gap = abs(start - at)
+            if distance is None or gap < distance:
+                best, distance = clip, gap
+        if best is None or distance > 0.01:
+            return None
+        return best
+
+    def _fit_sample_clip(self, clip, bars, fit, where):
+        """Warp and loop an audio clip to whole bars, then report what Live
+        ended up with. Live's own Auto-Warp does the tempo detection; this only
+        decides whether the clip is a loop or a one-shot, sets the markers, and
+        reads them back. It never rewrites warp markers, so it never stretches
+        the material -- 'fitted' says which of those happened.
+
+        Where it went decides whether it loops: a Session row plays through its
+        section, so a loop belongs there; a point in the Arrangement is an event
+        at that bar, so it is left as one hit unless `bars` asked otherwise."""
+        beats_per_bar = float(self._safe_song_property("signature_numerator", int, 4) or 4)
+        tempo = float(self._safe_song_property("tempo", float, 120.0) or 120.0)
+        seconds_per_bar = beats_per_bar * 60.0 / max(1.0, tempo)
+        frames = self._safe_attr(clip, "sample_length", float, None)
+        rate = self._safe_attr(clip, "sample_rate", float, None)
+        duration_s = (frames / rate) if (frames and rate) else None
+        warping = bool(self._safe_attr(clip, "warping", bool, False))
+        if warping:
+            beats = self._safe_attr(clip, "length", float, None)
+            heard = (beats / beats_per_bar) if beats else None
+        else:
+            heard = (duration_s / seconds_per_bar) if duration_s else None
+        out = {"beats_per_bar": beats_per_bar, "duration_s": duration_s,
+               "heard_bars": round(heard, 3) if heard is not None else None}
+        target = None
+        if not fit:
+            out["fitted"] = "raw"
+        elif bars is not None:
+            target = float(bars)
+            if target <= 0.0:
+                raise ValueError("bars must be more than 0")
+            out["fitted"] = "asked"
+        elif where == "arrangement":
+            # One hit at one bar: Live's own warp stands, nothing is looped.
+            out["fitted"] = "at_bar"
+        elif heard is None:
+            out["fitted"] = "unmeasured"
+        elif heard < self.LOOP_BARS_FLOOR:
+            out["fitted"] = "one_shot"
+        else:
+            nearest = float(int(math.floor(heard + 0.5)))
+            if nearest >= 1.0 and abs(heard - nearest) <= self.BAR_SNAP_TOLERANCE * nearest:
+                target, out["fitted"] = nearest, "snapped"
+            else:
+                out["fitted"] = "off_grid"
+        if target is not None:
+            out["bars"] = target
+            end = target * beats_per_bar
+            # Order matters: unwarped audio cannot loop, and the markers are in
+            # beats only once the clip is warped. Each step is best effort --
+            # what Live accepted is read back below.
+            for attr, value in (("warping", True), ("looping", True),
+                                ("loop_start", 0.0), ("loop_end", end), ("end_marker", end)):
+                try:
+                    setattr(clip, attr, value)
+                except Exception as e:
+                    out.setdefault("refused", []).append("%s: %s" % (attr, str(e)))
+        out["warping"] = bool(self._safe_attr(clip, "warping", bool, False))
+        out["looping"] = bool(self._safe_attr(clip, "looping", bool, False))
+        out["loop_end"] = self._safe_attr(clip, "loop_end", float, None)
+        out["length"] = self._safe_attr(clip, "length", float, None)
+        return out
+
+    def _place_sample(self, spec):
+        """A sample into the song: an audio clip in a Session slot or in the
+        Arrangement at a beat position, warped and looped to whole bars,
+        transposed and named -- all in one task, so Live undoes it in one step.
+
+        The file is referenced where it lies, exactly as dragging it into Live
+        would do; nothing is copied. Needs the Live version that has the
+        create_audio_clip function for the target (Live 12).
+        """
+        spec = spec or {}
+        track = self._resolve_track(spec.get("track_index", -1))
+        if getattr(track, "has_midi_input", False) or not getattr(track, "has_audio_input", True):
+            raise ValueError("'%s' is a MIDI track; a sample needs an audio track" % track.name)
+        path = spec.get("path") or None
+        item_uri = spec.get("item_uri") or None
+        slot = spec.get("slot")
+        position = spec.get("position")
+        if not path and not item_uri:
+            raise ValueError("give the sample's path, or a browser item_uri")
+        if path and not os.path.isabs("%s" % path):
+            raise ValueError("Audio file path must be absolute (got: %s)" % path)
+        if (slot is None) == (position is None):
+            raise ValueError("give a slot (a Session row) or a position in beats (the Arrangement), not both")
+        clip, where = None, None
+        if position is not None:
+            at = float(position)
+            if at < 0.0:
+                raise ValueError("an Arrangement position cannot be before bar 1")
+            if not path:
+                raise ValueError(
+                    "Live tells a client the file of a browser item only once it is a clip, "
+                    "and the Arrangement needs the file: put the sample in a section first")
+            if not hasattr(track, "create_audio_clip"):
+                raise Exception(
+                    "Track.create_audio_clip is unavailable in this Ableton Live version; "
+                    "placing a sample in the Arrangement needs Live 12")
+            track.create_audio_clip("%s" % path, at)
+            clip, where = self._arrangement_clip_at(track, at), "arrangement"
+        else:
+            index = int(slot)
+            slots = list(track.clip_slots)
+            if index < 0 or index >= len(slots):
+                raise IndexError("slot %d is outside '%s' (the set has %d rows)" % (
+                    index, track.name, len(slots)))
+            clip_slot = slots[index]
+            if clip_slot.has_clip:
+                raise ValueError("slot %d on '%s' already holds '%s'" % (
+                    index, track.name, clip_slot.clip.name))
+            if path:
+                if not hasattr(clip_slot, "create_audio_clip"):
+                    raise Exception(
+                        "ClipSlot.create_audio_clip is unavailable in this Ableton Live "
+                        "version. Requires Live 12.0.5 or newer.")
+                clip_slot.create_audio_clip("%s" % path)
+            else:
+                browser = self.application().browser
+                item = self._find_browser_item_by_uri(browser, "%s" % item_uri)
+                if item is None:
+                    raise ValueError("Browser item with URI '%s' not found" % item_uri)
+                # Live loads a browser item into what is highlighted, so the
+                # target slot is highlighted first.
+                self._song.view.highlighted_clip_slot = clip_slot
+                browser.load_item(item)
+            if not clip_slot.has_clip:
+                raise Exception("Live put no clip in slot %d of '%s'" % (index, track.name))
+            clip, where = clip_slot.clip, "session"
+        result = {"track": "%s" % track.name, "track_index": int(spec.get("track_index", -1)),
+                  "where": where}
+        if slot is not None:
+            result["slot"] = int(slot)
+        if clip is None:
+            # Live made the clip (nothing raised) but did not hand it back at
+            # the position asked for: say so rather than guess.
+            result["name"] = os.path.splitext(os.path.basename("%s" % path))[0]
+            result["read_back"] = False
+            return result
+        bars = spec.get("bars")
+        result.update(self._fit_sample_clip(clip, None if bars is None else float(bars),
+                                            spec.get("fit", True) is not False, where))
+        transpose = spec.get("transpose")
+        if transpose is not None:
+            semitones = int(transpose)
+            if semitones < -48 or semitones > 48:
+                raise ValueError("transpose is in semitones, -48 to 48 (got %d)" % semitones)
+            clip.pitch_coarse = semitones
+            result["transpose"] = semitones
+        name = spec.get("name")
+        if name:
+            clip.name = "%s" % name
+        result["name"] = "%s" % clip.name
+        result["file_path"] = self._safe_attr(clip, "file_path", str, None)
+        result["read_back"] = True
+        if where == "arrangement":
+            result["start_time"] = self._safe_attr(clip, "start_time", float, None)
+            result["end_time"] = self._safe_attr(clip, "end_time", float, None)
+        return result
 
     def _add_notes_to_clip(self, track_index, clip_index, notes):
         """Add MIDI notes to a clip"""

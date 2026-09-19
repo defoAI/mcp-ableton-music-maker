@@ -46,6 +46,7 @@ pub mod install;
 pub mod library;
 pub mod notes;
 pub mod performance;
+pub mod samples;
 pub mod sections;
 pub mod sets;
 pub mod song;
