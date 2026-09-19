@@ -18,17 +18,13 @@ name = "ableton-music-maker-install-script"
 path = "src/bin/ableton-music-maker-install-script.rs"
 
 [dependencies]
-rmcp = { version = "3.4", features = ["server", "macros", "transport-io", "schemars", "elicitation"] }
+rmcp = { version = "3.4", features = ["server", "macros", "transport-io", "schemars"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "time", "net"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 schemars = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ureq = { version = "3", features = ["json"] }
-uuid = { version = "1", features = ["v4"] }
-sha2 = "0.10"
-regex = "1"
 clap = { version = "4", features = ["derive"] }
 roxmltree = "0.20"
 dirs = "6"

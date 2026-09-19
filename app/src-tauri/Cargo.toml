@@ -1,0 +1,23 @@
+[package]
+name = "ableton-music-maker-app"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Mac companion app for MCP Ableton Music Maker"
+license = "MIT"
+publish = false
+
+[lib]
+name = "ableton_music_maker_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+chrono = "0.4"
+dirs = "6"
+mcp-ableton-music-maker = { path = "../.." }

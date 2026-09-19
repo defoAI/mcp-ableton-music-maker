@@ -25,6 +25,11 @@ Thumbs.db
 .env.local
 .env.*.local
 
-# Export output — contains collected user session data
+# Local activity logs, if a server is ever pointed at the checkout
 *.jsonl
-exports/
+
+# Mac app build output
+app/node_modules/
+app/src-tauri/target/
+app/src-tauri/gen/
+app/src-tauri/binaries/

@@ -81,10 +81,7 @@ async fn full_stack_over_stdio() {
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_ableton-music-maker"));
     cmd.env("ABLETON_HOST", "127.0.0.1")
         .env("ABLETON_PORT", port.to_string())
-        .env("ABLETON_MCP_DISABLE_TELEMETRY", "true")
-        .env("ABLETON_MCP_DISABLE_DATASET", "true")
         .env("ABLETON_MCP_STATE_DIR", state_dir.path())
-        .env("ABLETON_MCP_DATA_DIR", state_dir.path())
         .env("RUST_LOG", "warn");
     let client =
         ().serve(TokioChildProcess::new(cmd).unwrap())
@@ -97,17 +94,31 @@ async fn full_stack_over_stdio() {
     assert_eq!(server_info.version, mcp_ableton_music_maker::MCP_VERSION);
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 37);
+    assert_eq!(tools.len(), 31);
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     for expected in [
         "get_session_info",
         "add_notes_to_clip",
         "load_drum_kit",
-        "set_dataset_consent",
-        "record_audition",
+        "get_remote_script_info",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
+    for gone in ["set_dataset_consent", "record_audition", "submit_intent"] {
+        assert!(!names.contains(&gone), "{gone} should not exist");
+    }
+
+    // The heartbeat names the client that started the server.
+    let sessions = std::fs::read_dir(state_dir.path().join("sessions")).unwrap();
+    let heartbeat: Vec<_> = sessions.map(|e| e.unwrap().path()).collect();
+    assert_eq!(heartbeat.len(), 1, "one heartbeat per running server");
+    let beat: Value = serde_json::from_slice(&std::fs::read(&heartbeat[0]).unwrap()).unwrap();
+    assert_eq!(beat["server_version"], mcp_ableton_music_maker::MCP_VERSION);
+    assert!(beat["client"]["name"].is_string(), "{beat}");
+    assert!(
+        beat["activity_file"].is_string(),
+        "activity on by default: {beat}"
+    );
 
     // A read tool returns Live's payload as JSON.
     let result = client
@@ -149,6 +160,40 @@ async fn full_stack_over_stdio() {
 
     client.cancel().await.unwrap();
 
+    // Clean shutdown removes the heartbeat; the activity file stays.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        std::fs::read_dir(state_dir.path().join("sessions"))
+            .unwrap()
+            .next()
+            .is_none(),
+        "heartbeat removed on shutdown"
+    );
+    let activity_dir = state_dir.path().join("activity");
+    let log = std::fs::read_dir(&activity_dir)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let lines: Vec<Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert!(lines.len() >= 3, "one line per tool call: {lines:?}");
+    let tempo = lines.iter().find(|l| l["tool"] == "set_tempo").unwrap();
+    assert_eq!(tempo["ok"], true);
+    assert_eq!(tempo["commands"], json!(["set_tempo"]));
+    assert!(tempo.get("params").is_none(), "payloads off by default");
+    assert!(tempo["in_chars"].as_u64().unwrap() > 0);
+    let tree = lines
+        .iter()
+        .find(|l| l["tool"] == "get_browser_tree")
+        .unwrap();
+    assert_eq!(tree["ok"], false);
+    assert!(tree["error"].as_str().unwrap().contains("not available"));
+
     let commands: Vec<String> = received
         .lock()
         .unwrap()
@@ -172,25 +217,70 @@ async fn full_stack_over_stdio() {
 }
 
 #[tokio::test]
-async fn privacy_status_reports_gates_off() {
+async fn status_reports_paths_and_no_uploads() {
     let state_dir = tempfile::tempdir().unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ableton-music-maker"))
-        .arg("--privacy-status")
+        .arg("--status")
         .env("ABLETON_MCP_STATE_DIR", state_dir.path())
-        .env("ABLETON_MCP_DATA_DIR", state_dir.path())
-        .env_remove("ABLETON_MCP_ENABLE_TELEMETRY")
-        .env_remove("ABLETON_MCP_SUPABASE_URL")
         .output()
         .await
         .unwrap();
     assert!(output.status.success());
     let status: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(status["telemetry_enabled"], false);
-    assert_eq!(status["dataset_enabled"], false);
-    assert_eq!(status["has_supabase_credentials"], false);
-    assert_eq!(status["would_prompt_for_consent"], false);
+    assert_eq!(status["uploads"], "none");
+    assert_eq!(status["activity"]["enabled"], true);
+    assert_eq!(status["activity"]["payloads"], false);
+    assert_eq!(status["state_dir"], state_dir.path().to_str().unwrap());
     assert_eq!(
         status["expected_remote_script_version"],
         mcp_ableton_music_maker::handshake::expected_remote_script_version()
     );
+    for gone in [
+        "telemetry_enabled",
+        "dataset_enabled",
+        "has_supabase_credentials",
+    ] {
+        assert!(status.get(gone).is_none(), "{gone} must not exist");
+    }
+}
+
+#[tokio::test]
+async fn check_reports_live_and_exits_by_script_state() {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let port = fake_live(received.clone()).await;
+    let state_dir = tempfile::tempdir().unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ableton-music-maker"))
+        .arg("--check")
+        .env("ABLETON_HOST", "127.0.0.1")
+        .env("ABLETON_PORT", port.to_string())
+        .env("ABLETON_MCP_STATE_DIR", state_dir.path())
+        .env("RUST_LOG", "warn")
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["live_reachable"], true);
+    assert_eq!(report["up_to_date"], true);
+    assert_eq!(report["session"]["tempo"], 120.0);
+    assert_eq!(report["session"]["track_count"], 2);
+
+    // Nothing listening: exit 1, still valid JSON, nothing on stdout but it.
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ableton-music-maker"))
+        .arg("--check")
+        .env("ABLETON_HOST", "127.0.0.1")
+        .env("ABLETON_PORT", "1")
+        .env("ABLETON_MCP_STATE_DIR", state_dir.path())
+        .env("RUST_LOG", "error")
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["live_reachable"], false);
+    assert!(report["error"].is_string());
 }

@@ -5,13 +5,15 @@
 //! "result": ...}` or `{"status": "error", "message": ...}`. There is no
 //! framing, so the reader accumulates bytes until the buffer parses.
 
-use crate::dataset::recorder::get_recorder;
+use crate::activity::Activity;
 use crate::handshake::ScriptInfoCache;
+use serde::Serialize;
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Everything that can go wrong talking to Live.
 #[derive(Debug, thiserror::Error, Clone)]
@@ -44,24 +46,75 @@ pub trait LiveBridge: Send + Sync {
     fn disconnect(&self) {}
 }
 
-/// Everything a tool needs to talk to Live: the bridge plus the cached
-/// handshake result. Shared by the tools, the trajectory recorder and the
-/// passive poller.
+/// What one tool call did on the Live socket: every command it sent and
+/// the time spent waiting for Live. Collected per blocking thread, so a
+/// tool body needs no extra plumbing to be observed.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct CallTrace {
+    pub commands: Vec<String>,
+    pub live_ms: f64,
+}
+
+thread_local! {
+    static TRACE: RefCell<Option<CallTrace>> = const { RefCell::new(None) };
+}
+
+/// Start observing the Live commands sent from this thread.
+pub fn begin_trace() {
+    TRACE.with(|t| *t.borrow_mut() = Some(CallTrace::default()));
+}
+
+/// Stop observing and return what was seen (empty if nothing was started).
+pub fn end_trace() -> CallTrace {
+    TRACE.with(|t| t.borrow_mut().take().unwrap_or_default())
+}
+
+fn note_command(command: &str, elapsed: Duration) {
+    TRACE.with(|t| {
+        if let Some(trace) = t.borrow_mut().as_mut() {
+            trace.commands.push(command.to_string());
+            trace.live_ms += elapsed.as_secs_f64() * 1000.0;
+        }
+    });
+}
+
+/// `ABLETON_HOST` (default `localhost`) and `ABLETON_PORT` (default 9877).
+pub fn live_address() -> (String, u16) {
+    let host = std::env::var("ABLETON_HOST").unwrap_or_else(|_| "localhost".to_string());
+    let port = std::env::var("ABLETON_PORT")
+        .ok()
+        .and_then(|p| p.trim().parse().ok())
+        .unwrap_or(9877);
+    (host, port)
+}
+
+/// Everything a tool needs to talk to Live: the bridge, the cached
+/// handshake result, and the local activity log.
 pub struct LiveState {
     pub bridge: Arc<dyn LiveBridge>,
     pub script: ScriptInfoCache,
+    pub activity: Activity,
 }
 
 impl LiveState {
+    /// Activity log configured from the environment (the server's normal path).
     pub fn new(bridge: Arc<dyn LiveBridge>) -> Self {
+        Self::with_activity(bridge, Activity::from_env())
+    }
+
+    pub fn with_activity(bridge: Arc<dyn LiveBridge>, activity: Activity) -> Self {
         Self {
             bridge,
             script: ScriptInfoCache::default(),
+            activity,
         }
     }
 
     pub fn send_command(&self, command_type: &str, params: Option<Value>) -> LiveResult<Value> {
-        self.bridge.send_command(command_type, params)
+        let start = Instant::now();
+        let result = self.bridge.send_command(command_type, params);
+        note_command(command_type, start.elapsed());
+        result
     }
 }
 
@@ -288,6 +341,18 @@ impl AbletonConnection {
     }
 }
 
+/// A bare connection is also a bridge: one attempt, no retry loop. `--check`
+/// and the Mac app use it so an absent Live answers in milliseconds.
+impl LiveBridge for AbletonConnection {
+    fn send_command(&self, command_type: &str, params: Option<Value>) -> LiveResult<Value> {
+        AbletonConnection::send_command(self, command_type, params)
+    }
+
+    fn disconnect(&self) {
+        AbletonConnection::disconnect(self)
+    }
+}
+
 /// The production bridge: a lazily created, health-checked, reconnecting
 /// [`AbletonConnection`].
 pub struct RealBridge {
@@ -307,11 +372,7 @@ impl RealBridge {
 
     /// `ABLETON_HOST` (default `localhost`) and `ABLETON_PORT` (default 9877).
     pub fn from_env() -> Self {
-        let host = std::env::var("ABLETON_HOST").unwrap_or_else(|_| "localhost".to_string());
-        let port = std::env::var("ABLETON_PORT")
-            .ok()
-            .and_then(|p| p.trim().parse().ok())
-            .unwrap_or(9877);
+        let (host, port) = live_address();
         Self::new(host, port)
     }
 
@@ -328,12 +389,6 @@ impl RealBridge {
                         tracing::warn!("Existing connection is no longer valid: {}", e);
                         existing.disconnect();
                         *slot = None;
-                        // Passive events stop arriving while disconnected, so
-                        // any cached state hash may describe a Live session
-                        // that has since moved on.
-                        if let Some(recorder) = get_recorder() {
-                            recorder.invalidate_cached_state();
-                        }
                     }
                 }
             }

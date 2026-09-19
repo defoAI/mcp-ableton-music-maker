@@ -22,3 +22,7 @@ Dockerfile
 docker/verify-image.sh
 docker/claude_desktop_config.example.json
 .mcp.json
+docs/
+templates/
+scripts/
+app/

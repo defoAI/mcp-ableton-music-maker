@@ -8,7 +8,7 @@
 #   builder  - compiles the release binaries
 #   test     - builder plus `cargo test`; building this stage runs the suite
 #   runtime  - distroless (no shell, no package manager) + the two binaries,
-#              non-root, telemetry hard-off
+#              non-root; the server has no upload path to switch off
 #
 # Build:   docker build -t mcp-ableton-music-maker:local .
 # Test:    docker build --target test .
@@ -50,8 +50,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # ---------------------------------------------------------------------------
 FROM builder AS test
 
-ENV ABLETON_MCP_DISABLE_TELEMETRY=true \
-    ABLETON_MCP_DISABLE_DATASET=true
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     touch src/lib.rs src/bin/*.rs && \
@@ -71,19 +69,14 @@ COPY --from=builder --chown=nonroot:nonroot /out/ableton-music-maker /out/ableto
 
 # Defaults. Any of these can be overridden with `docker run -e`.
 #   ABLETON_HOST / ABLETON_PORT   where Live is, from inside the container
-#   *_DISABLE_*                   telemetry and dataset upload are hard-off;
-#                                 the server then opens no socket to anything
-#                                 except Live
-#   ABLETON_MCP_STATE_DIR / ABLETON_MCP_DATA_DIR / HOME
-#                                 every path the server can write is under
+#   ABLETON_MCP_STATE_DIR / HOME  every path the server can write (the local
+#                                 activity log and its heartbeat) is under
 #                                 /state, so the root filesystem can be
-#                                 mounted read-only
+#                                 mounted read-only. The server opens no
+#                                 socket to anything except Live.
 ENV ABLETON_HOST=host.docker.internal \
     ABLETON_PORT=9877 \
-    ABLETON_MCP_DISABLE_TELEMETRY=true \
-    ABLETON_MCP_DISABLE_DATASET=true \
     ABLETON_MCP_STATE_DIR=/state \
-    ABLETON_MCP_DATA_DIR=/state \
     HOME=/state \
     RUST_LOG=info
 

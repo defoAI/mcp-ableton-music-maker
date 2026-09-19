@@ -7,24 +7,33 @@
 //! control surfaces through its embedded interpreter); its source is embedded
 //! in this binary and installed by `ableton-music-maker-install-script`.
 //!
+//! The server opens exactly one kind of socket: the one to Live. There is no
+//! upload path, and CI fails on an HTTP client in the dependency tree.
+//!
 //! Module map:
 //! - [`connection`]   AbletonConnection, the TCP bridge and reconnect logic
 //! - [`handshake`]    Remote Script version / capability negotiation
-//! - [`telemetry`]    anonymous usage tier (opt-in, off by default)
-//! - [`dataset`]      trajectory dataset tier (opt-in, off by default)
 //! - [`tools`]        the MCP server and all tools
+//! - [`notes`]        compact note forms (csv, step strings, patterns, tiling)
+//! - [`activity`]     the local activity log (one JSON line per tool call)
+//! - [`state`]        where the server writes on this machine
 //! - [`install`]      the Remote Script installer
-//! - [`app`]          process lifecycle for the server binary
+//! - [`app`]          process lifecycle, `--status` and `--check`
+//!
+//! The Mac companion app (`app/`) links this crate: `install`, `handshake`,
+//! `connection`, `state` and `app::check` are its API. A signature change in
+//! those modules is a breaking change for it.
 
+pub mod activity;
 pub mod app;
 pub mod connection;
-pub mod dataset;
 pub mod handshake;
 pub mod install;
-pub mod telemetry;
+pub mod notes;
+pub mod state;
 pub mod tools;
 
-/// Package version, reported as `MCP_VERSION` in telemetry and to MCP clients.
+/// Package version, reported to MCP clients and in `--status`.
 pub const MCP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The Remote Script source, embedded at build time. There is exactly one copy

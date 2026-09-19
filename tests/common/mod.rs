@@ -12,6 +12,9 @@ use std::sync::{Arc, Mutex};
 pub struct FakeBridge {
     pub response: Mutex<LiveResult<Value>>,
     pub sent: Mutex<Vec<(String, Value)>>,
+    /// Fail every command from the Nth one on (0-based), to test partial
+    /// progress in multi-command bodies.
+    pub fail_from: Mutex<Option<(usize, LiveError)>>,
 }
 
 impl FakeBridge {
@@ -19,6 +22,7 @@ impl FakeBridge {
         Arc::new(Self {
             response: Mutex::new(Ok(response)),
             sent: Mutex::new(Vec::new()),
+            fail_from: Mutex::new(None),
         })
     }
 
@@ -26,11 +30,16 @@ impl FakeBridge {
         Arc::new(Self {
             response: Mutex::new(Err(error)),
             sent: Mutex::new(Vec::new()),
+            fail_from: Mutex::new(None),
         })
     }
 
     pub fn set_response(&self, response: Value) {
         *self.response.lock().unwrap() = Ok(response);
+    }
+
+    pub fn fail_from(&self, nth: usize, error: LiveError) {
+        *self.fail_from.lock().unwrap() = Some((nth, error));
     }
 
     pub fn sent(&self) -> Vec<(String, Value)> {
@@ -44,17 +53,30 @@ impl FakeBridge {
 
 impl LiveBridge for FakeBridge {
     fn send_command(&self, command_type: &str, params: Option<Value>) -> LiveResult<Value> {
-        self.sent.lock().unwrap().push((
-            command_type.to_string(),
-            params.unwrap_or_else(|| json!({})),
-        ));
+        let n = {
+            let mut sent = self.sent.lock().unwrap();
+            sent.push((
+                command_type.to_string(),
+                params.unwrap_or_else(|| json!({})),
+            ));
+            sent.len() - 1
+        };
+        if let Some((from, err)) = self.fail_from.lock().unwrap().as_ref() {
+            if n >= *from {
+                return Err(err.clone());
+            }
+        }
         self.response.lock().unwrap().clone()
     }
 }
 
-/// A server wired to the fake bridge, with every capability advertised.
+/// A server wired to the fake bridge, with every capability advertised and
+/// the activity log off, so tests never write into the developer's home.
 pub fn server_with(bridge: Arc<FakeBridge>) -> Server {
-    let live = Arc::new(LiveState::new(bridge));
+    let live = Arc::new(LiveState::with_activity(
+        bridge,
+        mcp_ableton_music_maker::activity::Activity::disabled(),
+    ));
     live.script.assume_all_capabilities();
     Server::new(live)
 }

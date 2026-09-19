@@ -1,19 +1,17 @@
-//! The MCP server: every tool Claude can call, plus the wrapper that adds
-//! telemetry and trajectory recording around each call.
+//! The MCP server: every tool Claude can call, plus the wrapper that writes
+//! one local activity line around each call.
 //!
 //! Tool bodies are plain functions `fn(&LiveState, &Params) -> ToolResult`
 //! so tests can drive them with a fake bridge; the `#[tool]` methods only
 //! bind a body to its [`ToolSpec`] and hand both to [`Server::run`].
 
-use crate::connection::{LiveError, LiveState};
-use crate::dataset::recorder::get_recorder;
-use crate::dataset::schema::PreferenceSpec;
-use crate::dataset::trajectory;
-use crate::telemetry::{get_telemetry, EventDraft, EventType};
+use crate::connection::{self, LiveError, LiveState};
+use crate::notes::NotesInput;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock};
-use rmcp::{tool, tool_handler, tool_router, Peer, RoleServer, ServerHandler};
+use rmcp::model::{CallToolResult, ContentBlock, InitializeRequestParams, InitializeResult};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -58,62 +56,16 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
 
 pub type ToolResult = Result<String, String>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Telemetry {
-    None,
-    /// Tool name, success, duration; the prompt with consent.
-    Basic,
-    /// Also the tool's parameters (and MIDI notes if asked) with consent.
-    Rich {
-        capture_notes: bool,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Trajectory {
-    None,
-    /// Record the action; snapshot state if the tool is in MODIFYING_TOOLS.
-    Auto,
-    /// Record the action; never snapshot.
-    ReadOnly,
-}
-
+/// The one thing the wrapper knows about a tool: its name, for the activity
+/// line. Everything else (which commands it sent, how long Live took) is
+/// observed while the body runs.
 pub struct ToolSpec {
     pub name: &'static str,
-    pub telemetry: Telemetry,
-    pub trajectory: Trajectory,
 }
 
 impl ToolSpec {
-    const fn basic(name: &'static str) -> Self {
-        Self {
-            name,
-            telemetry: Telemetry::Basic,
-            trajectory: Trajectory::Auto,
-        }
-    }
-    const fn rich(name: &'static str) -> Self {
-        Self {
-            name,
-            telemetry: Telemetry::Rich {
-                capture_notes: false,
-            },
-            trajectory: Trajectory::Auto,
-        }
-    }
-    const fn read_only(name: &'static str, telemetry: Telemetry) -> Self {
-        Self {
-            name,
-            telemetry,
-            trajectory: Trajectory::ReadOnly,
-        }
-    }
-    const fn no_trajectory(name: &'static str, telemetry: Telemetry) -> Self {
-        Self {
-            name,
-            telemetry,
-            trajectory: Trajectory::None,
-        }
+    const fn new(name: &'static str) -> Self {
+        Self { name }
     }
 }
 
@@ -148,9 +100,6 @@ fn minus_one() -> i64 {
 fn four() -> f64 {
     4.0
 }
-fn five() -> i64 {
-    5
-}
 fn yes() -> bool {
     true
 }
@@ -168,22 +117,11 @@ macro_rules! params {
                 $(#[serde(default = $default)])?
                 pub $field: $ty,
             )*
-            /// The original user prompt that led to this tool call (recorded
-            /// only with telemetry consent)
-            #[serde(default)]
-            pub user_prompt: String,
         }
     };
 }
 
 params!(Empty {});
-params!(SetDatasetConsentParams {
-    /// True if the user agreed to contribute, False if they declined
-    consent: bool,
-    /// The user's reply, quoted as closely as possible
-    #[serde(default)]
-    user_said: String,
-});
 params!(TrackParams {
     /// The index of the track
     track_index: i64,
@@ -215,6 +153,11 @@ params!(SnapshotParams {
     include_notes: bool = "yes",
     /// Include device parameter values (default true)
     include_params: bool = "yes",
+    /// Leave out empty clip slots and the scene list (default true). Each
+    /// track still reports slot_count. Set false for the raw dump.
+    compact: bool = "yes",
+    /// Include the scene list even when compact (default false)
+    include_scenes: bool = "bool::default",
 });
 params!(CreateTrackParams {
     /// The index to insert the track at (-1 = end of list)
@@ -233,6 +176,12 @@ params!(CreateClipParams {
     clip_index: i64,
     /// The length of the clip in beats (default: 4.0)
     length: f64 = "four",
+    /// Name for the new clip (optional; saves a set_clip_name call)
+    name: String = "String::new",
+    /// Notes to put in the clip right away, in any of the compact forms
+    /// (optional; saves an add_notes_to_clip call)
+    #[serde(flatten)]
+    input: NotesInput,
 });
 params!(CreateAudioClipParams {
     /// The index of the audio track to create the clip in
@@ -256,7 +205,7 @@ pub struct Note {
     pub duration: f64,
     /// Velocity 1-127
     pub velocity: i64,
-    /// Whether the note is muted
+    /// Optional; defaults to false. Leave it out unless the note is muted.
     #[serde(default)]
     pub mute: bool,
     #[serde(flatten)]
@@ -268,8 +217,13 @@ params!(AddNotesParams {
     track_index: i64,
     /// The index of the clip slot containing the clip
     clip_index: i64,
-    /// Notes to add, each with pitch, start_time, duration, velocity and mute
-    notes: Vec<Note>,
+    /// Remove the clip's existing notes first, so this call replaces
+    /// instead of appending (default false)
+    clear: bool = "bool::default",
+    /// The notes, in any mix of: notes (objects), notes_csv, steps, patterns;
+    /// plus loop_every/until to tile them
+    #[serde(flatten)]
+    input: NotesInput,
 });
 params!(SetClipNameParams {
     /// The index of the track containing the clip
@@ -315,8 +269,18 @@ params!(DuplicateToArrangementParams {
     track_index: i64,
     /// Index of the clip slot in that track (Session view)
     clip_index: i64,
-    /// Beat position in the arrangement to place the clip (e.g. 0.0 = start, 8.0 = bar 3 in 4/4)
-    destination_time: f64,
+    /// One beat position to place the clip at (0.0 = start, 8.0 = bar 3 in 4/4)
+    destination_time: Option<f64>,
+    /// Several beat positions, placed in order: [32, 36, 40, 44]
+    #[serde(default)]
+    destination_times: Vec<f64>,
+    /// With `end` and `step`: place at start, start+step, ... while below end
+    /// (e.g. start 32, end 96, step 4 = 16 placements, one per bar)
+    start: Option<f64>,
+    /// End of the range (exclusive), in beats
+    end: Option<f64>,
+    /// Beats between placements in the range (usually the clip length)
+    step: Option<f64>,
 });
 params!(CreateLocatorParams {
     /// The locator label (e.g. "Chorus", "Verse 1", "Drop")
@@ -324,115 +288,40 @@ params!(CreateLocatorParams {
     /// Beat position where the locator should sit
     time: f64,
 });
-params!(SubmitIntentParams {
-    /// Natural-language intent (e.g. "make the chorus feel bigger")
-    text: String,
-    /// Hierarchical intent level 1-5 (default 5)
-    level: i64 = "five",
-});
-params!(RateLastActionParams {
-    /// Preference label: better | same | worse | keep | reject | thumbs_up | thumbs_down
-    rating: String,
-    /// Comma-separated aspect tags: groove, harmony, melody, sound, arrangement, energy, mix, emotion
-    #[serde(default)]
-    tags: String,
-    /// Optional free-text reason
-    #[serde(default)]
-    note: String,
-});
-params!(PreferCandidateParams {
-    /// Id / URI / label for option A
-    candidate_a: String,
-    /// Id / URI / label for option B
-    candidate_b: String,
-    /// 'a', 'b', or the winning id
-    winner: String,
-    /// Optional reason ("C has the right attack")
-    #[serde(default)]
-    reason: String,
-});
-params!(RejectLastActionParams {
-    /// Optional why it was rejected
-    #[serde(default)]
-    reason: String,
-});
-params!(RecordAuditionParams {
-    /// Browser item URI (or stable preset/sample id)
-    uri: String,
-    /// Whether this candidate was kept
-    #[serde(default)]
-    kept: bool,
-    /// Optional search text that led here (e.g. "analog bass")
-    #[serde(default)]
-    search_query: String,
-    /// Optional time spent auditioning
-    #[serde(default)]
-    dwell_ms: f64,
-});
 
 // ── Tool specs ──────────────────────────────────────────────────────────────
 
-pub const SET_DATASET_CONSENT: ToolSpec =
-    ToolSpec::no_trajectory("set_dataset_consent", Telemetry::None);
-pub const GET_SESSION_INFO: ToolSpec = ToolSpec::basic("get_session_info");
-pub const GET_REMOTE_SCRIPT_INFO: ToolSpec =
-    ToolSpec::read_only("get_remote_script_info", Telemetry::Basic);
-pub const GET_TRACK_INFO: ToolSpec = ToolSpec::basic("get_track_info");
-pub const GET_CLIP_NOTES: ToolSpec = ToolSpec::basic("get_clip_notes");
-pub const GET_DEVICE_PARAMETERS: ToolSpec = ToolSpec::basic("get_device_parameters");
-pub const SET_DEVICE_PARAMETER: ToolSpec = ToolSpec::rich("set_device_parameter");
-pub const GET_SESSION_SNAPSHOT: ToolSpec = ToolSpec::basic("get_session_snapshot");
-pub const CREATE_MIDI_TRACK: ToolSpec = ToolSpec::basic("create_midi_track");
-pub const CREATE_AUDIO_TRACK: ToolSpec = ToolSpec::basic("create_audio_track");
-pub const SET_TRACK_NAME: ToolSpec = ToolSpec::rich("set_track_name");
-pub const CREATE_CLIP: ToolSpec = ToolSpec::rich("create_clip");
-pub const CREATE_AUDIO_CLIP: ToolSpec = ToolSpec::rich("create_audio_clip");
-pub const ADD_NOTES_TO_CLIP: ToolSpec = ToolSpec {
-    name: "add_notes_to_clip",
-    telemetry: Telemetry::Rich {
-        capture_notes: true,
-    },
-    trajectory: Trajectory::Auto,
-};
-pub const CLEAR_NOTES_FROM_CLIP: ToolSpec = ToolSpec::no_trajectory(
-    "clear_notes_from_clip",
-    Telemetry::Rich {
-        capture_notes: false,
-    },
-);
-pub const SET_CLIP_NAME: ToolSpec = ToolSpec::rich("set_clip_name");
-pub const SET_ARRANGEMENT_CLIP_NAME: ToolSpec = ToolSpec::rich("set_arrangement_clip_name");
-pub const SET_TEMPO: ToolSpec = ToolSpec::rich("set_tempo");
-pub const LOAD_INSTRUMENT_OR_EFFECT: ToolSpec = ToolSpec::rich("load_instrument_or_effect");
-pub const FIRE_CLIP: ToolSpec = ToolSpec::basic("fire_clip");
-pub const STOP_CLIP: ToolSpec = ToolSpec::basic("stop_clip");
-pub const DELETE_CLIP: ToolSpec = ToolSpec::no_trajectory("delete_clip", Telemetry::Basic);
-pub const START_PLAYBACK: ToolSpec = ToolSpec::basic("start_playback");
-pub const STOP_PLAYBACK: ToolSpec = ToolSpec::basic("stop_playback");
-pub const GET_BROWSER_TREE: ToolSpec = ToolSpec::rich("get_browser_tree");
-pub const GET_BROWSER_ITEMS_AT_PATH: ToolSpec = ToolSpec::rich("get_browser_items_at_path");
-pub const LOAD_DRUM_KIT: ToolSpec = ToolSpec::rich("load_drum_kit");
-pub const SWITCH_TO_ARRANGEMENT_VIEW: ToolSpec = ToolSpec::basic("switch_to_arrangement_view");
-pub const SET_ARRANGEMENT_TIME: ToolSpec = ToolSpec::rich("set_arrangement_time");
-pub const GET_ARRANGEMENT_CLIPS: ToolSpec = ToolSpec::basic("get_arrangement_clips");
-pub const DUPLICATE_TO_ARRANGEMENT: ToolSpec = ToolSpec::rich("duplicate_to_arrangement");
-pub const CREATE_LOCATOR: ToolSpec = ToolSpec::no_trajectory(
-    "create_locator",
-    Telemetry::Rich {
-        capture_notes: false,
-    },
-);
-pub const SUBMIT_INTENT: ToolSpec = ToolSpec::read_only("submit_intent", Telemetry::Basic);
-pub const RATE_LAST_ACTION: ToolSpec = ToolSpec::read_only("rate_last_action", Telemetry::Basic);
-pub const PREFER_CANDIDATE: ToolSpec = ToolSpec::read_only("prefer_candidate", Telemetry::Basic);
-pub const REJECT_LAST_ACTION: ToolSpec =
-    ToolSpec::read_only("reject_last_action", Telemetry::Basic);
-pub const RECORD_AUDITION: ToolSpec = ToolSpec::read_only(
-    "record_audition",
-    Telemetry::Rich {
-        capture_notes: false,
-    },
-);
+pub const GET_SESSION_INFO: ToolSpec = ToolSpec::new("get_session_info");
+pub const GET_REMOTE_SCRIPT_INFO: ToolSpec = ToolSpec::new("get_remote_script_info");
+pub const GET_TRACK_INFO: ToolSpec = ToolSpec::new("get_track_info");
+pub const GET_CLIP_NOTES: ToolSpec = ToolSpec::new("get_clip_notes");
+pub const GET_DEVICE_PARAMETERS: ToolSpec = ToolSpec::new("get_device_parameters");
+pub const SET_DEVICE_PARAMETER: ToolSpec = ToolSpec::new("set_device_parameter");
+pub const GET_SESSION_SNAPSHOT: ToolSpec = ToolSpec::new("get_session_snapshot");
+pub const CREATE_MIDI_TRACK: ToolSpec = ToolSpec::new("create_midi_track");
+pub const CREATE_AUDIO_TRACK: ToolSpec = ToolSpec::new("create_audio_track");
+pub const SET_TRACK_NAME: ToolSpec = ToolSpec::new("set_track_name");
+pub const CREATE_CLIP: ToolSpec = ToolSpec::new("create_clip");
+pub const CREATE_AUDIO_CLIP: ToolSpec = ToolSpec::new("create_audio_clip");
+pub const ADD_NOTES_TO_CLIP: ToolSpec = ToolSpec::new("add_notes_to_clip");
+pub const CLEAR_NOTES_FROM_CLIP: ToolSpec = ToolSpec::new("clear_notes_from_clip");
+pub const SET_CLIP_NAME: ToolSpec = ToolSpec::new("set_clip_name");
+pub const SET_ARRANGEMENT_CLIP_NAME: ToolSpec = ToolSpec::new("set_arrangement_clip_name");
+pub const SET_TEMPO: ToolSpec = ToolSpec::new("set_tempo");
+pub const LOAD_INSTRUMENT_OR_EFFECT: ToolSpec = ToolSpec::new("load_instrument_or_effect");
+pub const FIRE_CLIP: ToolSpec = ToolSpec::new("fire_clip");
+pub const STOP_CLIP: ToolSpec = ToolSpec::new("stop_clip");
+pub const DELETE_CLIP: ToolSpec = ToolSpec::new("delete_clip");
+pub const START_PLAYBACK: ToolSpec = ToolSpec::new("start_playback");
+pub const STOP_PLAYBACK: ToolSpec = ToolSpec::new("stop_playback");
+pub const GET_BROWSER_TREE: ToolSpec = ToolSpec::new("get_browser_tree");
+pub const GET_BROWSER_ITEMS_AT_PATH: ToolSpec = ToolSpec::new("get_browser_items_at_path");
+pub const LOAD_DRUM_KIT: ToolSpec = ToolSpec::new("load_drum_kit");
+pub const SWITCH_TO_ARRANGEMENT_VIEW: ToolSpec = ToolSpec::new("switch_to_arrangement_view");
+pub const SET_ARRANGEMENT_TIME: ToolSpec = ToolSpec::new("set_arrangement_time");
+pub const GET_ARRANGEMENT_CLIPS: ToolSpec = ToolSpec::new("get_arrangement_clips");
+pub const DUPLICATE_TO_ARRANGEMENT: ToolSpec = ToolSpec::new("duplicate_to_arrangement");
+pub const CREATE_LOCATOR: ToolSpec = ToolSpec::new("create_locator");
 
 // ── Tool bodies ─────────────────────────────────────────────────────────────
 
@@ -450,28 +339,6 @@ fn require(live: &LiveState, capability: &str) -> Result<(), String> {
     {
         None => Ok(()),
         Some(msg) => Err(msg),
-    }
-}
-
-pub fn set_dataset_consent_body(_live: &LiveState, p: &SetDatasetConsentParams) -> ToolResult {
-    let quote = if p.user_said.trim().is_empty() {
-        None
-    } else {
-        Some(p.user_said.as_str())
-    };
-    let state = crate::dataset::consent::record_consent(p.consent, quote);
-    if !p.consent {
-        return Ok("Recorded: dataset contribution declined. Nothing from this session is uploaded, and you will not be asked again.".to_string());
-    }
-    crate::telemetry::refresh_consent_from_dataset();
-    match get_recorder() {
-        None => Ok(format!(
-            "Consent saved, but recording is unavailable (telemetry may be disabled). State: {state}."
-        )),
-        Some(_) => Ok(
-            "Thank you — this session is now being contributed to the open dataset. Say so at any time to stop, or set ABLETON_MCP_DISABLE_DATASET=1."
-                .to_string(),
-        ),
     }
 }
 
@@ -539,12 +406,50 @@ pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams)
 
 pub fn get_session_snapshot_body(live: &LiveState, p: &SnapshotParams) -> ToolResult {
     require(live, "get_session_snapshot")?;
-    live.send_command(
-        "get_session_snapshot",
-        Some(json!({"include_notes": p.include_notes, "include_params": p.include_params})),
-    )
-    .map(|r| pretty(&r))
-    .map_err(|e| live_err("get session snapshot", e))
+    let mut r = live
+        .send_command(
+            "get_session_snapshot",
+            Some(json!({"include_notes": p.include_notes, "include_params": p.include_params})),
+        )
+        .map_err(|e| live_err("get session snapshot", e))?;
+    if p.compact {
+        compact_snapshot(&mut r, p.include_scenes);
+    }
+    Ok(pretty(&r))
+}
+
+/// Drop what carries no information: empty clip slots (the count stays)
+/// and, unless asked, the scene list. The rest of the dump is untouched.
+pub fn compact_snapshot(snapshot: &mut Value, include_scenes: bool) {
+    let Some(obj) = snapshot.as_object_mut() else {
+        return;
+    };
+    if let Some(tracks) = obj.get_mut("tracks").and_then(Value::as_array_mut) {
+        for track in tracks.iter_mut().filter_map(Value::as_object_mut) {
+            if let Some(Value::Array(slots)) = track.get("clip_slots").cloned() {
+                let kept: Vec<Value> = slots
+                    .iter()
+                    .filter(|s| s.get("has_clip").and_then(Value::as_bool).unwrap_or(true))
+                    .cloned()
+                    .collect();
+                track.insert("slot_count".into(), json!(slots.len()));
+                track.insert("clip_slots".into(), Value::Array(kept));
+            }
+            if let Some(Value::Array(clips)) = track.get("arrangement_clips") {
+                if clips.is_empty() {
+                    track.remove("arrangement_clips");
+                }
+            }
+        }
+    }
+    if !include_scenes {
+        if let Some(Value::Array(scenes)) = obj.get("scenes") {
+            let n = scenes.len();
+            obj.remove("scenes");
+            obj.insert("scene_count".into(), json!(n));
+        }
+    }
+    obj.insert("compact".into(), json!(true));
 }
 
 pub fn create_midi_track_body(live: &LiveState, p: &CreateTrackParams) -> ToolResult {
@@ -552,10 +457,18 @@ pub fn create_midi_track_body(live: &LiveState, p: &CreateTrackParams) -> ToolRe
     let r = live
         .send_command("create_midi_track", Some(json!({"index": p.index})))
         .map_err(|e| live_err("create MIDI track", e))?;
-    Ok(format!(
-        "Created new MIDI track: {}",
-        get_display(&r, "name", "unknown")
-    ))
+    Ok(created_track_text("MIDI", &r))
+}
+
+/// "Created MIDI track 6 ('6-MIDI')" — the index is what the next call needs.
+fn created_track_text(kind: &str, r: &Value) -> String {
+    match r.get("index").and_then(Value::as_i64) {
+        Some(index) => format!(
+            "Created {kind} track {index} ('{}'). Use track_index {index} for it; tracks that were at {index} or later moved up by one.",
+            get_display(r, "name", "unnamed")
+        ),
+        None => format!("Created {kind} track '{}'", get_display(r, "name", "unnamed")),
+    }
 }
 
 pub fn create_audio_track_body(live: &LiveState, p: &CreateTrackParams) -> ToolResult {
@@ -563,10 +476,7 @@ pub fn create_audio_track_body(live: &LiveState, p: &CreateTrackParams) -> ToolR
     let r = live
         .send_command("create_audio_track", Some(json!({"index": p.index})))
         .map_err(|e| live_err("create audio track", e))?;
-    Ok(format!(
-        "Created new audio track: {}",
-        get_display(&r, "name", "unknown")
-    ))
+    Ok(created_track_text("audio", &r))
 }
 
 pub fn set_track_name_body(live: &LiveState, p: &SetTrackNameParams) -> ToolResult {
@@ -585,15 +495,42 @@ pub fn set_track_name_body(live: &LiveState, p: &SetTrackNameParams) -> ToolResu
 
 pub fn create_clip_body(live: &LiveState, p: &CreateClipParams) -> ToolResult {
     require(live, "create_clip")?;
+    // Expand the notes before touching Live, so a bad pattern creates nothing.
+    let notes = if p.input.is_empty() {
+        Vec::new()
+    } else {
+        require(live, "add_notes_to_clip")?;
+        crate::notes::expand(&p.input)?
+    };
+    if !p.name.is_empty() {
+        require(live, "set_clip_name")?;
+    }
     live.send_command(
         "create_clip",
         Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "length": p.length})),
     )
     .map_err(|e| live_err("create clip", e))?;
-    Ok(format!(
-        "Created new clip at track {}, slot {} with length {} beats",
+    let mut text = format!(
+        "Created clip at track {}, slot {} with length {} beats",
         p.track_index, p.clip_index, p.length
-    ))
+    );
+    if !p.name.is_empty() {
+        live.send_command(
+            "set_clip_name",
+            Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "name": p.name})),
+        )
+        .map_err(|e| live_err("name the new clip", e))?;
+        text.push_str(&format!(", named '{}'", p.name));
+    }
+    if !notes.is_empty() {
+        live.send_command(
+            "add_notes_to_clip",
+            Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "notes": notes})),
+        )
+        .map_err(|e| live_err("add notes to the new clip", e))?;
+        text.push_str(&format!(", with {} notes", notes.len()));
+    }
+    Ok(text)
 }
 
 pub fn create_audio_clip_body(live: &LiveState, p: &CreateAudioClipParams) -> ToolResult {
@@ -615,16 +552,46 @@ pub fn create_audio_clip_body(live: &LiveState, p: &CreateAudioClipParams) -> To
 
 pub fn add_notes_to_clip_body(live: &LiveState, p: &AddNotesParams) -> ToolResult {
     require(live, "add_notes_to_clip")?;
+    let notes = crate::notes::expand(&p.input)?;
+    if notes.is_empty() && !p.clear {
+        return Err("No notes given. Use notes, notes_csv, steps or patterns (or clear: true to empty the clip).".into());
+    }
+    let mut cleared = String::new();
+    if p.clear {
+        require(live, "clear_notes_from_clip")?;
+        let r = live
+            .send_command(
+                "clear_notes_from_clip",
+                Some(json!({"track_index": p.track_index, "clip_index": p.clip_index})),
+            )
+            .map_err(|e| live_err("clear notes from clip", e))?;
+        cleared = format!(
+            " (cleared {} first)",
+            get_display(&r, "cleared_count", "the old notes")
+        );
+    }
+    if notes.is_empty() {
+        return Ok(format!(
+            "Cleared clip at track {}, slot {}{}",
+            p.track_index, p.clip_index, cleared
+        ));
+    }
     live.send_command(
         "add_notes_to_clip",
-        Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "notes": p.notes})),
+        Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "notes": notes})),
     )
     .map_err(|e| live_err("add notes to clip", e))?;
+    let last = notes
+        .iter()
+        .map(|n| n.start_time + n.duration)
+        .fold(0.0_f64, f64::max);
     Ok(format!(
-        "Added {} notes to clip at track {}, slot {}",
-        p.notes.len(),
+        "Added {} notes to clip at track {}, slot {}{} — last note ends at beat {}",
+        notes.len(),
         p.track_index,
-        p.clip_index
+        p.clip_index,
+        cleared,
+        last
     ))
 }
 
@@ -935,28 +902,110 @@ pub fn get_arrangement_clips_body(live: &LiveState, p: &TrackParams) -> ToolResu
     .map_err(|e| live_err("get arrangement clips", e))
 }
 
+/// Every placement the caller asked for, in order.
+pub fn placement_times(p: &DuplicateToArrangementParams) -> Result<Vec<f64>, String> {
+    let mut times: Vec<f64> = Vec::new();
+    times.extend(p.destination_time);
+    times.extend(p.destination_times.iter().copied());
+    match (p.start, p.end, p.step) {
+        (None, None, None) => {}
+        (Some(start), Some(end), Some(step)) => {
+            if step <= 0.0 {
+                return Err("step must be greater than 0".into());
+            }
+            if end <= start {
+                return Err("end must be after start".into());
+            }
+            let mut t = start;
+            while t < end - 1e-9 {
+                times.push(t);
+                t += step;
+            }
+        }
+        _ => return Err("start, end and step go together; give all three".into()),
+    }
+    if times.is_empty() {
+        return Err(
+            "Give destination_time, destination_times, or start/end/step to say where the clip goes."
+                .into(),
+        );
+    }
+    if times.len() > 512 {
+        return Err(format!(
+            "{} placements is too many for one call (limit 512)",
+            times.len()
+        ));
+    }
+    Ok(times)
+}
+
 pub fn duplicate_to_arrangement_body(
     live: &LiveState,
     p: &DuplicateToArrangementParams,
 ) -> ToolResult {
     require(live, "duplicate_session_clip_to_arrangement")?;
-    let r = live
-        .send_command(
-            "duplicate_session_clip_to_arrangement",
-            Some(json!({
-                "track_index": p.track_index,
-                "clip_index": p.clip_index,
-                "destination_time": p.destination_time,
-            })),
+    let times = placement_times(p)?;
+    let mut placed: Vec<f64> = Vec::new();
+    let mut clip_name = String::from("clip");
+    let mut track_name = format!("track {}", p.track_index);
+    for t in &times {
+        let r = live
+            .send_command(
+                "duplicate_session_clip_to_arrangement",
+                Some(json!({
+                    "track_index": p.track_index,
+                    "clip_index": p.clip_index,
+                    "destination_time": t,
+                })),
+            )
+            .map_err(|e| {
+                if placed.is_empty() {
+                    live_err("duplicate clip to arrangement", e)
+                } else {
+                    format!(
+                        "Placed {} of {} (at beats {}), then could not place at beat {t}: {e}",
+                        placed.len(),
+                        times.len(),
+                        list_beats(&placed),
+                    )
+                }
+            })?;
+        clip_name = get_display(&r, "clip_name", &clip_name);
+        track_name = get_display(&r, "track_name", &track_name);
+        placed.push(*t);
+    }
+    if placed.len() == 1 {
+        Ok(format!(
+            "Duplicated '{clip_name}' from Session slot {} on '{track_name}' to arrangement at beat {}",
+            p.clip_index, placed[0]
+        ))
+    } else {
+        Ok(format!(
+            "Placed '{clip_name}' from Session slot {} on '{track_name}' {} times in the arrangement, at beats {}",
+            p.clip_index,
+            placed.len(),
+            list_beats(&placed)
+        ))
+    }
+}
+
+fn list_beats(times: &[f64]) -> String {
+    if times.len() <= 8 {
+        times
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        format!(
+            "{}, {}, {} … {} (every {} beats)",
+            times[0],
+            times[1],
+            times[2],
+            times[times.len() - 1],
+            times[1] - times[0]
         )
-        .map_err(|e| live_err("duplicate clip to arrangement", e))?;
-    Ok(format!(
-        "Duplicated '{}' from Session slot {} on '{}' to arrangement at beat {}",
-        get_display(&r, "clip_name", "clip"),
-        p.clip_index,
-        get_display(&r, "track_name", &format!("track {}", p.track_index)),
-        p.destination_time
-    ))
+    }
 }
 
 pub fn create_locator_body(live: &LiveState, p: &CreateLocatorParams) -> ToolResult {
@@ -976,209 +1025,6 @@ pub fn create_locator_body(live: &LiveState, p: &CreateLocatorParams) -> ToolRes
     ))
 }
 
-const DATASET_OFF: &str =
-    "Dataset recording is off (telemetry disabled or user has not consented).";
-
-pub fn submit_intent_body(_live: &LiveState, p: &SubmitIntentParams) -> ToolResult {
-    let recorder = get_recorder().ok_or_else(|| DATASET_OFF.to_string())?;
-    let event = recorder.set_intent(&p.text, Some(p.level), "explicit");
-    Ok(format!(
-        "Recorded intent {} (level {}): {:?}. Session: {}",
-        event.intent_id.unwrap_or_default(),
-        p.level,
-        p.text,
-        recorder.session_id
-    ))
-}
-
-pub fn rate_last_action_body(_live: &LiveState, p: &RateLastActionParams) -> ToolResult {
-    let recorder = get_recorder().ok_or_else(|| DATASET_OFF.to_string())?;
-    let tags: Vec<String> = p
-        .tags
-        .split(',')
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(str::to_string)
-        .collect();
-    let rating = p.rating.trim().to_lowercase();
-    let event = recorder.record_preference(PreferenceSpec {
-        rating: &rating,
-        tags: if tags.is_empty() { None } else { Some(tags) },
-        note: if p.note.is_empty() {
-            None
-        } else {
-            Some(p.note.clone())
-        },
-        ..Default::default()
-    });
-    Ok(format!(
-        "Recorded preference {:?} for action {}",
-        p.rating,
-        event.target_action_id.unwrap_or_else(|| "none".to_string())
-    ))
-}
-
-pub fn prefer_candidate_body(_live: &LiveState, p: &PreferCandidateParams) -> ToolResult {
-    let recorder = get_recorder().ok_or_else(|| DATASET_OFF.to_string())?;
-    let winner = match p.winner.trim().to_lowercase().as_str() {
-        "a" => p.candidate_a.clone(),
-        "b" => p.candidate_b.clone(),
-        other => other.to_string(),
-    };
-    let event = recorder.record_preference(PreferenceSpec {
-        rating: "pairwise",
-        winner: Some(winner.clone()),
-        candidate_a: Some(p.candidate_a.clone()),
-        candidate_b: Some(p.candidate_b.clone()),
-        note: if p.reason.is_empty() {
-            None
-        } else {
-            Some(p.reason.clone())
-        },
-        ..Default::default()
-    });
-    Ok(format!(
-        "Recorded pairwise preference: winner={:?} (event {})",
-        winner, event.event_id
-    ))
-}
-
-pub fn reject_last_action_body(_live: &LiveState, p: &RejectLastActionParams) -> ToolResult {
-    let recorder = get_recorder().ok_or_else(|| DATASET_OFF.to_string())?;
-    let event = recorder.record_preference(PreferenceSpec {
-        rating: "reject",
-        note: if p.reason.is_empty() {
-            None
-        } else {
-            Some(p.reason.clone())
-        },
-        ..Default::default()
-    });
-    Ok(format!(
-        "Recorded rejection for action {}",
-        event.target_action_id.unwrap_or_else(|| "none".to_string())
-    ))
-}
-
-pub fn record_audition_body(_live: &LiveState, p: &RecordAuditionParams) -> ToolResult {
-    let recorder = get_recorder().ok_or_else(|| DATASET_OFF.to_string())?;
-    let event = recorder.record_audition(
-        &p.uri,
-        Some(p.kept),
-        if p.search_query.is_empty() {
-            None
-        } else {
-            Some(p.search_query.clone())
-        },
-        if p.dwell_ms > 0.0 {
-            Some(p.dwell_ms)
-        } else {
-            None
-        },
-    );
-    Ok(format!(
-        "Recorded audition ({}) uri={:?} event={}",
-        if p.kept { "kept" } else { "rejected" },
-        p.uri,
-        event.event_id
-    ))
-}
-
-// ── Telemetry metadata ──────────────────────────────────────────────────────
-
-const NOTE_NAMES: [&str; 12] = [
-    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-];
-
-fn pitch_to_name(pitch: i64) -> String {
-    let octave = pitch.div_euclid(12) - 1;
-    format!("{}{}", NOTE_NAMES[pitch.rem_euclid(12) as usize], octave)
-}
-
-/// Parameters worth keeping in the rich telemetry tier. Structural values
-/// only; `path` is reduced to its extension because it embeds the OS user.
-pub fn extract_tool_params(args: &Map<String, Value>, capture_notes: bool) -> Map<String, Value> {
-    const CAPTURE_KEYS: &[&str] = &[
-        "track_index",
-        "clip_index",
-        "index",
-        "length",
-        "time",
-        "destination_time",
-        "tempo",
-        "uri",
-        "rack_uri",
-        "kit_path",
-        "category_type",
-        "name",
-    ];
-    let mut params = Map::new();
-    for key in CAPTURE_KEYS {
-        if let Some(value) = args.get(*key).filter(|v| !v.is_null()) {
-            let value = match value {
-                Value::String(s) if s.chars().count() > 500 => {
-                    json!(format!("{}...", s.chars().take(500).collect::<String>()))
-                }
-                other => other.clone(),
-            };
-            params.insert((*key).to_string(), value);
-        }
-    }
-    if let Some(Value::String(path)) = args.get("path") {
-        let ext = std::path::Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| format!(".{}", e.to_lowercase()));
-        params.insert(
-            "file_extension".into(),
-            json!(ext.unwrap_or_else(|| "unknown".into())),
-        );
-        params.insert("has_path".into(), json!(true));
-    }
-    if capture_notes {
-        if let Some(Value::Array(notes)) = args.get("notes") {
-            params.insert("notes_count".into(), json!(notes.len()));
-            if !notes.is_empty() {
-                let compact: Vec<(i64, Value, Value, Value)> = notes
-                    .iter()
-                    .filter_map(Value::as_object)
-                    .map(|n| {
-                        (
-                            n.get("pitch").and_then(Value::as_i64).unwrap_or(0),
-                            n.get("start_time").cloned().unwrap_or(json!(0)),
-                            n.get("duration").cloned().unwrap_or(json!(0)),
-                            n.get("velocity").cloned().unwrap_or(json!(100)),
-                        )
-                    })
-                    .collect();
-                params.insert(
-                    "notes".into(),
-                    Value::Array(
-                        compact
-                            .iter()
-                            .map(|(p, s, d, v)| json!([p, s, d, v]))
-                            .collect(),
-                    ),
-                );
-                params.insert(
-                    "notes_readable".into(),
-                    Value::Array(
-                        compact
-                            .iter()
-                            .take(100)
-                            .map(|(p, s, d, v)| json!([pitch_to_name(*p), s, d, v]))
-                            .collect(),
-                    ),
-                );
-                if compact.len() > 100 {
-                    params.insert("notes_truncated".into(), json!(true));
-                }
-            }
-        }
-    }
-    params
-}
-
 // ── Server ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -1187,76 +1033,20 @@ pub struct Server {
     tool_router: ToolRouter<Self>,
 }
 
-struct Outcome {
-    result: ToolResult,
-    /// The trajectory layer was active but no recorder exists: ask for
-    /// consent after the call.
-    ask_consent: bool,
-}
-
 fn run_blocking<P: Serialize>(
     live: &LiveState,
     spec: &ToolSpec,
     params: &P,
     body: fn(&LiveState, &P) -> ToolResult,
-) -> Outcome {
+) -> ToolResult {
     let start = Instant::now();
-    let args: Map<String, Value> = serde_json::to_value(params)
-        .ok()
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
-    let user_prompt = args
-        .get("user_prompt")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-
-    let (result, ask_consent) = match spec.trajectory {
-        Trajectory::None => (body(live, params), false),
-        traj => match trajectory::safe_get_recorder() {
-            None => (body(live, params), true),
-            Some(recorder) => {
-                let modifying =
-                    traj == Trajectory::Auto && trajectory::MODIFYING_TOOLS.contains(&spec.name);
-                let ctx = trajectory::begin(live, &recorder, spec.name, modifying, &args);
-                let result = body(live, params);
-                trajectory::finish(
-                    live,
-                    &recorder,
-                    ctx,
-                    spec.name,
-                    &args,
-                    result.is_ok(),
-                    result.as_ref().err().map(String::as_str),
-                );
-                (result, false)
-            }
-        },
-    };
-
-    if spec.telemetry != Telemetry::None {
-        let metadata = match spec.telemetry {
-            Telemetry::Rich { capture_notes } => {
-                Some(json!({"params": extract_tool_params(&args, capture_notes)}))
-            }
-            _ => None,
-        };
-        get_telemetry().record_event(
-            EventType::ToolExecution,
-            EventDraft {
-                tool_name: Some(spec.name.to_string()),
-                prompt_text: user_prompt,
-                success: result.is_ok(),
-                duration_ms: Some(start.elapsed().as_secs_f64() * 1000.0),
-                error_message: result.as_ref().err().cloned(),
-                ableton_version: None,
-                metadata,
-            },
-        );
-    }
-    Outcome {
-        result,
-        ask_consent,
-    }
+    connection::begin_trace();
+    let result = body(live, params);
+    let trace = connection::end_trace();
+    live.activity
+        .record(spec.name, params, &result, start.elapsed(), trace);
+    crate::app::refresh_heartbeat(live);
+    result
 }
 
 impl Server {
@@ -1271,11 +1061,16 @@ impl Server {
         &self.live
     }
 
-    /// Execute a tool body with its telemetry and trajectory wrappers. The
-    /// body runs on the blocking pool because the Live socket is synchronous.
+    /// Every tool this server serves, as the client will list them.
+    pub fn tool_list(&self) -> Vec<rmcp::model::Tool> {
+        self.tool_router.list_all()
+    }
+
+    /// Execute a tool body and write its activity line. The body runs on the
+    /// blocking pool because the Live socket is synchronous. A body's `Err`
+    /// is an error *result*, never a protocol error.
     pub async fn run<P>(
         &self,
-        peer: Option<Peer<RoleServer>>,
         spec: &'static ToolSpec,
         params: P,
         body: fn(&LiveState, &P) -> ToolResult,
@@ -1284,113 +1079,54 @@ impl Server {
         P: Serialize + Send + 'static,
     {
         let live = self.live.clone();
-        let outcome = tokio::task::spawn_blocking(move || run_blocking(&live, spec, &params, body))
+        let result = tokio::task::spawn_blocking(move || run_blocking(&live, spec, &params, body))
             .await
-            .unwrap_or_else(|e| Outcome {
-                result: Err(format!("{} failed unexpectedly: {e}", spec.name)),
-                ask_consent: false,
-            });
-
-        let mut text = match outcome.result {
-            Ok(t) => t,
-            Err(e) => return CallToolResult::error(vec![ContentBlock::text(e)]),
-        };
-        if outcome.ask_consent {
-            // Prefer a real client dialog; fall back to the text prompt.
-            if let Some(peer) = peer {
-                if trajectory::try_elicit(&peer).await && get_recorder().is_some() {
-                    return CallToolResult::success(vec![ContentBlock::text(text)]);
-                }
-            }
-            text = trajectory::with_consent_notice(text);
+            .unwrap_or_else(|e| Err(format!("{} failed unexpectedly: {e}", spec.name)));
+        match result {
+            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
         }
-        CallToolResult::success(vec![ContentBlock::text(text)])
     }
 }
 
 #[tool_router]
 impl Server {
-    /// Record the user's answer to the dataset consent question.
-    ///
-    /// Call this ONLY after the user has answered in their own words. Never
-    /// infer the answer, never call it on their behalf, and never call it
-    /// because contributing seems helpful. If they have not been asked yet,
-    /// ask first and wait for their reply.
-    #[tool(name = "set_dataset_consent")]
-    async fn set_dataset_consent(
-        &self,
-        Parameters(p): Parameters<SetDatasetConsentParams>,
-    ) -> CallToolResult {
-        self.run(None, &SET_DATASET_CONSENT, p, set_dataset_consent_body)
-            .await
-    }
-
     /// Get detailed information about the current Ableton session
     #[tool(name = "get_session_info")]
-    async fn get_session_info(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<Empty>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &GET_SESSION_INFO, p, get_session_info_body)
-            .await
+    async fn get_session_info(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+        self.run(&GET_SESSION_INFO, p, get_session_info_body).await
     }
 
     /// Report Ableton Remote Script version and capabilities (handshake).
     /// Use this to verify the Live-side bridge matches this server.
     #[tool(name = "get_remote_script_info")]
-    async fn get_remote_script_info(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<Empty>,
-    ) -> CallToolResult {
-        self.run(
-            Some(peer),
-            &GET_REMOTE_SCRIPT_INFO,
-            p,
-            get_remote_script_info_body,
-        )
-        .await
+    async fn get_remote_script_info(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+        self.run(&GET_REMOTE_SCRIPT_INFO, p, get_remote_script_info_body)
+            .await
     }
 
     /// Get detailed information about a specific track in Ableton.
     #[tool(name = "get_track_info")]
-    async fn get_track_info(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<TrackParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &GET_TRACK_INFO, p, get_track_info_body)
-            .await
+    async fn get_track_info(&self, Parameters(p): Parameters<TrackParams>) -> CallToolResult {
+        self.run(&GET_TRACK_INFO, p, get_track_info_body).await
     }
 
     /// Read all MIDI notes from a Session-view clip. Returns pitch,
     /// start_time, duration, velocity, mute (and extended fields when
     /// available).
     #[tool(name = "get_clip_notes")]
-    async fn get_clip_notes(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<ClipParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &GET_CLIP_NOTES, p, get_clip_notes_body)
-            .await
+    async fn get_clip_notes(&self, Parameters(p): Parameters<ClipParams>) -> CallToolResult {
+        self.run(&GET_CLIP_NOTES, p, get_clip_notes_body).await
     }
 
     /// Read all parameters for a device on a track (name, value, min, max).
     #[tool(name = "get_device_parameters")]
     async fn get_device_parameters(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<DeviceParams>,
     ) -> CallToolResult {
-        self.run(
-            Some(peer),
-            &GET_DEVICE_PARAMETERS,
-            p,
-            get_device_parameters_body,
-        )
-        .await
+        self.run(&GET_DEVICE_PARAMETERS, p, get_device_parameters_body)
+            .await
     }
 
     /// Set a device parameter to a specific value. Use get_device_parameters
@@ -1398,44 +1134,34 @@ impl Server {
     #[tool(name = "set_device_parameter")]
     async fn set_device_parameter(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<SetDeviceParameterParams>,
     ) -> CallToolResult {
-        self.run(
-            Some(peer),
-            &SET_DEVICE_PARAMETER,
-            p,
-            set_device_parameter_body,
-        )
-        .await
+        self.run(&SET_DEVICE_PARAMETER, p, set_device_parameter_body)
+            .await
     }
 
-    /// Capture a full project state snapshot: session metadata, every track
+    /// Capture a project state snapshot: session metadata, every track
     /// (mixer, devices, session clips, arrangement clips), optional MIDI
-    /// notes, and optional device parameters.
+    /// notes, and optional device parameters. Compact by default: empty clip
+    /// slots and the scene list are left out (counts stay); pass
+    /// `compact: false` for the raw dump, `include_notes: false` and
+    /// `include_params: false` to shrink it further.
     #[tool(name = "get_session_snapshot")]
     async fn get_session_snapshot(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<SnapshotParams>,
     ) -> CallToolResult {
-        self.run(
-            Some(peer),
-            &GET_SESSION_SNAPSHOT,
-            p,
-            get_session_snapshot_body,
-        )
-        .await
+        self.run(&GET_SESSION_SNAPSHOT, p, get_session_snapshot_body)
+            .await
     }
 
     /// Create a new MIDI track in the Ableton session.
     #[tool(name = "create_midi_track")]
     async fn create_midi_track(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<CreateTrackParams>,
     ) -> CallToolResult {
-        self.run(Some(peer), &CREATE_MIDI_TRACK, p, create_midi_track_body)
+        self.run(&CREATE_MIDI_TRACK, p, create_midi_track_body)
             .await
     }
 
@@ -1445,10 +1171,9 @@ impl Server {
     #[tool(name = "create_audio_track")]
     async fn create_audio_track(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<CreateTrackParams>,
     ) -> CallToolResult {
-        self.run(Some(peer), &CREATE_AUDIO_TRACK, p, create_audio_track_body)
+        self.run(&CREATE_AUDIO_TRACK, p, create_audio_track_body)
             .await
     }
 
@@ -1456,22 +1181,19 @@ impl Server {
     #[tool(name = "set_track_name")]
     async fn set_track_name(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<SetTrackNameParams>,
     ) -> CallToolResult {
-        self.run(Some(peer), &SET_TRACK_NAME, p, set_track_name_body)
-            .await
+        self.run(&SET_TRACK_NAME, p, set_track_name_body).await
     }
 
-    /// Create a new MIDI clip in the specified track and clip slot.
+    /// Create a MIDI clip in a track's clip slot — and, in the same call,
+    /// name it and fill it with notes. Give `name` and any of the note forms
+    /// (`steps`, `notes_csv`, `patterns`, `notes`, with `loop_every`/`until`
+    /// to tile a bar across the clip) instead of calling set_clip_name and
+    /// add_notes_to_clip afterwards. The clip length is `length` beats.
     #[tool(name = "create_clip")]
-    async fn create_clip(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<CreateClipParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &CREATE_CLIP, p, create_clip_body)
-            .await
+    async fn create_clip(&self, Parameters(p): Parameters<CreateClipParams>) -> CallToolResult {
+        self.run(&CREATE_CLIP, p, create_clip_body).await
     }
 
     /// Create a new audio clip in an audio track's clip slot by importing a
@@ -1479,21 +1201,24 @@ impl Server {
     #[tool(name = "create_audio_clip")]
     async fn create_audio_clip(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<CreateAudioClipParams>,
     ) -> CallToolResult {
-        self.run(Some(peer), &CREATE_AUDIO_CLIP, p, create_audio_clip_body)
+        self.run(&CREATE_AUDIO_CLIP, p, create_audio_clip_body)
             .await
     }
 
-    /// Add MIDI notes to a clip.
+    /// Add MIDI notes to a Session clip. Write them compactly: `steps` is a
+    /// step-sequencer string per pitch (`{"36": "x...x...x...x...", "42":
+    /// "..x...x...x...x."}`, one character per `step` beat, X = accent, 1-9 =
+    /// velocity level, _ = hold), `patterns` repeats a note (`{"pitch": 42,
+    /// "every": 0.5, "offset": 0.25, "count": 32}`), `notes_csv` is
+    /// `pitch,start,duration,velocity` per line, and `loop_every` + `until`
+    /// tile one bar across a long clip (e.g. loop_every 4, until 64). Full
+    /// `notes` objects still work. Pitches may be names (C1, F#2). Set
+    /// `clear: true` to replace the clip's notes instead of appending.
     #[tool(name = "add_notes_to_clip")]
-    async fn add_notes_to_clip(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<AddNotesParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &ADD_NOTES_TO_CLIP, p, add_notes_to_clip_body)
+    async fn add_notes_to_clip(&self, Parameters(p): Parameters<AddNotesParams>) -> CallToolResult {
+        self.run(&ADD_NOTES_TO_CLIP, p, add_notes_to_clip_body)
             .await
     }
 
@@ -1502,29 +1227,15 @@ impl Server {
     /// notes with get_clip_notes, edit the list, clear_notes_from_clip, then
     /// add_notes_to_clip the edited notes.
     #[tool(name = "clear_notes_from_clip")]
-    async fn clear_notes_from_clip(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<ClipParams>,
-    ) -> CallToolResult {
-        self.run(
-            Some(peer),
-            &CLEAR_NOTES_FROM_CLIP,
-            p,
-            clear_notes_from_clip_body,
-        )
-        .await
+    async fn clear_notes_from_clip(&self, Parameters(p): Parameters<ClipParams>) -> CallToolResult {
+        self.run(&CLEAR_NOTES_FROM_CLIP, p, clear_notes_from_clip_body)
+            .await
     }
 
     /// Set the name of a Session clip.
     #[tool(name = "set_clip_name")]
-    async fn set_clip_name(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<SetClipNameParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &SET_CLIP_NAME, p, set_clip_name_body)
-            .await
+    async fn set_clip_name(&self, Parameters(p): Parameters<SetClipNameParams>) -> CallToolResult {
+        self.run(&SET_CLIP_NAME, p, set_clip_name_body).await
     }
 
     /// Set the name of a clip placed in the Arrangement timeline. clip_index
@@ -1533,11 +1244,9 @@ impl Server {
     #[tool(name = "set_arrangement_clip_name")]
     async fn set_arrangement_clip_name(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<SetClipNameParams>,
     ) -> CallToolResult {
         self.run(
-            Some(peer),
             &SET_ARRANGEMENT_CLIP_NAME,
             p,
             set_arrangement_clip_name_body,
@@ -1547,23 +1256,17 @@ impl Server {
 
     /// Set the tempo of the Ableton session.
     #[tool(name = "set_tempo")]
-    async fn set_tempo(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<SetTempoParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &SET_TEMPO, p, set_tempo_body).await
+    async fn set_tempo(&self, Parameters(p): Parameters<SetTempoParams>) -> CallToolResult {
+        self.run(&SET_TEMPO, p, set_tempo_body).await
     }
 
     /// Load an instrument or effect onto a track using its browser URI.
     #[tool(name = "load_instrument_or_effect")]
     async fn load_instrument_or_effect(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<LoadInstrumentParams>,
     ) -> CallToolResult {
         self.run(
-            Some(peer),
             &LOAD_INSTRUMENT_OR_EFFECT,
             p,
             load_instrument_or_effect_body,
@@ -1573,79 +1276,52 @@ impl Server {
 
     /// Start playing a clip.
     #[tool(name = "fire_clip")]
-    async fn fire_clip(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<ClipParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &FIRE_CLIP, p, fire_clip_body).await
+    async fn fire_clip(&self, Parameters(p): Parameters<ClipParams>) -> CallToolResult {
+        self.run(&FIRE_CLIP, p, fire_clip_body).await
     }
 
     /// Stop playing a clip.
     #[tool(name = "stop_clip")]
-    async fn stop_clip(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<ClipParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &STOP_CLIP, p, stop_clip_body).await
+    async fn stop_clip(&self, Parameters(p): Parameters<ClipParams>) -> CallToolResult {
+        self.run(&STOP_CLIP, p, stop_clip_body).await
     }
 
     /// Delete the clip in the given clip slot, freeing it for reuse. Use
     /// this before create_clip when you want to overwrite an existing clip
     /// (create_clip refuses to write into an occupied slot).
     #[tool(name = "delete_clip")]
-    async fn delete_clip(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<ClipParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &DELETE_CLIP, p, delete_clip_body)
-            .await
+    async fn delete_clip(&self, Parameters(p): Parameters<ClipParams>) -> CallToolResult {
+        self.run(&DELETE_CLIP, p, delete_clip_body).await
     }
 
     /// Start playing the Ableton session.
     #[tool(name = "start_playback")]
-    async fn start_playback(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<Empty>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &START_PLAYBACK, p, start_playback_body)
-            .await
+    async fn start_playback(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+        self.run(&START_PLAYBACK, p, start_playback_body).await
     }
 
     /// Stop playing the Ableton session.
     #[tool(name = "stop_playback")]
-    async fn stop_playback(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<Empty>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &STOP_PLAYBACK, p, stop_playback_body)
-            .await
+    async fn stop_playback(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+        self.run(&STOP_PLAYBACK, p, stop_playback_body).await
     }
 
     /// Get a hierarchical tree of browser categories from Ableton.
     #[tool(name = "get_browser_tree")]
     async fn get_browser_tree(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<BrowserTreeParams>,
     ) -> CallToolResult {
-        self.run(Some(peer), &GET_BROWSER_TREE, p, get_browser_tree_body)
-            .await
+        self.run(&GET_BROWSER_TREE, p, get_browser_tree_body).await
     }
 
     /// Get browser items at a specific path in Ableton's browser.
     #[tool(name = "get_browser_items_at_path")]
     async fn get_browser_items_at_path(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<BrowserPathParams>,
     ) -> CallToolResult {
         self.run(
-            Some(peer),
             &GET_BROWSER_ITEMS_AT_PATH,
             p,
             get_browser_items_at_path_body,
@@ -1655,24 +1331,14 @@ impl Server {
 
     /// Load a drum rack and then load a specific drum kit into it.
     #[tool(name = "load_drum_kit")]
-    async fn load_drum_kit(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<LoadDrumKitParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &LOAD_DRUM_KIT, p, load_drum_kit_body)
-            .await
+    async fn load_drum_kit(&self, Parameters(p): Parameters<LoadDrumKitParams>) -> CallToolResult {
+        self.run(&LOAD_DRUM_KIT, p, load_drum_kit_body).await
     }
 
     /// Switch Ableton's main window to the Arrangement view.
     #[tool(name = "switch_to_arrangement_view")]
-    async fn switch_to_arrangement_view(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<Empty>,
-    ) -> CallToolResult {
+    async fn switch_to_arrangement_view(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
         self.run(
-            Some(peer),
             &SWITCH_TO_ARRANGEMENT_VIEW,
             p,
             switch_to_arrangement_view_body,
@@ -1684,16 +1350,10 @@ impl Server {
     #[tool(name = "set_arrangement_time")]
     async fn set_arrangement_time(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<ArrangementTimeParams>,
     ) -> CallToolResult {
-        self.run(
-            Some(peer),
-            &SET_ARRANGEMENT_TIME,
-            p,
-            set_arrangement_time_body,
-        )
-        .await
+        self.run(&SET_ARRANGEMENT_TIME, p, set_arrangement_time_body)
+            .await
     }
 
     /// List all clips placed in the Arrangement timeline for a track:
@@ -1701,35 +1361,25 @@ impl Server {
     #[tool(name = "get_arrangement_clips")]
     async fn get_arrangement_clips(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<TrackParams>,
     ) -> CallToolResult {
-        self.run(
-            Some(peer),
-            &GET_ARRANGEMENT_CLIPS,
-            p,
-            get_arrangement_clips_body,
-        )
-        .await
+        self.run(&GET_ARRANGEMENT_CLIPS, p, get_arrangement_clips_body)
+            .await
     }
 
-    /// Copy a Session-view clip into the Arrangement timeline at
-    /// destination_time beats, on the same track. Typical workflow:
-    /// create_clip / add_notes_to_clip, then duplicate_to_arrangement once
-    /// per bar or section, then switch_to_arrangement_view to confirm.
+    /// Copy a Session-view clip into the Arrangement timeline on the same
+    /// track — at one beat position (`destination_time`), at several
+    /// (`destination_times`), or across a range (`start`, `end`, `step`:
+    /// start 32, end 96, step 4 places it on every bar from bar 9 to bar
+    /// 24). One call per section, not one per bar. Placements happen in
+    /// order and stop at the first failure, which the result reports.
     #[tool(name = "duplicate_to_arrangement")]
     async fn duplicate_to_arrangement(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<DuplicateToArrangementParams>,
     ) -> CallToolResult {
-        self.run(
-            Some(peer),
-            &DUPLICATE_TO_ARRANGEMENT,
-            p,
-            duplicate_to_arrangement_body,
-        )
-        .await
+        self.run(&DUPLICATE_TO_ARRANGEMENT, p, duplicate_to_arrangement_body)
+            .await
     }
 
     /// Create a named locator (cue point) in the Arrangement at a beat
@@ -1737,79 +1387,31 @@ impl Server {
     #[tool(name = "create_locator")]
     async fn create_locator(
         &self,
-        peer: Peer<RoleServer>,
         Parameters(p): Parameters<CreateLocatorParams>,
     ) -> CallToolResult {
-        self.run(Some(peer), &CREATE_LOCATOR, p, create_locator_body)
-            .await
-    }
-
-    /// Record the human's creative intent for subsequent actions in this
-    /// session, so trajectory steps are conditioned on it. Levels:
-    /// 1=atomic, 2=musical op, 3=section, 4=song, 5=creative goal.
-    /// Requires dataset consent.
-    #[tool(name = "submit_intent")]
-    async fn submit_intent(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<SubmitIntentParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &SUBMIT_INTENT, p, submit_intent_body)
-            .await
-    }
-
-    /// Rate the most recent recorded action (or the track after an edit).
-    /// Ratings: better | same | worse | keep | reject | thumbs_up |
-    /// thumbs_down. Requires dataset consent.
-    #[tool(name = "rate_last_action")]
-    async fn rate_last_action(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<RateLastActionParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &RATE_LAST_ACTION, p, rate_last_action_body)
-            .await
-    }
-
-    /// Record a pairwise preference between two candidate actions or
-    /// auditions. Requires dataset consent.
-    #[tool(name = "prefer_candidate")]
-    async fn prefer_candidate(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<PreferCandidateParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &PREFER_CANDIDATE, p, prefer_candidate_body)
-            .await
-    }
-
-    /// Mark the last action as rejected, e.g. when the human undoes or
-    /// discards an agent edit. Requires dataset consent.
-    #[tool(name = "reject_last_action")]
-    async fn reject_last_action(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<RejectLastActionParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &REJECT_LAST_ACTION, p, reject_last_action_body)
-            .await
-    }
-
-    /// Log a browser/preset/sample audition (keep or reject) for preference
-    /// learning. Does not load the device. Requires dataset consent.
-    #[tool(name = "record_audition")]
-    async fn record_audition(
-        &self,
-        peer: Peer<RoleServer>,
-        Parameters(p): Parameters<RecordAuditionParams>,
-    ) -> CallToolResult {
-        self.run(Some(peer), &RECORD_AUDITION, p, record_audition_body)
-            .await
+        self.run(&CREATE_LOCATOR, p, create_locator_body).await
     }
 }
 
 #[tool_handler(router = self.tool_router, name = "AbletonMusicMaker")]
-impl ServerHandler for Server {}
+impl ServerHandler for Server {
+    /// The one place the server learns who started it: the client's own
+    /// name and version from `initialize`. Recorded in the heartbeat file the
+    /// Mac app reads; never sent anywhere.
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        context.peer.set_peer_info(request.clone());
+        let client = (
+            request.client_info.name.clone(),
+            request.client_info.version.clone(),
+        );
+        crate::app::write_heartbeat(&self.live, Some(client));
+        self.negotiate_initialize(&request)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1840,7 +1442,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 37);
+        assert_eq!(tools.len(), 31);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();
@@ -1850,12 +1452,5 @@ mod tests {
             "length has a default"
         );
         assert!(!required.iter().any(|r| r == "user_prompt"));
-    }
-
-    #[test]
-    fn note_names() {
-        assert_eq!(pitch_to_name(60), "C4");
-        assert_eq!(pitch_to_name(61), "C#4");
-        assert_eq!(pitch_to_name(0), "C-1");
     }
 }
