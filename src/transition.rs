@@ -115,7 +115,7 @@ pub fn expand(
                 at: Some(CueTime::Bar { bar: bar as f64 }),
                 set: Some(SetSpec {
                     target: "tempo".into(),
-                    value: to,
+                    value: Some(to),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -386,15 +386,22 @@ fn crossfade(
         let ctx = live
             .send_command("get_context", Some(json!({"include_library": false})))
             .map_err(|e| live_err("read the track levels", e))?;
+        let track_of = |index: i64| -> Option<&Value> {
+            ctx.get("tracks").and_then(Value::as_array).and_then(|a| {
+                a.iter()
+                    .find(|t| t.get("index").and_then(Value::as_i64) == Some(index))
+            })
+        };
         let volume_of = |index: i64| -> f64 {
-            ctx.get("tracks")
-                .and_then(Value::as_array)
-                .and_then(|a| {
-                    a.iter()
-                        .find(|t| t.get("index").and_then(Value::as_i64) == Some(index))
-                })
+            track_of(index)
                 .and_then(|t| t.get("volume").and_then(Value::as_f64))
                 .unwrap_or(0.85)
+        };
+        let level_text = |index: i64, raw: f64| -> String {
+            match track_of(index).and_then(|t| t.get("volume_db").and_then(Value::as_f64)) {
+                Some(db) => format!("{db:.1} dB"),
+                None => fmt(raw),
+            }
         };
         // The incoming faders go to 0 one bar before the boundary (the
         // transition's own round trips may have used up the next bar).
@@ -409,7 +416,7 @@ fn crossfade(
                 set: Some(SetSpec {
                     target: "volume".into(),
                     track: Some(json!(t.index)),
-                    value: 0.0,
+                    value: Some(0.0),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -420,7 +427,7 @@ fn crossfade(
                 ramp: Some(json!({"volume": level, "track": t.index})),
                 ..Default::default()
             });
-            in_names.push(format!("{} (to {})", t.name, fmt(level)));
+            in_names.push(format!("{} (to {})", t.name, level_text(t.index, level)));
             if t.playing_slot_index >= 0 {
                 out.lines.push(format!(
                     "Note: {} is playing now and its fader goes to 0 at bar {next_bar} for the crossfade.",

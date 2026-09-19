@@ -25,6 +25,7 @@
 //! - [`transition`]   a jump's transition (tempo, retime, crossfade, fill, drop, sweep) as cue primitives
 //! - [`sound`]        the sound vocabulary: words → a device's rack macros, the instrument table, or a parameter name (pure)
 //! - [`sets`]         set memory on request: export_set writes a rebuildable document under the state dir, import_set rebuilds it
+//! - [`arrange`]      the artist-facing tools: arrange (bars), feel (one tool, one undo), set_key, create_return, clear_captures
 //! - [`activity`]     the local activity log (one JSON line per tool call)
 //! - [`state`]        where the server writes on this machine
 //! - [`install`]      the Remote Script installer
@@ -36,6 +37,7 @@
 
 pub mod activity;
 pub mod app;
+pub mod arrange;
 pub mod audio;
 pub mod connection;
 pub mod context;

@@ -69,7 +69,8 @@ async fn capture_records_measures_and_names_the_clip() {
     let bridge = capture_bridge(&file);
     let server = server_with(bridge.clone());
     let p = CaptureMixParams {
-        start: 128.0,
+        start_bar: None,
+        start: Some(128.0),
         bars: 2,
         name: "drop".into(),
     };
@@ -91,7 +92,7 @@ async fn capture_records_measures_and_names_the_clip() {
     let named = bridge.sent().last().unwrap().1.clone();
     assert_eq!(named["track_index"], 7);
     assert!(
-        named["name"].as_str().unwrap().starts_with("drop @ 128 | "),
+        named["name"].as_str().unwrap().starts_with("drop @ 33 | "),
         "{named}"
     );
     let sent_start = &bridge.sent()[2].1;
@@ -101,7 +102,7 @@ async fn capture_records_measures_and_names_the_clip() {
     assert!(t.starts_with("Created the Capture track at index 7"), "{t}");
     assert!(
         t.contains(
-            "Captured 'drop @ 128' (Capture track, slot 0) — 2 bars at 120 BPM, 4.0 s, stereo"
+            "Captured 'drop @ bar 33' (Capture track, slot 0) — 2 bars at 120 BPM, 4.0 s, stereo"
         ),
         "{t}"
     );
@@ -133,7 +134,8 @@ async fn capture_times_out_and_stops_live() {
     bridge.script("stop_capture", vec![json!({"stopped_slot": 2})]);
     let server = server_with(bridge.clone());
     let p = CaptureMixParams {
-        start: 0.0,
+        start_bar: None,
+        start: Some(0.0),
         bars: 1,
         name: "x".into(),
     };
@@ -156,7 +158,8 @@ async fn capture_refuses_bad_lengths_before_live() {
     let bridge = FakeBridge::responding(json!({}));
     let server = server_with(bridge.clone());
     let p = CaptureMixParams {
-        start: 0.0,
+        start_bar: None,
+        start: Some(0.0),
         bars: 65,
         name: "x".into(),
     };

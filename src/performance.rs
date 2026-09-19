@@ -490,8 +490,12 @@ pub struct SetSpec {
     pub parameter_index: Option<i64>,
     #[serde(default)]
     pub send_index: Option<i64>,
-    /// The value: BPM for tempo, 0–1 for crossfader (A→B) and volume, 0/1 for mute, Live units for a device parameter
-    pub value: f64,
+    /// The value: BPM for tempo, 0–1 for crossfader (A→B), 0/1 for mute, Live units for a device parameter; a fader in dB goes in value_db
+    #[serde(default)]
+    pub value: Option<f64>,
+    /// A fader in dB (target volume only): the script lands it on Live's own curve
+    #[serde(default)]
+    pub value_db: Option<f64>,
 }
 
 /// One step of a cue: a time and exactly one action.
@@ -520,7 +524,7 @@ pub struct CueStep {
     /// Write one value at the beat
     #[serde(default)]
     pub set: Option<SetSpec>,
-    /// A ramp over `bars`: {"tempo": 134}, {"crossfader": 1.0}, {"volume": 0.5, "track": "Bass"},
+    /// A ramp over `bars`: {"tempo": 134}, {"crossfader": 1.0}, {"volume_db": -6, "track": "Bass"} (or the raw fader as {"volume": 0.5}),
     /// {"send": 0.3, "track": "Pad", "send_index": 0}, or {"target": "device", "track": …, "device_index": …, "parameter_index": …, "to": …}
     #[serde(default)]
     pub ramp: Option<Value>,
@@ -615,7 +619,11 @@ pub fn clock_lines(clock: &Value, plan_cue_id: Option<i64>) -> String {
     let mut s = clock_line_with(clock, plan_cue_id);
     if let Some(levels) = clock.get("levels").and_then(level_line) {
         s.push('\n');
-        s.push_str(&levels);
+        if clock.get("is_playing").and_then(Value::as_bool) == Some(false) {
+            s.push_str(&levels.replace("peak this bar", "peak of the last bar played"));
+        } else {
+            s.push_str(&levels);
+        }
     }
     s
 }
@@ -766,7 +774,7 @@ fn fmt_num(v: f64) -> String {
     }
 }
 
-fn ramp_target(state: &PerfState, ramp: &Value) -> Result<(Value, String, f64), String> {
+fn ramp_target(state: &PerfState, ramp: &Value) -> Result<(Value, String), String> {
     let obj = ramp
         .as_object()
         .ok_or_else(|| "ramp must be an object, e.g. {\"tempo\": 134}".to_string())?;
@@ -803,6 +811,17 @@ fn ramp_target(state: &PerfState, ramp: &Value) -> Result<(Value, String, f64), 
             "crossfader",
             v,
             format!("crossfader → {}", if v >= 0.5 { "B" } else { "A" }),
+        )
+    } else if let Some(db) = obj.get("volume_db").and_then(Value::as_f64) {
+        let name = track_of(&mut wire)?;
+        if !(-80.0..=6.0).contains(&db) {
+            return Err(format!("volume_db {db} is outside -80…+6 dB"));
+        }
+        wire.insert("to_db".into(), json!(db));
+        (
+            "volume",
+            f64::NAN,
+            format!("{name} volume → {} dB", fmt_num(db)),
         )
     } else if let Some(v) = obj.get("volume").and_then(Value::as_f64) {
         let name = track_of(&mut wire)?;
@@ -849,8 +868,10 @@ fn ramp_target(state: &PerfState, ramp: &Value) -> Result<(Value, String, f64), 
         return Err("ramp needs one of tempo, crossfader, volume, send, or target + to".into());
     };
     wire.insert("target".into(), json!(target));
-    wire.insert("to".into(), json!(to));
-    Ok((Value::Object(wire), label, to))
+    if !to.is_nan() {
+        wire.insert("to".into(), json!(to));
+    }
+    Ok((Value::Object(wire), label))
 }
 
 fn display_v(v: &Value) -> String {
@@ -972,8 +993,7 @@ pub fn resolve_cue(state: &PerfState, p: &CueParams) -> Result<ResolvedCue, Stri
             if bars <= 0.0 || bars > 64.0 {
                 return Err(format!("step {n}: a ramp takes 1 to 64 bars"));
             }
-            let (target, text, _) =
-                ramp_target(state, ramp).map_err(|e| format!("step {n}: {e}"))?;
+            let (target, text) = ramp_target(state, ramp).map_err(|e| format!("step {n}: {e}"))?;
             let end_beat = beat + bars * bpb;
             wire["action"] = json!("ramp");
             wire["end_beat"] = json!(end_beat);
@@ -1086,7 +1106,24 @@ pub fn resolve_cue(state: &PerfState, p: &CueParams) -> Result<ResolvedCue, Stri
             } else if let Some(set) = &step.set {
                 wire["action"] = json!("set");
                 wire["target"] = json!(set.target);
-                wire["value"] = json!(set.value);
+                let value = match (set.value, set.value_db) {
+                    (_, Some(db)) if set.target == "volume" => {
+                        wire["value_db"] = json!(db);
+                        db
+                    }
+                    (_, Some(_)) => {
+                        return Err(format!("step {n}: value_db is for volume; give value"))
+                    }
+                    (Some(v), None) => {
+                        wire["value"] = json!(v);
+                        v
+                    }
+                    (None, None) => {
+                        return Err(format!(
+                            "step {n}: set needs value (or value_db for a fader)"
+                        ))
+                    }
+                };
                 let mut who = String::new();
                 if !matches!(set.target.as_str(), "tempo" | "crossfader") {
                     let kind = set.kind.clone().unwrap_or_else(|| "track".into());
@@ -1113,13 +1150,15 @@ pub fn resolve_cue(state: &PerfState, p: &CueParams) -> Result<ResolvedCue, Stri
                         wire[k] = json!(v);
                     }
                 }
-                if set.target == "tempo" && !(20.0..=999.0).contains(&set.value) {
-                    return Err(format!(
-                        "step {n}: tempo {} is outside 20–999 BPM",
-                        set.value
-                    ));
+                if set.target == "tempo" && !(20.0..=999.0).contains(&value) {
+                    return Err(format!("step {n}: tempo {value} is outside 20–999 BPM"));
                 }
-                label = format!("set {who}{} = {}", set.target, fmt_num(set.value));
+                label = format!(
+                    "set {who}{} = {}{}",
+                    set.target,
+                    fmt_num(value),
+                    if set.value_db.is_some() { " dB" } else { "" }
+                );
             } else {
                 unreachable!("exactly one action")
             }

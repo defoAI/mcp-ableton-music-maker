@@ -54,6 +54,7 @@ async fn load_reports_the_device_it_added() {
     let p = LoadInstrumentParams {
         track_index: 6,
         uri: "query:x".into(),
+        kind: "track".into(),
     };
     let r = server
         .run(
@@ -140,7 +141,7 @@ async fn play_and_measure_reports_peaks_and_silence() {
     assert!(cmds.iter().filter(|c| *c == "get_track_meters").count() >= 3);
     let t = text_of(&r);
     assert!(
-        t.contains("track 0 'Kick': 0.71") && t.contains("Silent during this stretch: Pad"),
+        t.contains("track 0 'Kick': −3.0 dB") && t.contains("Silent during this stretch: Pad"),
         "{t}"
     );
 }
@@ -175,7 +176,22 @@ async fn automation_ramp_becomes_two_points_and_targets_are_checked() {
     let r = server
         .run(
             &tools::SET_CLIP_AUTOMATION,
-            p,
+            p.clone(),
+            tools::set_clip_automation_body,
+        )
+        .await;
+    assert!(
+        is_error(&r) && text_of(&r).contains("Session clips only"),
+        "an Arrangement clip is refused before Live: {}",
+        text_of(&r)
+    );
+    assert!(bridge.sent().is_empty(), "nothing sent");
+    let mut session = p.clone();
+    session.arrangement = false;
+    let r = server
+        .run(
+            &tools::SET_CLIP_AUTOMATION,
+            session,
             tools::set_clip_automation_body,
         )
         .await;
@@ -185,7 +201,7 @@ async fn automation_ramp_becomes_two_points_and_targets_are_checked() {
         sent["points"],
         json!([{"time": 0.0, "value": 0.2}, {"time": 32.0, "value": 0.9}])
     );
-    assert_eq!(sent["arrangement"], true);
+    assert_eq!(sent["arrangement"], false);
     let bad = SetClipAutomationParams {
         track_index: 3,
         clip_index: 0,
@@ -275,6 +291,7 @@ fn song() -> BuildSongParams {
     sends.insert("Reverb".to_string(), 0.3);
     BuildSongParams {
         tempo: Some(128.0),
+        key: None,
         scenes: vec![],
         tracks: vec![
             SongTrack {
@@ -282,7 +299,9 @@ fn song() -> BuildSongParams {
                 kind: "midi".into(),
                 instrument: Some("query:Drums#Kit".into()),
                 instrument_query: None,
-                volume: Some(0.8),
+                volume: None,
+                volume_db: None,
+                fader: Some(0.8),
                 pan: None,
                 color_index: Some(3),
                 sends: BTreeMap::new(),
@@ -293,6 +312,8 @@ fn song() -> BuildSongParams {
                 instrument: None,
                 instrument_query: None,
                 volume: None,
+                volume_db: None,
+                fader: None,
                 pan: None,
                 color_index: None,
                 sends,
@@ -361,6 +382,10 @@ async fn build_song_executes_in_order() {
         "track": "Pad", "send_index": 0, "return_name": "Reverb", "value": 0.3,
         "clip_name": "Kick", "time": 0.0
     }));
+    bridge.script(
+        "create_tracks",
+        vec![json!({"created": [{"index": 2, "name": "Drums", "device": "Kit"}, {"index": 3, "name": "Pad"}]})],
+    );
     let server = server_with(bridge.clone());
     let r = server
         .run(&tools::BUILD_SONG, song(), tools::build_song_body)
@@ -369,25 +394,31 @@ async fn build_song_executes_in_order() {
     let cmds = bridge.commands();
     let expected: Vec<&str> = vec![
         "set_tempo",
-        "create_midi_track",
-        "set_track_name",
-        "load_browser_item",
-        "set_track_mixer",
-        "set_track_color",
-        "create_midi_track",
-        "set_track_name",
-        "set_send",
-        "create_clip",
-        "set_clip_name",
-        "add_notes_to_clip",
+        "create_tracks",
+        "write_clips",
         "get_arrangement_clips",
-        "duplicate_session_clip_to_arrangement",
-        "duplicate_session_clip_to_arrangement",
-        "duplicate_session_clip_to_arrangement",
-        "duplicate_session_clip_to_arrangement",
+        "place_clips",
         "create_locator",
     ];
-    assert_eq!(cmds, expected);
+    assert_eq!(
+        cmds, expected,
+        "every track, then every clip, in one round trip each"
+    );
+    let tracks = bridge.sent()[1].1["tracks"].as_array().unwrap().clone();
+    assert_eq!(tracks.len(), 2);
+    assert_eq!(tracks[0]["name"], "Drums");
+    assert!(
+        tracks[0]["instrument_uri"].as_str().unwrap().contains(':'),
+        "{}",
+        tracks[0]
+    );
+    assert_eq!(
+        tracks[1]["sends"],
+        json!([{"name": "Reverb", "value": 0.3}])
+    );
+    let clips = bridge.sent()[2].1["clips"].as_array().unwrap().clone();
+    assert_eq!(clips.len(), 1);
+    assert_eq!(clips[0]["notes"].as_array().unwrap().len(), 4);
     let t = text_of(&r);
     assert!(
         t.contains("Track 2 'Drums'")
@@ -460,8 +491,11 @@ async fn delete_arrangement_clips_all_and_by_indices() {
         json!({"name": "x", "start_time": 0.0, "end_time": 4.0, "remaining": 0}),
     );
     bridge.script(
-        "get_arrangement_clips",
-        vec![json!({"clip_count": 3, "clips": []})],
+        "delete_arrangement_clips",
+        vec![json!({"track": "Drums", "remaining": 0, "removed": [
+            {"index": 0, "name": "x", "start_time": 0.0, "end_time": 4.0},
+            {"index": 1, "name": "x", "start_time": 4.0, "end_time": 8.0},
+            {"index": 2, "name": "x", "start_time": 8.0, "end_time": 12.0}]})],
     );
     let server = server_with(bridge.clone());
     let p = tools::DeleteArrangementClipParams {
@@ -478,14 +512,19 @@ async fn delete_arrangement_clips_all_and_by_indices() {
         )
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
-    let deletes: Vec<i64> = bridge
-        .sent()
-        .iter()
-        .filter(|(c, _)| c == "delete_arrangement_clip")
-        .map(|(_, a)| a["clip_index"].as_i64().unwrap())
-        .collect();
-    assert_eq!(deletes, vec![2, 1, 0], "highest index first");
-    assert!(text_of(&r).contains("Removed 3 Arrangement clip(s)"));
+    assert_eq!(
+        bridge.sent()[0],
+        (
+            "delete_arrangement_clips".to_string(),
+            json!({"track_index": 2, "all": true})
+        ),
+        "every clip in one round trip"
+    );
+    assert!(
+        text_of(&r).contains("Removed 3 Arrangement clip(s) from track 2 in one round trip"),
+        "{}",
+        text_of(&r)
+    );
     let none = tools::DeleteArrangementClipParams {
         track_index: 2,
         clip_index: -1,
@@ -563,6 +602,10 @@ async fn build_song_treats_plain_words_in_instrument_as_a_search() {
             json!({"items": [{"name": "Evolving Pad", "uri": "query:Sounds#Pad:Evolving%20Pad"}]}),
         ],
     );
+    bridge.script(
+        "create_tracks",
+        vec![json!({"created": [{"index": 2, "name": "Drums", "device": "Evolving Pad"}]})],
+    );
     let server = server_with(bridge.clone());
     let mut p = song();
     p.tracks.truncate(1);
@@ -577,22 +620,16 @@ async fn build_song_treats_plain_words_in_instrument_as_a_search() {
     assert!(!is_error(&r), "{}", text_of(&r));
     let cmds = bridge.commands();
     assert_eq!(
-        &cmds[..4],
-        &[
-            "set_tempo",
-            "create_midi_track",
-            "set_track_name",
-            "search_browser"
-        ]
+        &cmds[..3],
+        &["set_tempo", "search_browser", "create_tracks"]
     );
-    assert_eq!(cmds[4], "load_browser_item");
-    assert_eq!(bridge.sent()[3].1["query"], "ambient evolving pad");
+    assert_eq!(bridge.sent()[1].1["query"], "ambient evolving pad");
     assert_eq!(
-        bridge.sent()[4].1["item_uri"],
+        bridge.sent()[2].1["tracks"][0]["instrument_uri"],
         "query:Sounds#Pad:Evolving%20Pad"
     );
     assert!(
-        text_of(&r).contains("found 'Evolving Pad' for \"ambient evolving pad\""),
+        text_of(&r).contains("Found in the library: 'Evolving Pad' for \"ambient evolving pad\""),
         "{}",
         text_of(&r)
     );
@@ -601,6 +638,10 @@ async fn build_song_treats_plain_words_in_instrument_as_a_search() {
 #[tokio::test]
 async fn build_song_copies_a_clip_into_extra_slots() {
     let bridge = FakeBridge::responding(json!({"index": 0, "name": "Pad", "loaded": true}));
+    bridge.script(
+        "create_tracks",
+        vec![json!({"created": [{"index": 0, "name": "Drums"}]})],
+    );
     let server = server_with(bridge.clone());
     let mut p = song();
     p.tracks.truncate(1);
@@ -615,17 +656,28 @@ async fn build_song_copies_a_clip_into_extra_slots() {
         .run(&tools::BUILD_SONG, p, tools::build_song_body)
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
-    let slots: Vec<i64> = bridge
+    let clips = bridge
         .sent()
         .iter()
-        .filter(|(c, _)| c == "create_clip")
-        .map(|(_, a)| a["clip_index"].as_i64().unwrap())
+        .find(|(c, _)| c == "write_clips")
+        .map(|(_, a)| a["clips"].as_array().unwrap().clone())
+        .unwrap();
+    let slots: Vec<i64> = clips
+        .iter()
+        .map(|c| c["clip_index"].as_i64().unwrap())
         .collect();
     assert_eq!(
         slots,
         vec![0, 1, 2],
         "each extra slot once, the main slot first"
     );
+    assert_eq!(
+        clips[0]["notes"].as_array().unwrap().len(),
+        4,
+        "the notes travel once"
+    );
+    assert_eq!(clips[1]["copy_of"], 0, "copies are made inside Live");
+    assert!(clips[1].get("notes").is_none());
     assert!(text_of(&r).contains("slots 0, 1, 2"), "{}", text_of(&r));
 }
 
@@ -679,6 +731,10 @@ async fn get_context_is_one_round_trip_with_the_workflow_footer() {
 #[tokio::test]
 async fn batch_resolves_last_clip_and_build_song_handles_scenes_and_slots() {
     let bridge = FakeBridge::responding(json!({"index": 3, "name": "3-MIDI"}));
+    bridge.script(
+        "create_tracks",
+        vec![json!({"created": [{"index": 3, "name": "Drums"}]})],
+    );
     let server = server_with(bridge.clone());
     let p: tools::BatchParams = serde_json::from_value(json!({"steps": [
         {"tool": "create_midi_track", "args": {}},
@@ -702,6 +758,10 @@ async fn batch_resolves_last_clip_and_build_song_handles_scenes_and_slots() {
 
     // A scenes block names rows; clips with only `slots` skip slot 0.
     let bridge = FakeBridge::responding(json!({"index": 0, "name": "Drums", "loaded": true}));
+    bridge.script(
+        "create_tracks",
+        vec![json!({"created": [{"index": 0, "name": "Drums"}]})],
+    );
     let server = server_with(bridge.clone());
     let mut p = song();
     p.scenes = vec![
@@ -750,8 +810,15 @@ async fn batch_resolves_last_clip_and_build_song_handles_scenes_and_slots() {
     let slots: Vec<i64> = bridge
         .sent()
         .iter()
-        .filter(|(c, _)| c == "create_clip")
-        .map(|(_, a)| a["clip_index"].as_i64().unwrap())
+        .filter(|(c, _)| c == "write_clips")
+        .flat_map(|(_, a)| {
+            a["clips"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["clip_index"].as_i64().unwrap())
+                .collect::<Vec<_>>()
+        })
         .collect();
     assert_eq!(slots, vec![1, 2], "no slot 0 when only slots is given");
     assert!(

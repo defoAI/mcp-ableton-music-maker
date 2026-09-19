@@ -104,13 +104,14 @@ async fn full_stack_over_stdio() {
     }
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 94);
+    assert_eq!(tools.len(), 99);
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     for expected in [
-        "get_session_info",
+        "adv_get_session_info",
         "add_notes_to_clip",
-        "load_drum_kit",
-        "get_remote_script_info",
+        "adv_load_drum_kit",
+        "adv_get_remote_script_info",
+        "get_context",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
@@ -132,7 +133,7 @@ async fn full_stack_over_stdio() {
 
     // A read tool returns Live's payload as JSON.
     let result = client
-        .call_tool(CallToolRequestParams::new("get_session_info"))
+        .call_tool(CallToolRequestParams::new("adv_get_session_info"))
         .await
         .unwrap();
     assert_ne!(result.is_error, Some(true));
@@ -150,7 +151,7 @@ async fn full_stack_over_stdio() {
 
     // A Live-side error becomes an error result, not a protocol failure.
     let result = client
-        .call_tool(CallToolRequestParams::new("get_browser_tree"))
+        .call_tool(CallToolRequestParams::new("adv_get_browser_tree"))
         .await
         .unwrap();
     assert_eq!(result.is_error, Some(true));

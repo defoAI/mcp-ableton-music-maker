@@ -8,8 +8,8 @@
 use crate::connection::LiveState;
 use crate::song::{self, SetlistEntry};
 use crate::tools::{
-    self, get_display, live_err, performance_running, require, BuildSongParams, Note, SongClip,
-    SongScene, SongTrack, ToolResult,
+    self, live_err, performance_running, require, BuildSongParams, Note, SongClip, SongScene,
+    SongTrack, ToolResult,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -301,6 +301,7 @@ pub fn document(
 pub fn build_params(doc: &SetDocument) -> BuildSongParams {
     BuildSongParams {
         tempo: doc.tempo,
+        key: doc.key.clone(),
         scenes: doc
             .sections
             .iter()
@@ -318,7 +319,9 @@ pub fn build_params(doc: &SetDocument) -> BuildSongParams {
                 kind: t.kind.clone(),
                 instrument: t.instrument.clone(),
                 instrument_query: None,
-                volume: t.volume,
+                volume: None,
+                volume_db: None,
+                fader: t.volume,
                 pan: t.pan,
                 color_index: t.color_index,
                 sends: t.sends.clone(),
@@ -482,27 +485,6 @@ pub fn import_set_body(live: &LiveState, p: &ImportSetParams) -> ToolResult {
     let mut text = format!("Rebuilding '{}' ({}):\n", doc.name, summary(&doc));
     let built = tools::build_song_body(live, &params)?;
     text.push_str(&built);
-    if let Some(k) = &doc.key {
-        if let Some((root, scale)) = crate::performance::parse_key(k) {
-            if live.script.has_capability("set_scale") {
-                match live.send_command(
-                    "set_scale",
-                    Some(json!({"root_note": root, "scale_name": scale})),
-                ) {
-                    Ok(r) => text.push_str(&format!(
-                        "\nKey {} {} set in Live.",
-                        get_display(
-                            &r,
-                            "root_note_name",
-                            crate::performance::PITCH_CLASSES[root as usize]
-                        ),
-                        get_display(&r, "scale_name", &scale)
-                    )),
-                    Err(e) => text.push_str(&format!("\nKey '{k}' not set: {e}")),
-                }
-            }
-        }
-    }
     if !doc.setlist.is_empty() {
         let song = crate::sections::set_song_body(
             live,

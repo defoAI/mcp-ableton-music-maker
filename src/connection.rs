@@ -265,6 +265,8 @@ const MODIFYING_COMMANDS: &[&str] = &[
     "duplicate_scene",
     "set_clip_groove",
     "set_device_parameters",
+    "create_tracks",
+    "write_clips",
 ];
 // get_context and get_browser_index are reads: the default budget applies.
 
@@ -273,6 +275,10 @@ const MODIFYING_COMMANDS: &[&str] = &[
 pub fn command_timeout(command_type: &str) -> Duration {
     match command_type {
         "create_audio_clip" => Duration::from_secs(65),
+        // Many tracks with instruments loaded from the browser, one round trip.
+        "create_tracks" => Duration::from_secs(190),
+        // Many clips with their notes, one round trip.
+        "write_clips" => Duration::from_secs(65),
         // Walks Live's browser; the script stops itself after its own budget.
         "search_browser" => Duration::from_secs(25),
         c if MODIFYING_COMMANDS.contains(&c) => Duration::from_secs(15),

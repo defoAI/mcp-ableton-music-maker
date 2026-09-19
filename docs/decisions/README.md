@@ -14,6 +14,7 @@ Routine calls do not.
 | [0003](0003-remote-script-bind-address.md) | Which address does the Remote Script bind? | **Open** — `0.0.0.0` today; `127.0.0.1` untested from Docker Desktop |
 | [0004](0004-who-publishes-and-holds-the-data.md) | Who publishes this product and who holds the data? | **Decided** — both tiers are removed; nothing leaves the machine, so nobody holds data. DefoAI UG publishes the fork (2026-09-19) |
 | [0005](0005-mac-app-is-tauri-and-bundles-the-server.md) | Is the Mac app native Swift or Tauri, and does it bundle the server? | **Decided** — Tauri 2 in `app/`, depending on the crate as a library, shipping the server binary as a sidecar (2026-09-19) |
+| [0006](0006-one-artist-surface-raw-layer-marked-advanced.md) | Which tools does the server present, and in what units? | **Decided** — the artist's set (`CORE_TOOLS`) in five groups, dB and bars; the raw layer is served too, as `adv_<name>`, never hidden (2026-09-19) |
 
 ## Already settled, recorded where they bind
 

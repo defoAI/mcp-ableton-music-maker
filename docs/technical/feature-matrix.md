@@ -14,10 +14,20 @@ table is a copy for orientation.
 
 ## Tools, by area
 
+The tools without a mark are the artist's set (`CORE_TOOLS`, decision 0006); a tool marked
+*advanced* here is served as `adv_<name>`. Faders and levels are in dB, Arrangement positions
+in Live's 1-based bars.
+
 | Area | Tool | Remote Script command(s) | Notes |
 |---|---|---|---|
+| Arrange | `arrange` | `place_clips`, `duplicate_arrangement_clip`, `delete_arrangement_clips`, `get_arrangement_clips` | place a Session clip at a bar or every N bars up to a bar, repeat an Arrangement clip after itself, move one to a bar, delete the clips starting in a bar range, shorten the whole arrangement to end at a bar (clips that run past it are named: Live's API cannot trim), list; one round trip per track however many clips |
+| Shape | `feel` | `get_clip_notes` + `add_notes_to_clip`, `get_grooves` + `set_clip_groove` | swing, humanize_ms, a Groove Pool groove, groove_amount, retime, a variation, any mix in one call, seeded; `undo: true` restores the clip as it was before the call |
+| | `set_key` | `set_scale` | "F minor", "D dorian": Live 12's scale settings; `build_song` takes `key` and sets it first |
+| | `create_return` | `create_return_track` + `load_browser_item` | a return track, optionally with an effect by words or URI; `load_instrument_or_effect` takes `kind` return / master |
+| | `set_track_mixer` | `set_track_mixer` (the script bisects Live's own fader curve with `str_for_value`) | `volume` is dB (`volume_db` too), `fader` is Live's raw 0–1; dB in and out, `get_context` and `get_returns` show dB |
+| Play | `clear_captures` | `get_context` + `delete_track` / `delete_clip` | removes the Capture track (or only its clips); the audio files stay in the project |
 | Session | `get_context` | `get_context` | **start here**: one round trip for the set, every track (kind, arm/mute/solo, mixer, devices, clips by slot, play state, Arrangement count), returns, scenes, the performance clock, optional library summary; ends with the workflow reminder |
-| | `get_session_info` | `get_session_info` | tempo, tracks, view |
+| | `get_session_info` *advanced* | `get_session_info` | tempo, tracks, view |
 | | `get_session_snapshot` | `get_session_snapshot` | compact by default: empty slots and scenes dropped, counts kept; `compact: false` for the raw dump |
 | | `set_tempo` | `set_tempo` | |
 | | `start_playback`, `stop_playback` | same names | |
@@ -41,8 +51,8 @@ table is a copy for orientation.
 | | `get_browser_tree`, `get_browser_items_at_path` | same names | the tree now recurses two folder levels |
 | | `load_instrument_or_effect` result | `load_browser_item` | reports the loaded device's name and index |
 | Clips | `get_clip_info`, `set_clip_loop`, `set_clip_launch` | same names | loop points, markers, launch mode/quantization, legato |
-| Automation | `set_clip_automation`, `get_clip_automation` | same names | device parameter or mixer target; points or a ramp; steps at `resolution`; Session and Arrangement clips |
-| Listening | `get_track_meters` | `get_track_meters` | one reading of every output meter |
+| Automation | `set_clip_automation`, `get_clip_automation` *advanced* | same names | device parameter or mixer target; points or a ramp; steps at `resolution`; **Session clips only** — Live's API answers "Not a session clip" for an Arrangement clip (verified on 12.4.6), so the tool refuses before Live and says to automate the Session clip and place it |
+| Listening | `get_track_meters` *advanced* | `get_track_meters` (on Live's main thread; off it the meters read as zero) | one reading of every output meter, in dB |
 | | `play_and_measure` | `set_current_song_time` + `start_playback` + `get_track_meters`×N + `stop_playback` | peak per track over a played stretch; names silent tracks |
 | Capture | `capture_mix` | `ensure_capture_track` + `start_capture` + `capture_status`×N + `stop_capture` + `set_clip_name` | records `bars` bars of the master into the Capture track (Resampling, muted, armed), reads the WAV/AIFF Live wrote, reports peak, RMS per bar, silent bars, clipping, stereo correlation. **Live 11+** |
 | | `list_captures`, `measure_capture` | `list_captures`, `capture_status` | the captures on the Capture track; re-measure one without playing |
@@ -72,13 +82,13 @@ table is a copy for orientation.
 | | `set_device_parameter` by name, `cue` `ramp {"sound": …}` | `get_device_parameters` + `set_device_parameter` / `schedule_cue` | `parameter: "<name substring>"`; a ramp step resolves a word to the device parameter it means |
 | Set memory | `export_set`, `import_set` | `get_session_snapshot` + `get_context`; `build_song`'s commands + `set_scale` + `set_song`'s | a rebuildable document (tracks with devices by name and instruments by URI, clips with notes, mixer and sends, sections, setlist, tempo, signature, key) under `state_dir()/sets/<name>.json`, written only on request; import refuses an occupied set unless `merge: true`, audio clips are named, not rebuilt |
 | Orchestration | `batch` | any | ordered steps, stop at first failure, `$last_track` and `$last_clip` |
-| | `build_song` | many | one document → scenes (names, tempos, phrase lengths), tracks, instruments (URI, or plain words resolved through the index), clips (any compact note form, `slots` for copies in several rows), placements, locators; validated before the first command; `dry_run` |
+| | `build_song` | `set_scale`, `set_tempo`, `create_scene`/`set_scene`, `create_tracks` (every track in one round trip: create, name, instrument by URI, fader in dB, pan, colour, sends), `write_clips` (every clip in one round trip; copies in other rows made inside Live from the first, so the notes travel once), `place_clips`, `create_locator` | one document → key, tempo, sections, tracks, instruments (plain words resolved through the index, or a URI), clips (any compact note form, `slots` for copies), placements, locators; validated before the first command; `dry_run`. A 7-track, 22-clip set builds in a few seconds instead of forty |
 | Arrangement | `switch_to_arrangement_view` | `switch_to_arrangement_view` | |
 | | `set_arrangement_time` | `set_current_song_time` | |
 | | `get_arrangement_clips` | `get_arrangement_clips` | **Live 11+** |
-| | `duplicate_to_arrangement` | `duplicate_session_clip_to_arrangement` (once per placement) | **Live 11+**; one time, a list, or `start`/`end`/`step`; stops at the first failure and says how far it got |
+| | `duplicate_to_arrangement` *advanced* | `place_clips` (every copy in one round trip) | **Live 11+**; `at_bar` / `until_bar` / `every_bars`, or a beat, a list, or `start`/`end`/`step`; the script reports the copies Live refused |
 | | `set_arrangement_clip_name`, `create_locator` | same names | |
-| | `delete_arrangement_clip`, `delete_locator` | same names | **Live 11+**; one, several or `all`; the undo the Arrangement lacked |
+| | `delete_arrangement_clip`, `delete_locator` *advanced* | `delete_arrangement_clip`, `delete_arrangement_clips` (several or all in one round trip), `delete_locator` | **Live 11+**; one, several or `all`; the undo the Arrangement lacked |
 | | `delete_track`, `back_to_arrangement`, `set_arrangement_loop` | same names | orphan tracks, the Back to Arrangement button, the loop brace for auditioning a section |
 | | `play_and_measure`, `capture_mix` positioning | `play_from` | plays from the asked position (`continue_playing`); `start_playing` jumps to the start marker |
 | | `add_notes_to_clip` `propagate_to_arrangement` | `get_clip_info` + `get_arrangement_clips` + delete/duplicate | refreshes Arrangement copies of an edited Session clip |
