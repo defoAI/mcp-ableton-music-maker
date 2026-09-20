@@ -6,55 +6,7 @@ loopback is the boundary — so every refusal below is a test, not a promise.
 import unittest
 
 import harness
-
-
-class FakeParam(object):
-    def __init__(self, name, value):
-        self.name = name
-        self._value = value
-        self.min = 0.0
-        self.max = 1.0
-
-    @property
-    def value(self):
-        return self._value
-
-    @value.setter
-    def value(self, v):
-        self._value = v
-
-    def str_for_value(self, v):
-        return "%.1f" % v
-
-
-class FakeMixer(object):
-    def __init__(self):
-        self.volume = FakeParam("Volume", 0.85)
-
-
-class FakeSlot(object):
-    def __init__(self):
-        self.has_clip = False
-        self.fired = 0
-
-    def fire(self):
-        self.fired += 1
-        return None
-
-
-class FakeTrack(object):
-    def __init__(self, name):
-        self.name = name
-        self.mute = False
-        self.solo = False
-        self.arm = False
-        self.playing_slot_index = -1
-        self.mixer_device = FakeMixer()
-        self.clip_slots = [FakeSlot(), FakeSlot()]
-
-    @property
-    def is_visible(self):        # read-only on purpose
-        return True
+from harness import two_track_set
 
 
 class Paths(unittest.TestCase):
@@ -97,16 +49,18 @@ class Paths(unittest.TestCase):
 
 
 class Describe(unittest.TestCase):
+    """`readonly` is exactly Live's, because the model's members are real
+    `property` descriptors and `_describe` derives it from `fset`."""
+
     def setUp(self):
-        self.ns = harness.load()
+        self.ns = harness.load(song=two_track_set(clips=True))
         self.script = harness.instance(self.ns)
         self.song = self.script.song()
-        self.song.tracks = [FakeTrack("Kick"), FakeTrack("Bass")]
         self.script._live_version = "12.4.6"
 
     def test_it_names_the_class_attributes_and_methods(self):
         d = self.script._describe("song.tracks[0]")
-        self.assertEqual(d["class"], "FakeTrack")
+        self.assertEqual(d["class"], "Track")
         self.assertEqual(d["name"], "Kick")
         self.assertEqual(d["live_version"], "12.4.6")
         self.assertEqual(d["attrs"]["name"]["type"], "str")
@@ -143,11 +97,10 @@ class Describe(unittest.TestCase):
 
 class Run(unittest.TestCase):
     def setUp(self):
-        self.ns = harness.load()
+        self.ns = harness.load(song=two_track_set(clips=True))
         self.Done = self.ns["Done"]
         self.script = harness.instance(self.ns)
         self.song = self.script.song()
-        self.song.tracks = [FakeTrack("Kick"), FakeTrack("Bass")]
         self.script._live_version = "12.4.6"
 
     def run_ops(self, ops):
@@ -171,7 +124,9 @@ class Run(unittest.TestCase):
         self.assertEqual(out["who"], "Bass")
         self.assertEqual(out["ops"], 4)
         self.assertEqual(self.song.tracks[1].mixer_device.volume.value, 0.5)
-        self.assertEqual(self.song.tracks[1].clip_slots[0].fired, 1)
+        # The slot really fired: Bass is playing its first clip.
+        self.assertEqual(self.song.tracks[1].playing_slot_index, 0)
+        self.assertTrue(self.song.tracks[1].clip_slots[0].clip.is_playing)
 
     def test_only_named_results_come_back(self):
         out = self.run_ops([{"op": "get", "path": "song.tempo"}])

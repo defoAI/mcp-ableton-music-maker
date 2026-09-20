@@ -1,11 +1,25 @@
-"""Load the Remote Script under a plain interpreter, with Live stubbed.
+"""Load the Remote Script under a plain interpreter, against the fake Live.
 
 Live's own Python is the only place the script normally runs. Here
-`_Framework.ControlSurface` and `Live` are stand-ins, and `schedule_message`
-puts callbacks on a queue the test drains by hand with `tick()`, so the
-executor's slices, the clock tick and the socket drain run deterministically.
-The script is exec'd from source, which also proves it still parses outside
-Live. Python 3 runs the tests; the script itself stays 2.7-compatible.
+`_Framework.ControlSurface` is a stand-in and `Live` is
+`fake_live.live_module()`, but `song()` and `application()` return the real
+model from `fake_live` — a set that a track created is really in, a note
+added is really read back from. `schedule_message` puts callbacks on a queue
+the test drains by hand with `tick()`, so the executor's slices, the clock
+tick and the socket drain run deterministically. The script is exec'd from
+source, which also proves it still parses outside Live. Python 3 runs the
+tests; the script itself stays 2.7-compatible.
+
+    ns = harness.load()              # a fresh default_set() behind it
+    script = harness.instance(ns)
+    song = script.song()             # fake_live.Song
+    script._dispatch("create_midi_track", {}, None)
+    song.tracks[-1].name             # really there
+
+`load(song=...)` puts a set of the test's own making behind the script;
+`load(latency=...)` gives the model Live's per-call cost (see
+`fake_live.LatencyTable`), which is off by default so the 94 script tests
+stay fast.
 """
 import io
 import os
@@ -13,21 +27,35 @@ import sys
 import types
 import collections
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import fake_live  # noqa: E402
+
 SCRIPT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "AbletonMusicMaker_Remote_Script", "__init__.py")
 
+# The set the next FakeSurface picks up. `load()` sets it; the surface is
+# built later, by the script's own constructor, and has no other way to be
+# told which set it is looking at.
+_NEXT_SONG = []
+
 
 class FakeSurface(object):
-    """What the script asks of Live's ControlSurface, recorded and driven."""
+    """What the script asks of Live's ControlSurface, recorded and driven.
+
+    `song()` and `application()` are the fake Live; everything else is the
+    part of ControlSurface the script uses, with `schedule_message` turned
+    into a queue the test drains.
+    """
 
     def __init__(self, c_instance=None):
         self.logged = []
         self.shown = []
         self.scheduled = collections.deque()   # (due_tick, callback)
         self.now_tick = 0
-        self._song_obj = FakeSong()
-        self._app_obj = FakeApplication()
+        self._song_obj = _NEXT_SONG.pop() if _NEXT_SONG else fake_live.default_set()
+        self._app_obj = self._song_obj._application
 
     def log_message(self, message):
         self.logged.append("%s" % message)
@@ -53,6 +81,12 @@ class FakeSurface(object):
         ran = 0
         for _ in range(n):
             self.now_tick += 1
+            # Live's tick is 100 ms; on a driven clock the test's time moves
+            # with it, so the transport, the tick sampler and the latency
+            # table all see the same now.
+            clock = self._song_obj._clock
+            if clock.driven:
+                clock.advance(fake_live.TICK_S)
             due = [c for (t, c) in self.scheduled if t <= self.now_tick]
             self.scheduled = collections.deque((t, c) for (t, c) in self.scheduled if t > self.now_tick)
             for cb in due:
@@ -60,61 +94,64 @@ class FakeSurface(object):
                 ran += 1
         return ran
 
-
-class FakeSong(object):
-    def __init__(self):
-        self.is_playing = False
-        self.tempo = 120.0
-        self.current_song_time = 0.0
-        self.signature_numerator = 4
-        self.signature_denominator = 4
-        self.tracks = []
-        self.scenes = []
-        self.return_tracks = []
-        self.master_track = types.SimpleNamespace(name="Master")
-        self.clip_trigger_quantization = 4
-
-    def begin_undo_step(self):
-        pass
-
-    def end_undo_step(self):
-        pass
-
-    def get_current_beats_song_time(self):
-        bpb = self.signature_numerator
-        return types.SimpleNamespace(bars=int(self.current_song_time // bpb) + 1,
-                                     beats=int(self.current_song_time % bpb) + 1)
+    def run_until(self, done, limit=400):
+        """Tick until `done()` is true, or fail. For generators the executor
+        spreads over ticks."""
+        for _ in range(limit):
+            if done():
+                return True
+            self.tick()
+        return done()
 
 
-class FakeApplication(object):
-    def get_major_version(self):
-        return 12
+def two_track_set(clips=False):
+    """Kick and Bass over two named scenes — a real set, not a stub.
+    `clips=True` puts a four-bar clip in every slot, so firing a scene is
+    something the set can be asked about afterwards."""
+    song = fake_live.Song(scenes=2)
+    for name in ("Kick", "Bass"):
+        song.create_midi_track()
+        song.tracks[-1].name = name
+    song.scenes[0].name = "Intro · 8"
+    song.scenes[1].name = "Drop · 8"
+    if clips:
+        for t in song.tracks:
+            for i, slot in enumerate(t.clip_slots):
+                slot.create_clip(16.0)
+                slot.clip.name = "%s %d" % (t.name, i + 1)
+    return song
 
-    def get_minor_version(self):
-        return 4
 
-    def get_bugfix_version(self):
-        return 6
+def load(bind=False, song=None, version=(12, 4, 6), latency=None, clock=None):
+    """The script's namespace with Live stubbed by the model. `bind=False`
+    keeps the constructor from opening a real socket: the class is returned
+    and the test builds an instance with `instance(ns)`.
 
+    `song` puts a set of the caller's making behind the script (default: a
+    fresh `default_set()`); `latency` a `fake_live.LatencyTable` so calls
+    cost what they cost in Live (default: free); `clock` a wall clock for a
+    test that runs on real time (a real socket, a real ticker thread) rather
+    than the driven one the rest use."""
+    song = song if song is not None else fake_live.default_set(version)
+    song._clock = clock if clock is not None else fake_live.DrivenClock()
+    if latency is not None:
+        latency.clock = song._clock
+    song._latency = latency
+    del _NEXT_SONG[:]
+    _NEXT_SONG.append(song)
 
-def load(bind=False):
-    """The script's namespace with Live's modules stubbed. `bind=False` keeps
-    the constructor from opening a real socket: the class is returned and the
-    test builds an instance with `instance(ns)`."""
     framework = types.ModuleType("_Framework")
     surface = types.ModuleType("_Framework.ControlSurface")
     surface.ControlSurface = FakeSurface
     framework.ControlSurface = surface
     sys.modules["_Framework"] = framework
     sys.modules["_Framework.ControlSurface"] = surface
-    live = types.ModuleType("Live")
-    live.Song = types.SimpleNamespace(
-        Quantization=types.SimpleNamespace(q_bar=1, q_quarter=2, q_no_q=0))
-    sys.modules["Live"] = live
+    sys.modules["Live"] = fake_live.live_module(song)
     ns = {"__name__": "ableton_remote_script_under_test", "__file__": SCRIPT}
     with io.open(SCRIPT, encoding="utf-8") as handle:
         source = handle.read()
     exec(compile(source, SCRIPT, "exec"), ns)
+    ns["_fake_song"] = song
     return ns
 
 
