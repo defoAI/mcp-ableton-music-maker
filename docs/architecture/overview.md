@@ -351,6 +351,74 @@ What cannot be containerised: the Remote Script. `docker compose --profile insta
 installer with the User Library bind-mounted; Live still has to be restarted and the control
 surface selected by hand.
 
+## The fake Live (`tests/remote_script/fake_live.py`, `scripts/fake-live.py`)
+
+The test suite has a Live in it. Not a stub that returns canned JSON — a **Live Object
+Model** the real Remote Script runs against, so a green suite means the set was really
+built, not that the right commands were sent to nobody.
+
+**The model.** `tests/remote_script/fake_live.py` is Song, Track, ClipSlot, Clip, Device,
+RackDevice/Chain/DrumPad, DeviceParameter, MixerDevice, Scene, CuePoint, AutomationEnvelope,
+MidiNote, Groove/GroovePool, both Views, Browser/BrowserItem and Application, with Live's
+semantics where the script depends on them: sequences are tuples, `set_notes` adds,
+`get_notes` and `get_notes_extended` take their arguments in different orders, every track
+has one clip slot per scene, a return gives every track a send, a parameter outside its
+range raises, `set_or_delete_cue` toggles at the play position. `default_set()` is what a new
+Live set is: two MIDI tracks, two audio, two returns, eight scenes, 120 BPM.
+
+**The script, not a copy of it.** `harness.py` puts the model behind the real script —
+`song()` and `application()` are the model, `sys.modules["Live"]` is `live_module()` — and
+`scripts/fake-live.py` adds the two things Live adds: the script's **own** socket server
+(nothing here reimplements the protocol) and a main thread that calls back every 100 ms.
+
+**The tick is Live's.** 100.0 ms, measured 2026-09-20 on Live 12.4.6 through
+`ableton-music-maker --check`: `period_ms 100.0, jitter_ms 0.24` over 211 samples, the same
+period decision 0010 recorded over 600. The script's `_TickSampler` then reports Live-like
+figures, so `get_script_info.tick` and the clock channel's rate are testable with no Live
+open. `--tick-ms` overrides it for a fast run and the reply says so.
+
+**A call costs what it costs in Live.** `LATENCY_12_4_6` is a per-call table, and every row
+is a measurement with its source stamped on it: `Browser.load_item` 839 ms typical /
+1411 ms worst (#43's activity log, #45's device loads under stress), `Song.create_scene`
+68 ms, `Song.delete_track` 75–110 ms, `ClipSlot.create_clip` 5.4 ms, `Clip.set_notes`
+0.5 ms. The executor's slice budget then spreads work over ticks as in Live — four tracks
+with instruments come back in four slices — `main_ms` is real, and a slice over 25 ms lands
+in the log as it would in `Log.txt`. **Calls nobody has measured charge nothing and are
+named** in `LATENCY_UNMEASURED` (`Song.create_midi_track` among them: #43's 0.25 s figure is
+a round trip, not main-thread time), so the gap is visible in
+`scripts/fake-live.py --latency-report` rather than quietly filled with a guess.
+
+**What it is not.** No audio — meters read what a test put there. No rendering. No real
+browser index: a couple of dozen items, not Live's library. No Max for Live. No plug-ins.
+Anything that depends on sound is a real-Live check, always. `TheModelIsNotLive` in
+`tests/remote_script/test_live_semantics.py` pins each of those as a test, so the limits are
+executable rather than a paragraph nobody reads.
+
+**Isolation is the one deliberate divergence.** `--set-per-connection` (the default) gives
+each connecting client its own `default_set()`, so tests running in parallel inside one test
+binary cannot collide. Live is not like that: Live has one set and one main thread, and the
+event channels and scheduled cues run on that thread rather than on a socket. So in
+per-connection mode those channels read the first connection's set, and a `subscribe` from
+any other connection is **refused**, naming `--shared-set`, rather than answered about a set
+it is not looking at. `--shared-set` is one set for every client, which is what Live is, and
+is what the end-to-end run and the latency runs use.
+
+**Debugging, and failing on purpose.** `--record FILE` writes the wire as it went, one JSON
+line per request and per reply; `--script-log FILE` collects the script's own log lines
+(Live's `Log.txt`, slow slices included); `--die-on COMMAND` and `--die-after N` make Live
+go away mid-session, which is #45 as it actually happened, so the resume path is testable;
+`--slow CALL=MS` gives a call a cost, marked `NOT MEASURED` everywhere it is reported. On
+exit it prints a readout — commands, worst `main_ms`, slices, errors, what each Live call was
+charged — to put beside `scripts/live-latency.sh` against a real Live.
+
+**Keeping it honest.** The fake is checked against the real Live three ways: the conformance
+test (`scripts/live-api-surface.py` reads every member the script touches out of it by AST,
+and the model must have each with the right shape), the transcript differential
+(`scripts/live-transcript.sh` records a fixed script against a real Live and a test replays
+it against the fake, diffing field by field), and the suite itself —
+`ABLETON_TARGET=live cargo test -- --test-threads=1` runs every converted suite against Live
+instead of the fake. The rules for keeping the two in step are in `CLAUDE.md`.
+
 ## CI (`.github/workflows/ci.yml`)
 
 Two jobs, both on macOS, because that is the only platform the product ships for

@@ -136,6 +136,28 @@ Count the tools before quoting a total; the snapshot in
 | Port | 9877, bound to `0.0.0.0` — [decision 0003](../decisions/0003-remote-script-bind-address.md) |
 | Authentication on the socket | None |
 
+## What is proven against what
+
+The suite runs against a **fake Live** — the real Remote Script on a Live Object Model, on
+Live's measured 100 ms tick ([architecture note](../architecture/overview.md#the-fake-live-testsremote_scriptfake_livepy-scriptsfake-livepy)).
+That covers everything the Live API can be asked about. It cannot cover what the Live API
+cannot tell you.
+
+| | Proven against the fake | Needs a real Live |
+|---|---|---|
+| Building: tracks, clips, notes, sections, the Arrangement, the mixer, sends, devices | ✅ the set is read back and asserted | a device this fake's browser does not have |
+| The wire: framing, ids, overlapping requests, errors, the handshake, `--check` | ✅ the script's own socket server | — |
+| The clock: tick period, the clock/levels/changes channels, cue lateness | ✅ on Live's measured tick | the jitter of a busy set |
+| What a call costs Live (`main_ms`, slices, slow slices) | ✅ off the measured table | every figure in that table, and the calls it has no row for |
+| Live going away mid-command, and the resume path | ✅ `--die-on` | that Live still dies the same way |
+| **Sound**: `capture_mix` and its measurements, meter readings, anything audible | ❌ there is no audio | **always** |
+| **Rendering / export** | ❌ | **always** |
+| The real browser index, Packs, Max for Live, plug-ins | ❌ a couple of dozen items | **always** |
+| That Live's API behaves as the model says | the conformance test proves the members exist | the transcript differential is what proves the behaviour |
+
+`ABLETON_TARGET=live cargo test -- --test-threads=1` runs the whole suite against a real
+Live instead of the fake — the same tests, the same assertions. It builds in the open set.
+
 ## Local data
 
 | What | Default | Switch | Where |
