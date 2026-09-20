@@ -47,7 +47,7 @@ fn text(result: &rmcp::model::CallToolResult) -> String {
 async fn full_stack_over_stdio() {
     // One shared set: this is the server the way a producer runs it, and a
     // real Live is one set.
-    let live = spawn_fake_live(&["--shared-set", "--latency", "none"]);
+    let live = spawn_fake_live(&["--shared-set", "--latency", "none", "--quiet"]);
     let state_dir = tempfile::tempdir().unwrap();
 
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_ableton-music-maker"));
@@ -374,7 +374,7 @@ async fn status_reports_paths_and_no_uploads() {
 
 #[tokio::test]
 async fn check_reports_live_and_exits_by_script_state() {
-    let live = spawn_fake_live(&["--shared-set", "--latency", "none"]);
+    let live = spawn_fake_live(&["--shared-set", "--latency", "none", "--quiet"]);
     let state_dir = tempfile::tempdir().unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ableton-music-maker"))
         .arg("--check")
@@ -403,9 +403,18 @@ async fn check_reports_live_and_exits_by_script_state() {
     );
     assert_eq!(report["live"]["version"], "12.4.6");
     assert_eq!(report["bind_is_loopback"], true);
-    // The tick the script measured of the fake's own clock — Live's 100 ms.
+    // The script measured the fake's own clock and reported it, the way it
+    // reports Live's. The fake aims at Live's 100 ms, but a loaded CI
+    // runner can stretch a Python ticker thread well past that, so this
+    // asserts the shape — a tick, in the right order — not the figure. What
+    // Live's tick actually is, is a real-Live check
+    // (`ableton-music-maker --check`, and #53 section E).
     let period = report["tick"]["period_ms"].as_f64().expect("a tick period");
-    assert!((period - 100.0).abs() < 20.0, "tick was {period} ms");
+    assert!(
+        (50.0..500.0).contains(&period),
+        "the tick was {period} ms, which is not a tick"
+    );
+    assert!(report["tick"]["samples"].as_u64().unwrap_or(0) > 0, "{report}");
     assert_eq!(report["session"]["tempo"], 120.0);
     assert_eq!(report["session"]["track_count"], 4);
 

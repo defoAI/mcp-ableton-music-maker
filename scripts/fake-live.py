@@ -524,14 +524,15 @@ def main(argv=None):
             log("disconnect: %s" % e)
         slow = [line for line in script.logged if "slow slice" in line]
         errors = sum(row[3] for row in wire.by_command.values())
-        if args.quiet and not errors and not slow:
-            return 0
-        sys.stderr.write(wire.report(surface.primary._latency) + "\n")
-        sys.stderr.write("  slow slices (over %s ms, as Live's Log.txt records them): %d\n"
-                         % (script.SLOW_SLICE_MS, len(slow)))
-        for line in slow[:10]:
-            sys.stderr.write("    " + line + "\n")
-        sys.stderr.flush()
+        # A quiet run that went well says nothing. One that did not still
+        # prints what every command cost and which slice held Live.
+        if not args.quiet or errors or slow:
+            sys.stderr.write(wire.report(surface.primary._latency) + "\n")
+            sys.stderr.write("  slow slices (over %s ms, as Live's Log.txt records them): %d\n"
+                             % (script.SLOW_SLICE_MS, len(slow)))
+            for line in slow[:10]:
+                sys.stderr.write("    " + line + "\n")
+            sys.stderr.flush()
         wire.close()
     return 0
 
