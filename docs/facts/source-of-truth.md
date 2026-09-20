@@ -37,6 +37,8 @@ Paths are relative to the repository root.
 | How many MCP tools there are | `src/tools.rs` — one `#[tool(name = …)]` per tool; the unit test `tool_count_and_schema_defaults` pins the count | `grep -c '#\[tool(name = ' src/tools.rs` |
 | Which tools are the artist's surface and which are advanced | `CORE_TOOLS` in `src/tools.rs` (decision 0006); every other tool is served as `adv_<name>`; `tests/artist.rs` pins it | `sed -n '/^pub const CORE_TOOLS/,/^\];/p' src/tools.rs` |
 | Which tools exist and what they do | The `#[tool]` doc comments in `src/tools.rs` — they *are* the descriptions the client shows | `cargo test` lists them; the README table is a copy |
+| What the four copy-and-paste prompts say | `prompts/*.md` — one file per prompt, the body below the `---` is what a producer copies. `tests/prompts.rs` fails the build when a tool-shaped name in them is not served in the spelling used, and `app/src-tauri/src/prompts.rs` embeds the same files, so the Mac app, a Claude Code user and the test all read one source | `cargo test --test prompts` |
+| How many test suites there are | `tests/*.rs` plus the crate's own unit tests; the count in CLAUDE.md is a copy and `scripts/check-docs-facts.sh` fails when it drifts | `echo $(( $(ls tests/*.rs \| wc -l) + 1 ))` |
 | Which Remote Script commands exist | `tools::ALL_REMOTE_COMMANDS` in `src/tools.rs` — the one place the list is written. The script declares nothing by hand: it reads its own dispatch back at import (`_served_commands`), and the test `the_servers_command_list_and_the_scripts_dispatch_are_the_same_set` fails the build if a name here has no handler, or a handler has no name here | `sed -n '/^pub const ALL_REMOTE_COMMANDS/,/^\];/p' src/tools.rs` |
 | The Remote Script version the server expects | `SCRIPT_VERSION` in the same file — the binary reads it out of the embedded source at startup (`handshake::expected_remote_script_version`) | `grep '^SCRIPT_VERSION' AbletonMusicMaker_Remote_Script/__init__.py` |
 | The wire protocol version | `PROTOCOL_VERSION` in the same file | |
@@ -103,6 +105,7 @@ matches on them.
 | | Verified value | Source |
 |---|---|---|
 | MCP tools | **105** | `src/tools.rs` |
+| Test suites | **19** | `tests/*.rs` plus the crate's unit tests |
 | Remote Script commands | **98** | `ALL_REMOTE_COMMANDS` |
 | Remote Script version | **1.34.2** | `SCRIPT_VERSION` |
 | Server version | **2.0.0** | `Cargo.toml` |

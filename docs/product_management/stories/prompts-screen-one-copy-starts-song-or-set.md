@@ -9,7 +9,7 @@ imposes, and that its first job is to ask me what I want to make.
 ## Details
 | Field | Value |
 |-------|-------|
-| Status | `Draft` |
+| Status | `Done` |
 | Surface | [Decision 0006](../../decisions/0006-one-artist-surface-raw-layer-marked-advanced.md): adds **no tool**. It is app UI plus four markdown files; the prompts name only tools that already exist, in the artist's spelling, and say `adv_` where they mean the raw layer |
 | Priority | P1 — the gap between "Setup complete" and the first note is where a new producer gives up; Setup already ends with nothing to do next |
 | Size | M — four prompt files (the real work is the wording), one screen, one Tauri command, one conformance test |
@@ -113,55 +113,55 @@ uses the existing surface.
 ## Acceptance Criteria
 
 ### The prompts
-- [ ] **AC1 — four files.** `prompts/make-a-song.md`,
+- [x] **AC1 — four files.** `prompts/make-a-song.md`,
       `prompts/prepare-a-performance-set.md`, `prompts/finish-what-i-have.md`,
       `prompts/build-around-my-idea.md`, each with a title line, a one-line "when to use
       this", and the prompt body, verbatim as it appears in the prototype.
-- [ ] **AC2 — every prompt opens with the interview.** Each begins with `get_context`, a
+- [x] **AC2 — every prompt opens with the interview.** Each begins with `get_context`, a
       one-line readout of what is already in the set, and a short round of questions with a
       default offered for each. No prompt writes a note before the producer has answered.
-- [ ] **AC3 — the song prompt refines until the producer stops it.** `make-a-song.md`
+- [x] **AC3 — the song prompt refines until the producer stops it.** `make-a-song.md`
       contains the loop: play the section, change, `capture_mix` again, report what moved,
       ask; and the instruction never to call the mix finished. It ends at Cmd+S, not at
       "done".
-- [ ] **AC4 — the performance prompt keeps composing while it plays.**
+- [x] **AC4 — the performance prompt keeps composing while it plays.**
       `prepare-a-performance-set.md` instructs: prepare three or four sections only; build
       the next section from the row looping now and `add_to_song` it ahead of the playhead;
       announce it in one line before it sounds; always keep one unplayed section ready;
       `hold_section` rather than let the set grind round; never edit a clip sounding this
       phrase; never let it go silent.
-- [ ] **AC5 — the rules Live imposes are in the text**, once each and where they bite:
+- [x] **AC5 — the rules Live imposes are in the text**, once each and where they bite:
       `set_key` before notes (a fresh Live 12 set is C Major), launches land on the bar,
       plan two bars ahead, the Arrangement-take question is the producer's to answer, and
       Cmd+S is the producer's because the Live API cannot save.
-- [ ] **AC6 — artist spelling.** Prompts use `CORE_TOOLS` names and write `adv_` explicitly
+- [x] **AC6 — artist spelling.** Prompts use `CORE_TOOLS` names and write `adv_` explicitly
       where they mean the raw layer (`adv_cue`, `adv_keep_track_playing`,
       `adv_sample_folders`, `adv_get_library_status`).
-- [ ] **AC7 — every named tool exists.** A test extracts every tool-shaped name from
+- [x] **AC7 — every named tool exists.** A test extracts every tool-shaped name from
       `prompts/*.md` and fails if one is not served by `Server::tool_router()`, in the
       spelling used.
 
 ### The screen
-- [ ] **AC8 — a Prompts item in the app's navigation**, between Listen and Setup, showing
+- [x] **AC8 — a Prompts item in the app's navigation**, between Listen and Setup, showing
       the four prompts as a card rail with the selected prompt's full text below it.
-- [ ] **AC9 — copy.** One "Copy prompt" button per prompt, using the existing `copy()` path
+- [x] **AC9 — copy.** One "Copy prompt" button per prompt, using the existing `copy()` path
       (`app/src/app.js:422`) with its fallback, and a toast that says what to do next
       ("Copied. Paste it into Claude and answer its questions."). The prompt text is
       selectable for a manual copy.
-- [ ] **AC10 — honest state.** When no client is configured, or Live is not running, a
+- [x] **AC10 — honest state.** When no client is configured, or Live is not running, a
       banner says which call will fail first and links to Setup. Copying stays enabled.
-- [ ] **AC11 — no send button.** Nothing on the screen claims to talk to Claude.
-- [ ] **AC12 — the text shown is the file.** The UI renders what
+- [x] **AC11 — no send button.** Nothing on the screen claims to talk to Claude.
+- [x] **AC12 — the text shown is the file.** The UI renders what
       `app/src-tauri` returns from `include_str!`, not a second copy of the prompt in JS.
-- [ ] **AC13 — the screen works with Live closed and no client configured**, because a
+- [x] **AC13 — the screen works with Live closed and no client configured**, because a
       producer may be reading it before installing anything.
 
 ### No Regressions
-- [ ] **AC14:** The server is untouched: no new tool, no changed description, no change to
+- [x] **AC14:** The server is untouched: no new tool, no changed description, no change to
       `INSTRUCTIONS`, `SCRIPT_VERSION` unchanged, `CORE_TOOLS` unchanged.
-- [ ] **AC15:** Nothing new is written to disk or to the activity log when a prompt is
+- [x] **AC15:** Nothing new is written to disk or to the activity log when a prompt is
       copied; `tests/activity.rs` and `tests/local_only.rs` pass unchanged.
-- [ ] **AC16:** The other five screens and the menu-bar popover behave as before; `go()`
+- [x] **AC16:** The other five screens and the menu-bar popover behave as before; `go()`
       still switches screens and the Listen screen still starts and stops.
 
 ## Affected Files

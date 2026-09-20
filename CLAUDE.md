@@ -14,7 +14,7 @@ Rust MCP server that lets Claude drive Ableton Live. Two processes:
 ## Commands
 
 ```bash
-cargo test                                   # 18 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, fake-live-wire, stdio
+cargo test                                   # 19 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, prompts, fake-live-wire, stdio
 python3 scripts/check-script-helpers.py      # the Remote Script's pure helpers, against a stub Live
 scripts/test-remote-script.sh                # the Remote Script's own suite: tick, duplex, sockets, ops, streams, cues, every command, the fake Live
 scripts/fake-live.py                         # a Live that is not Live: the real script + the model on a real socket, port on stdout
@@ -27,6 +27,7 @@ scripts/live-differential.py --record-fixture   # …and keep the real Live's re
 scripts/live-lom-sweep.py                    # against a running Live: describe + read every member, in scope against out of scope
 scripts/live-lom-sweep.py --record-fixture   # …and keep it, so the in-scope check runs with no Live
 ABLETON_TARGET=live cargo test -- --test-threads=1   # the whole suite against a real Live (builds in the open set)
+cd app/src && node --test *.test.mjs         # the Mac app's UI: Listen, the visual, the Prompts screen
 cd app && npm run dev                        # the Mac app against this checkout (Tauri 2)
 cargo clippy --all-targets -- -D warnings    # CI runs this
 cargo fmt --all
@@ -52,6 +53,7 @@ src/state.rs           state_dir / activity_dir / sessions_dir — the only plac
 src/install.rs         installer logic (Library.cfg discovery, install with .bak)
 src/app.rs             startup handshake, heartbeat, stdio serve, shutdown, --status, --check
 app/                   the Mac companion app (Tauri 2): src-tauri/ links this crate, src/ is the UI; src-tauri/src/listen/ is the process tap of Live (Objective-C + Rust, decision 0008)
+prompts/               the four prompts a producer copies into Claude — markdown, no tool; app/src-tauri/src/prompts.rs embeds them, tests/prompts.rs holds them against the tool list
 src/notes.rs           compact note forms (csv, step strings, patterns, tiling) → plain Note objects
 src/audio.rs           WAV/AIFF reader and the capture measurements (peak, RMS per bar, crest, octave bands, leading silence, clipping)
 src/performance.rs     performance state, bar arithmetic, cue resolution (bars → beats, silence check), readout text
@@ -71,7 +73,7 @@ scripts/live-api-surface.py  every Live API member the script touches, read out 
 scripts/live-differential.py the same commands to a real Live and to the fake, every field compared
 scripts/live-lom-sweep.py    describe + read every member on both, split into what the script uses and what it does not
 tests/fixtures/        a real Live's replies, recorded: live-transcript-<version>.json and live-lom-<version>.json
-tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, samples.rs, local_only.rs, activity.rs, fake_live_wire.rs, stdio_integration.rs, common/
+tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, samples.rs, local_only.rs, activity.rs, prompts.rs, fake_live_wire.rs, stdio_integration.rs, common/
 docker/                verify-image.sh, Claude Desktop example config
 .github/workflows/ci.yml   fmt, clippy, test, docs facts; the Mac app and its .dmg — both jobs on macOS, nothing on Linux
 ```

@@ -14,6 +14,7 @@
       <button data-go="overview" aria-current="page"><span class="glyph">◉</span>Overview</button>
       <button data-go="activity"><span class="glyph">≡</span>Activity <span class="badge num" id="actbadge" hidden></span></button>
       <button data-go="listen"><span class="glyph">∿</span>Listen <span class="led live" id="listen-led" hidden></span></button>
+      <button data-go="prompts"><span class="glyph">❝</span>Prompts</button>
       <button data-go="setup"><span class="glyph">⇩</span>Setup <span class="badge" id="setupbadge" hidden>needs you</span></button>
       <button data-go="settings"><span class="glyph">⚙</span>Settings</button>
     </nav>
@@ -100,6 +101,33 @@
           <p class="note">The ranges are named the way people talk about a mix, so what you see is what you can say to Claude. Each number is that range’s share of the whole, in dB; 0 dB would be all of it. Nothing here is recorded: the audio is measured in memory and thrown away.</p>
         </div>
       </div>
+    </section>
+
+    <!-- PROMPTS -->
+    <section class="screen" id="s-prompts" hidden>
+      <div class="head"><h2>Prompts</h2><span class="sub">Copy one, paste it into Claude. It asks you the rest.</span></div>
+      <div class="pbanner" id="pbanner" hidden></div>
+      <div>
+        <div class="eyebrow">Pick where you are</div>
+        <div class="prail" id="prail"></div>
+      </div>
+      <div class="pdetail">
+        <div class="pdhead">
+          <h3 id="p-title">—</h3>
+          <span class="why" id="p-why"></span>
+          <span class="pactions"><button class="btn small primary" data-act="copyprompt">Copy prompt</button></span>
+        </div>
+        <pre class="prompt" id="p-text" tabindex="0"></pre>
+        <div>
+          <div class="eyebrow">What happens after you paste</div>
+          <div class="psteps" id="p-steps"></div>
+        </div>
+        <div class="pdfoot">
+          <span>This text lives in <span class="path" id="p-path"></span> — the app ships the same file the repository does.</span>
+          <span id="p-len"></span>
+        </div>
+      </div>
+      <p class="note">The app never talks to Claude: your client starts the server, and copying is all this screen does. Nothing is recorded when you copy.</p>
     </section>
 
     <!-- SETUP -->

@@ -39,6 +39,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 COPY src/ ./src/
 COPY tests/ ./tests/
 COPY AbletonMusicMaker_Remote_Script/ ./AbletonMusicMaker_Remote_Script/
+# The prompts are not in the binary — the Mac app embeds them — but
+# tests/prompts.rs holds them against the tool list, so the test stage needs them.
+COPY prompts/ ./prompts/
 COPY README.md ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \

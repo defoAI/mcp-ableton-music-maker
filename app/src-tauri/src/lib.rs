@@ -7,6 +7,7 @@
 mod activity;
 mod clients;
 pub mod listen;
+mod prompts;
 mod settings;
 mod status;
 mod tray;
@@ -123,6 +124,13 @@ fn reveal_file(path: String) -> Result<(), String> {
 #[tauri::command]
 fn remove_legacy_client(app: AppHandle) -> Result<Value, String> {
     clients::remove_legacy(&app)
+}
+
+/// The four prompts the Prompts screen shows, read out of the files the
+/// binary embeds. It reaches nothing: no Live, no disk, no network.
+#[tauri::command]
+fn prompts() -> Value {
+    prompts::list()
 }
 
 #[tauri::command]
@@ -295,6 +303,7 @@ pub fn run() {
             list_captures,
             play_file,
             reveal_file,
+            prompts,
             activity_sessions,
             activity_lines,
             clear_session,

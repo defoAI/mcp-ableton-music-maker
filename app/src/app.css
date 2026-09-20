@@ -250,3 +250,38 @@ input[type="text"] { font: inherit; padding: 4px 8px; border: 1px solid var(--li
   .meters canvas { height: 130px; }
   .words { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* ── Prompts: four cards, and the whole of the selected one ──────────────── */
+.pbanner { display: flex; align-items: center; gap: 12px; border-left: 3px solid var(--warn); background: var(--warn-soft); padding: 10px 14px; border-radius: 0 var(--radius) var(--radius) 0; color: var(--ink); }
+.pbanner[hidden] { display: none; }
+.pbanner > span { flex: 1; min-width: 0; }
+.pbanner .btn { flex: none; background: var(--win); }
+
+.prail { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.pcard { display: grid; gap: 4px; align-content: start; text-align: left; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--win); cursor: default; }
+.pcard:hover { background: var(--panel); }
+.pcard[aria-pressed="true"] { border-color: var(--accent); background: var(--sel); }
+.pcard .t { font-weight: 600; }
+.pcard .d { color: var(--ink-2); font-size: 12px; }
+.pcard .m { color: var(--ink-3); font-size: 11px; margin-top: 2px; }
+
+.pdetail { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: grid; gap: 14px; }
+.pdhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.pdhead h3 { font-size: 15px; }
+.pdhead .why { color: var(--ink-2); font-size: 12px; }
+.pdhead .pactions { margin-left: auto; display: flex; gap: 8px; }
+.prompt { max-height: 340px; white-space: pre-wrap; word-break: break-word; }
+
+.psteps { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.pstep { border: 1px solid var(--line); border-radius: var(--radius); padding: 11px 13px; display: grid; gap: 5px; align-content: start; }
+.pstep .n { font-weight: 600; }
+.pstep .s { color: var(--ink-2); font-size: 12px; }
+.tchips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 2px; }
+.tchip { font-family: var(--mono); font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line-strong); color: var(--ink-2); background: var(--panel); }
+
+.pdfoot { display: flex; gap: 12px; flex-wrap: wrap; color: var(--ink-3); font-size: 11px; border-top: 1px solid var(--line); padding-top: 10px; }
+.pdfoot span:last-child { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 900px) {
+  .prail { grid-template-columns: repeat(2, 1fr); }
+}
