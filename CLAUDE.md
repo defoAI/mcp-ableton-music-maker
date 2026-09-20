@@ -16,8 +16,13 @@ Rust MCP server that lets Claude drive Ableton Live. Two processes:
 ```bash
 cargo test                                   # 17 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, stdio
 python3 scripts/check-script-helpers.py      # the Remote Script's pure helpers, against a stub Live
-scripts/test-remote-script.sh                # the Remote Script's own suite: tick, duplex, sockets, ops, streams, cues
+scripts/test-remote-script.sh                # the Remote Script's own suite: tick, duplex, sockets, ops, streams, cues, every command, the fake Live
+scripts/fake-live.py                         # a Live that is not Live: the real script + the model on a real socket, port on stdout
+scripts/fake-live.py --latency-report        # what a Live call costs, and which calls nobody has measured
 scripts/live-latency.sh                      # against a running Live: measures the tick, the round trip and every phase
+scripts/live-transcript.sh                   # against a running Live: records tests/fixtures/live-transcript-<version>.json
+python3 scripts/live-transcript.py --diff REAL.json FAKE.json   # the field-by-field differential
+ABLETON_TARGET=live cargo test -- --test-threads=1   # the whole suite against a real Live (builds in the open set)
 cd app && npm run dev                        # the Mac app against this checkout (Tauri 2)
 cargo clippy --all-targets -- -D warnings    # CI runs this
 cargo fmt --all
@@ -56,7 +61,9 @@ src/transition.rs      a jump's transition (tempo, retime, crossfade, fill, drop
 src/sound.rs           the sound vocabulary: words → rack macros, the per-instrument table, or a parameter name — pure
 src/sets.rs            export_set / import_set: a rebuildable document under state_dir()/sets, written only on request
 src/arrange.rs         the artist-facing tools: arrange (bars), feel (one tool, one undo), set_key, create_return, clear_captures
-tests/remote_script/   the Remote Script's suite (Python, no Live): harness.py stubs _Framework, FakeSurface.tick() drives schedule_message
+tests/remote_script/   the Remote Script's suite (Python, no Live): fake_live.py is the Live Object Model, harness.py runs the script against it, FakeSurface.tick() drives schedule_message
+scripts/fake-live.py   the model + the real script on the script's own socket, on Live's 100 ms tick — what the Rust suites run against
+scripts/live-api-surface.py  every Live API member the script touches, read out of it by AST
 tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, samples.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
 docker/                verify-image.sh, Claude Desktop example config
 .github/workflows/ci.yml   fmt, clippy, test, docs facts; the Mac app and its .dmg — both jobs on macOS, nothing on Linux
@@ -100,6 +107,43 @@ docker/                verify-image.sh, Claude Desktop example config
   if a name here has no handler, or a handler has no name here. Every tool still checks its
   command via `require(live, cmd)`; at handshake the server uses its own list when Live runs
   the script version the binary embeds, and the script's derived list only when they differ.
+- **The fake Live moves with the real one, always.** `tests/remote_script/fake_live.py` is
+  the Live Object Model the whole test suite runs against, and a fake that drifts is worse
+  than no fake: it makes a green suite a lie. So every change to the Remote Script, and
+  every new thing learned about Live, updates the model **in the same PR**:
+  - A handler that touches a Live member the model lacks — a new property, a new method, a
+    new argument such as `ClipSlot.fire(record_length=…)` — is a **model gap**. Fix it in
+    `fake_live.py`. Never give the test an easier parameter, never stub the member out, and
+    never add it to `DELIBERATELY_ABSENT` unless a test needs the *fallback path* to run.
+  - A new Remote Script command means a case in
+    `tests/remote_script/test_every_command.py` with the parameters a real session sends and
+    an assertion about **the set**, not the reply. The suite fails on a name in
+    `ALL_REMOTE_COMMANDS` with no case, in both directions.
+  - A Live behaviour the script now depends on — an argument order, what raises, what a write
+    snaps to — gets a case in `tests/remote_script/test_live_semantics.py`, with where the
+    fact came from (Cycling '74's LOM reference, or a measurement in this repo).
+  - `scripts/live-api-surface.py` reads every Live member the script touches out of it by
+    AST, and `test_live_api_conformance.py` fails when one is missing from the model or has
+    the wrong shape. That check is the floor, not the ceiling: it proves the member exists,
+    not that it behaves.
+  - **Numbers are measured, never invented.** `fake_live.LATENCY_12_4_6` carries what a Live
+    call costs, and every row is stamped with the run it came from. A call nobody has timed
+    goes in `LATENCY_UNMEASURED` and charges nothing, so the gap is visible
+    (`scripts/fake-live.py --latency-report`) instead of quietly filled in. The same rule as
+    `brand-and-claims.md`: a figure without a source does not ship.
+  - **When the real Live is available, check the fake against it.**
+    `ABLETON_TARGET=live cargo test -- --test-threads=1` runs the whole suite against Live
+    instead of the fake — the same tests, the same assertions — and
+    `scripts/live-transcript.sh` re-records `tests/fixtures/live-transcript-<version>.json`,
+    which the differential replays against the fake and diffs field by field. Refresh that
+    fixture whenever `SCRIPT_VERSION` changes, and say in the PR that it was refreshed or
+    that it was not and why.
+  - What the fake is **not** is written down, in `docs/architecture/overview.md` and as tests
+    in `TheModelIsNotLive`: no audio, no rendering, no real browser index, no Max for Live,
+    and `--set-per-connection` is not Live (the Rust suite does not use it: every test gets
+    its own process with `--shared-set`, one set, as Live is). Anything that depends on
+    those is a real-Live check, always, and the issue says so rather than the suite
+    pretending.
 - **The Remote Script touches Live only from Live's main thread** (decision 0007). The
   socket is read *on* that thread, on Live's own 100 ms tick, not from a Python thread
   (`SOCKET_READER`, decision 0010); `_run_on_main` → `_dispatch` runs every command there. A

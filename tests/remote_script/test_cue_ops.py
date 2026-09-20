@@ -10,28 +10,16 @@ import unittest
 
 import harness
 from test_duplex import connect
-from test_generic import FakeTrack
-
-
-class FakeScene(object):
-    def __init__(self, name):
-        self.name = name
-        self.is_triggered = False
-        self.fired = 0
-
-    def fire(self):
-        self.fired += 1
+from harness import two_track_set
 
 
 class CueOps(unittest.TestCase):
     def setUp(self):
-        self.ns = harness.load()
+        self.ns = harness.load(song=two_track_set(clips=True))
         self.ns["SOCKET_READER"] = "main_thread_tick"
         self.script = harness.instance(self.ns)
         self.song = self.script.song()
-        self.song.tracks = [FakeTrack("Kick"), FakeTrack("Bass")]
-        self.song.scenes = [FakeScene("Intro · 8"), FakeScene("Drop · 8")]
-        self.song.is_playing = True
+        self.song.start_playing()
         self.song.current_song_time = 0.0
         self.script._live_version = "12.4.6"
         self.sock, self.client = connect(self.script, self.ns)
@@ -56,11 +44,12 @@ class CueOps(unittest.TestCase):
         self.song.current_song_time = 4.0
         self.script.tick(2)
         self.assertFalse(self.song.tracks[0].mute, "the ops ran early")
-        self.assertEqual(self.song.scenes[1].fired, 0)
+        self.assertEqual([t.playing_slot_index for t in self.song.tracks], [-1, -1])
         self.song.current_song_time = 8.0
         self.script.tick(2)
         self.assertTrue(self.song.tracks[0].mute, "the ops did not run on the beat")
-        self.assertEqual(self.song.scenes[1].fired, 1)
+        # The scene really fired: both tracks are playing their second clip.
+        self.assertEqual([t.playing_slot_index for t in self.song.tracks], [1, 1])
 
     def test_a_failing_op_inside_a_cue_does_not_stop_the_clock(self):
         self.schedule([{"beat": 4.0, "ops": [

@@ -9,33 +9,17 @@ import time
 import unittest
 
 import harness
+from harness import two_track_set
 from test_duplex import FakeSock, connect
-
-
-class FakeScene(object):
-    def __init__(self, name):
-        self.name = name
-        self.is_triggered = False
-
-
-class FakeTrack(object):
-    def __init__(self, name):
-        self.name = name
-        self.mute = False
-        self.solo = False
-        self.arm = False
-        self.playing_slot_index = -1
 
 
 class Streams(unittest.TestCase):
     def setUp(self):
-        self.ns = harness.load()
+        self.ns = harness.load(song=two_track_set())
         self.ns["SOCKET_READER"] = "main_thread_tick"
         self.script = harness.instance(self.ns)
         self.song = self.script.song()
-        self.song.tracks = [FakeTrack("Kick"), FakeTrack("Bass")]
-        self.song.scenes = [FakeScene("Intro · 8"), FakeScene("Drop · 8")]
-        self.song.is_playing = True
+        self.song.start_playing()
         self.sock, self.client = connect(self.script, self.ns)
 
     def subscribe(self, channels, **opts):
@@ -104,12 +88,12 @@ class Streams(unittest.TestCase):
     def test_a_stopped_transport_sends_one_last_clock_then_goes_quiet(self):
         self.subscribe(["clock"], clock_every_ms=0)
         self.script.tick(2)
-        self.song.is_playing = False
+        self.song.stop_playing()
         self.script.tick()
         count = len(self.events("clock"))
         self.script.tick(5)
         self.assertEqual(len(self.events("clock")), count, "a stopped transport kept sending")
-        self.song.is_playing = True
+        self.song.start_playing()
         self.script.tick()
         self.assertGreater(len(self.events("clock")), count, "it did not resume")
 
@@ -178,8 +162,9 @@ class Streams(unittest.TestCase):
 
     # ── the levels ─────────────────────────────────────────────────────────
     def test_levels_arrive_once_a_bar_in_lives_own_meter_scale(self):
-        self.script._meter_of = lambda track: 0.5
-        self.song.master_track = type("M", (), {"name": "Master"})()
+        # Real meters on the real set: the master and both tracks at 0.5.
+        for t in (self.song.master_track,) + self.song.tracks:
+            t._output_meter_level = 0.5
         self.subscribe(["levels"])
         self.script.tick(3)
         first = self.events("levels")
@@ -203,7 +188,8 @@ class Streams(unittest.TestCase):
     def test_adding_a_track_changes_the_count_and_the_new_row(self):
         self.subscribe(["changes"])
         self.script.tick(4)
-        self.song.tracks.append(FakeTrack("Pad"))
+        self.song.create_midi_track()
+        self.song.tracks[-1].name = "Pad"
         self.script.tick(4)
         paths = [c["path"] for e in self.events("changes") for c in e["changed"]]
         self.assertIn("song.tracks.count", paths)
@@ -217,9 +203,9 @@ class Streams(unittest.TestCase):
     def test_no_listener_is_ever_registered_on_anything(self):
         self.subscribe(["clock", "levels", "changes"])
         self.script.tick(10)
-        # A Live object would raise if the script called add_..._listener on
-        # it; these stubs have no such methods at all, so ten ticks of every
-        # channel passing proves the diff is reads only.
+        # The model has no add_..._listener anywhere, so ten ticks of every
+        # channel passing proves the diff is reads only. Registering one in
+        # Live is what deadlocked it during the first capture (#26).
         for t in self.song.tracks:
             self.assertFalse([a for a in dir(t) if "listener" in a])
 
@@ -230,7 +216,10 @@ class Streams(unittest.TestCase):
             @property
             def name(self):
                 raise RuntimeError("Live went away")
-        self.song.tracks.append(Exploding())
+        # Straight into the private list: Live's `tracks` is a tuple and
+        # nothing in the API can put a broken object there. The point is the
+        # tick surviving a read that raises, whatever raised it.
+        self.song._tracks.append(Exploding())
         self.script.tick(6)
         self.assertEqual(len(self.script.scheduled), 1, "the tick stopped re-arming")
 

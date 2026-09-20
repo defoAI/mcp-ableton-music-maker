@@ -1,9 +1,16 @@
 //! search_browser, clip settings, meters, automation, batch and build_song —
-//! through the real bodies with a recording bridge.
+//! through the real bodies against a real set.
+//!
+//! This is where #45 lives (`build_song` taking Live down on a ten-track
+//! burst), so it is the suite that most needed a Live behind it. The tools
+//! run against `scripts/fake-live.py` — the real Remote Script on the model,
+//! over a real socket — and every test asks the **set** what happened, not
+//! the reply. `FakeBridge` is kept only where a *failure* has to be produced
+//! that a healthy Live cannot give.
 
 mod common;
 
-use common::{is_error, server_with, text_of, FakeBridge};
+use common::{is_error, server_on_fake_live, server_with, text_of, FakeBridge, LiveSet};
 use mcp_ableton_music_maker::notes::NotesInput;
 use mcp_ableton_music_maker::tools::{
     self, AutomationTarget, BatchParams, BatchStep, BuildSongParams, LoadInstrumentParams,
@@ -27,70 +34,68 @@ fn sent_for(bridge: &FakeBridge, name: &str) -> Value {
 
 #[tokio::test]
 async fn search_lists_hits_with_uris() {
-    let bridge = FakeBridge::responding(json!({
-        "query": "analog bass", "category": "all", "total_matches": 2, "returned": 2, "truncated_walk": false,
-        "items": [
-            {"name": "Deep Sub Bass", "uri": "query:Synths#Analog:Deep", "path": "Instruments/Analog/Bass/Deep Sub Bass", "category": "instruments"},
-            {"name": "Analog Bass 2", "uri": "query:Synths#Analog:Bass2", "path": "Instruments/Analog/Bass/Analog Bass 2", "category": "instruments"}
-        ]
-    }));
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
     let p = SearchBrowserParams {
         queries: vec![],
         best: false,
         refresh: false,
-        query: "analog bass".into(),
+        query: "bass".into(),
         category: "all".into(),
         limit: 30,
     };
     let r = server
         .run(&tools::SEARCH_BROWSER, p, tools::search_browser_body)
         .await;
-    assert!(!is_error(&r));
+    assert!(!is_error(&r), "{}", text_of(&r));
     let t = text_of(&r);
-    assert!(
-        t.contains("2 matches for") && t.contains("uri: query:Synths#Analog:Deep"),
-        "{t}"
-    );
-    assert_eq!(bridge.sent()[0].1["query"], "analog bass");
+    // The hits are what walking Live's own browser found, and each carries
+    // the uri `load_instrument_or_effect` takes.
+    assert!(t.contains("matches for"), "{t}");
+    assert!(t.contains("uri: query:"), "{t}");
+    assert!(t.contains("Bass"), "{t}");
+    assert_eq!(bridge.last("search_browser").unwrap()["query"], "bass");
 }
 
 #[tokio::test]
 async fn load_reports_the_device_it_added() {
-    let bridge = FakeBridge::responding(json!({
-        "loaded": true, "item_name": "Analog", "track_name": "Bass", "uri": "query:x",
-        "devices_after": ["Analog", "Compressor"], "new_devices": [{"index": 0, "name": "Analog"}],
-        "loaded_device": {"index": 0, "name": "Analog"}
-    }));
-    let server = server_with(bridge.clone());
-    let p = LoadInstrumentParams {
-        track_index: 6,
-        uri: "query:x".into(),
-        kind: "track".into(),
-    };
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let track = set.build(&[("Bass", "midi", "")])[0];
+    bridge.clear();
+
     let r = server
         .run(
             &tools::LOAD_INSTRUMENT_OR_EFFECT,
-            p,
+            LoadInstrumentParams {
+                track_index: track as i64,
+                uri: "query:Synths#Analog".into(),
+                kind: "track".into(),
+            },
             tools::load_instrument_or_effect_body,
         )
         .await;
-    assert!(!is_error(&r));
+    assert!(!is_error(&r), "{}", text_of(&r));
     assert!(
-        text_of(&r).starts_with("Loaded 'Analog' as device 0 on track 6 ('Bass')"),
+        text_of(&r).starts_with(&format!(
+            "Loaded 'Analog' as device 0 on track {track} ('Bass')"
+        )),
         "{}",
         text_of(&r)
     );
+    // And the device is on the track, in Live.
+    assert_eq!(set.devices(track), vec!["Analog".to_string()]);
 }
 
 #[tokio::test]
 async fn clip_loop_needs_something_to_set_and_summarises() {
-    let bridge = FakeBridge::responding(
-        json!({"name": "Bass", "looping": true, "loop_start": 0.0, "loop_end": 8.0, "start_marker": 0.0, "end_marker": 8.0, "launch_mode_name": "trigger"}),
-    );
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let track = set.build(&[("Bass", "midi", "")])[0];
+    set.write_clip(track, 0, "Bass", json!([]));
+    bridge.clear();
+
     let empty = SetClipLoopParams {
-        track_index: 1,
+        track_index: track as i64,
         clip_index: 0,
         arrangement: false,
         looping: None,
@@ -102,9 +107,14 @@ async fn clip_loop_needs_something_to_set_and_summarises() {
     let r = server
         .run(&tools::SET_CLIP_LOOP, empty, tools::set_clip_loop_body)
         .await;
-    assert!(is_error(&r) && bridge.sent().is_empty());
+    assert!(
+        is_error(&r) && bridge.sent().is_empty(),
+        "nothing to set must be refused before Live: {}",
+        text_of(&r)
+    );
+
     let p = SetClipLoopParams {
-        track_index: 1,
+        track_index: track as i64,
         clip_index: 0,
         arrangement: false,
         looping: Some(true),
@@ -116,14 +126,24 @@ async fn clip_loop_needs_something_to_set_and_summarises() {
     let r = server
         .run(&tools::SET_CLIP_LOOP, p, tools::set_clip_loop_body)
         .await;
-    assert!(!is_error(&r));
+    assert!(!is_error(&r), "{}", text_of(&r));
     assert!(
         text_of(&r).contains("loop 0–8") && text_of(&r).contains("launch trigger"),
         "{}",
         text_of(&r)
     );
+    // And the clip really loops to 8 in Live.
+    let clip = set.clip_info(track, 0);
+    assert_eq!(clip["looping"], true, "{clip}");
+    assert_eq!(clip["loop_end"], 8.0, "{clip}");
 }
 
+/// **A real-Live check, standing in for audio.** The fake Live has no sound
+/// behind its meters — they read what nothing put there — so the meter
+/// values here are canned on purpose. What this test can still prove is the
+/// arithmetic: that a reading goes through Live's own taper rather than
+/// 20·log10, that silence is named, and that the curve is read once. That
+/// the numbers Live reports are these numbers is #48's pass, not this one.
 #[tokio::test]
 async fn play_and_measure_reports_peaks_and_silence() {
     let bridge = FakeBridge::responding(json!({
@@ -181,6 +201,8 @@ async fn play_and_measure_reports_peaks_and_silence() {
     );
 }
 
+/// Also canned, and for the same reason: there is no audio behind a fake
+/// meter. See the note on `play_and_measure_reports_peaks_and_silence`.
 #[tokio::test]
 async fn an_older_script_still_reads_in_real_db() {
     // A script that predates get_meter_scale gives no curve; the server holds
@@ -211,17 +233,20 @@ async fn an_older_script_still_reads_in_real_db() {
 
 #[tokio::test]
 async fn automation_ramp_becomes_two_points_and_targets_are_checked() {
-    let bridge = FakeBridge::responding(
-        json!({"clip": "Pad", "target": "Auto Filter > Frequency", "points": 2, "steps_written": 128, "mode": "linear", "range": [0.0, 1.0]}),
-    );
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let track = set.build(&[("Pad", "midi", "query:Synths#Analog")])[0];
+    set.write_clip(track, 0, "Pad", json!([]));
+    bridge.clear();
+
     let p = SetClipAutomationParams {
-        track_index: 3,
+        track_index: track as i64,
         clip_index: 0,
         arrangement: true,
+        // Analog's Filter Freq, on the device the track really has.
         target: AutomationTarget {
-            device_index: Some(1),
-            parameter_index: Some(4),
+            device_index: Some(0),
+            parameter_index: Some(1),
             mixer: None,
             send_index: None,
         },
@@ -259,14 +284,28 @@ async fn automation_ramp_becomes_two_points_and_targets_are_checked() {
         )
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
-    let sent = &bridge.sent()[0].1;
+    let sent = bridge
+        .last("set_clip_automation")
+        .expect("nothing was sent");
     assert_eq!(
         sent["points"],
         json!([{"time": 0.0, "value": 0.2}, {"time": 32.0, "value": 0.9}])
     );
     assert_eq!(sent["arrangement"], false);
+    // The envelope exists in the clip, and it is the ramp that was asked for.
+    let read = bridge
+        .last("set_clip_automation")
+        .map(|_| {
+            set.clip_info(track, 0);
+            set.automation(track, 0, 0, 1)
+        })
+        .unwrap();
+    assert_eq!(read["has_envelope"], true, "{read}");
+    let samples = read["samples"].as_array().expect("samples");
+    assert!(samples.len() > 2, "{read}");
+
     let bad = SetClipAutomationParams {
-        track_index: 3,
+        track_index: track as i64,
         clip_index: 0,
         arrangement: false,
         target: AutomationTarget::default(),
@@ -288,8 +327,10 @@ async fn automation_ramp_becomes_two_points_and_targets_are_checked() {
 
 #[tokio::test]
 async fn batch_runs_in_order_substitutes_the_new_track_and_stops_on_error() {
-    let bridge = FakeBridge::responding(json!({"index": 7, "name": "7-MIDI", "tempo": 120}));
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let before = set.track_count();
+    bridge.clear(); // the set-up read is not part of what the batch sent
     let p = BatchParams {
         steps: vec![
             BatchStep {
@@ -328,7 +369,18 @@ async fn batch_runs_in_order_substitutes_the_new_track_and_stops_on_error() {
             "add_notes_to_clip"
         ]
     );
-    assert_eq!(bridge.sent()[1].1["track_index"], 7, "$last_track resolved");
+    assert_eq!(
+        bridge.sent()[1].1["track_index"],
+        before as i64,
+        "$last_track resolved to the track create_midi_track really made"
+    );
+    // The three steps that ran are in the set: one more track, named Bass,
+    // with a clip holding the two notes the step string says.
+    assert_eq!(set.track_count(), before + 1);
+    assert_eq!(set.track_names()[before], "Bass");
+    assert_eq!(set.clip_pitches(before, 0), vec![36, 36]);
+    // And the step after the failure never ran: the tempo is untouched.
+    assert_eq!(set.tempo(), 120.0);
     let t = text_of(&r);
     assert!(
         t.contains("1. create_midi_track ✓")
@@ -353,7 +405,10 @@ fn song() -> BuildSongParams {
     let mut steps = BTreeMap::new();
     steps.insert("C1".to_string(), "x...x...x...x...".to_string());
     let mut sends = BTreeMap::new();
-    sends.insert("Reverb".to_string(), 0.3);
+    // Live names its returns "A Reverb" and "B Delay" in a new set, and
+    // `_set_send` resolves a send by that name. The document used to say
+    // "Reverb", which a canned bridge accepted and a real Live refuses.
+    sends.insert("A Reverb".to_string(), 0.3);
     BuildSongParams {
         tempo: Some(128.0),
         key: None,
@@ -363,7 +418,7 @@ fn song() -> BuildSongParams {
             SongTrack {
                 name: "Drums".into(),
                 kind: "midi".into(),
-                instrument: Some("query:Drums#Kit".into()),
+                instrument: Some("query:Drums#Drum%20Rack".into()),
                 instrument_query: None,
                 volume: None,
                 volume_db: None,
@@ -415,8 +470,10 @@ fn song() -> BuildSongParams {
 
 #[tokio::test]
 async fn build_song_validates_first_and_dry_runs() {
-    let bridge = FakeBridge::responding(json!({"index": 2, "name": "2-MIDI"}));
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let before = set.track_count();
+    bridge.clear();
     let mut dry = song();
     dry.dry_run = true;
     let r = server
@@ -438,22 +495,22 @@ async fn build_song_validates_first_and_dry_runs() {
         .run(&tools::BUILD_SONG, bad, tools::build_song_body)
         .await;
     assert!(is_error(&r) && text_of(&r).contains("Nope") && bridge.sent().is_empty());
+
+    // Neither of those built anything: the set is where it started.
+    assert_eq!(
+        set.track_count(),
+        before,
+        "a dry run or a refusal built a track"
+    );
+    assert_eq!(set.tempo(), 120.0, "the tempo moved on a dry run");
 }
 
 #[tokio::test]
 async fn build_song_executes_in_order() {
-    let bridge = FakeBridge::responding(json!({
-        "index": 2, "name": "2-MIDI", "tempo": 128.0, "loaded": true, "item_name": "Kit", "track_name": "Drums",
-        "devices_after": ["Kit"], "loaded_device": {"index": 0, "name": "Kit"},
-        "volume": 0.8, "panning": 0.0, "sends": [], "color_index": 3, "color": 0,
-        "track": "Pad", "send_index": 0, "return_name": "Reverb", "value": 0.3,
-        "clip_name": "Kick", "time": 0.0
-    }));
-    bridge.script(
-        "create_tracks",
-        vec![json!({"created": [{"index": 2, "name": "Drums", "device": "Kit"}, {"index": 3, "name": "Pad"}]})],
-    );
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let first = set.track_count();
+    bridge.clear();
     let r = server
         .run(&tools::BUILD_SONG, song(), tools::build_song_body)
         .await;
@@ -474,7 +531,7 @@ async fn build_song_executes_in_order() {
         cmds, expected,
         "every track, then every clip, in one round trip each"
     );
-    let tracks = sent_for(&bridge, "create_tracks")["tracks"]
+    let tracks = bridge.last("create_tracks").expect("create_tracks")["tracks"]
         .as_array()
         .unwrap()
         .clone();
@@ -487,9 +544,9 @@ async fn build_song_executes_in_order() {
     );
     assert_eq!(
         tracks[1]["sends"],
-        json!([{"name": "Reverb", "value": 0.3}])
+        json!([{"name": "A Reverb", "value": 0.3}])
     );
-    let clips = sent_for(&bridge, "write_clips")["clips"]
+    let clips = bridge.last("write_clips").expect("write_clips")["clips"]
         .as_array()
         .unwrap()
         .clone();
@@ -497,10 +554,33 @@ async fn build_song_executes_in_order() {
     assert_eq!(clips[0]["notes"].as_array().unwrap().len(), 4);
     let t = text_of(&r);
     assert!(
-        t.contains("Track 2 'Drums'")
-            && t.contains("Placed track 2 slot 0 at 4 position(s)")
+        t.contains(&format!("Track {first} 'Drums'"))
+            && t.contains(&format!("Placed track {first} slot 0 at 4 position(s)"))
             && t.contains("hear the balance."),
         "{t}"
+    );
+
+    // And now the set, not the reply. Two tracks, the Drum Rack on the
+    // first, the tempo, four notes in the clip, four Arrangement clips one
+    // bar apart, and the locator.
+    assert_eq!(set.track_count(), first + 2);
+    assert_eq!(&set.track_names()[first..], ["Drums", "Pad"]);
+    assert_eq!(set.devices(first), vec!["Drum Rack".to_string()]);
+    assert_eq!(set.tempo(), 128.0);
+    assert_eq!(set.clip_pitches(first, 0), vec![36, 36, 36, 36]);
+    assert_eq!(set.clip_name(first, 0).as_deref(), Some("Kick"));
+    let placed: Vec<f64> = set
+        .arrangement(first)
+        .into_iter()
+        .map(|(_, at)| at)
+        .collect();
+    assert_eq!(placed, vec![0.0, 4.0, 8.0, 12.0]);
+    assert!(
+        set.locators()
+            .iter()
+            .any(|(name, at)| name == "Intro" && *at == 0.0),
+        "{:?}",
+        set.locators()
     );
     // A build that changed the set ends on the snapshot offer: a crash costs
     // whatever is only in Live's memory and nobody reaches for export_set.
@@ -514,13 +594,10 @@ async fn build_song_executes_in_order() {
 
 #[tokio::test]
 async fn library_status_names_what_is_missing() {
-    let bridge = FakeBridge::responding(json!({
-        "live_version": "12.1.5", "edition_hint": "Standard or Intro-level instrument set",
-        "instruments": [{"name": "Drift"}, {"name": "Simpler"}, {"name": "Drum Rack"}],
-        "audio_effects": [{"name": "Reverb"}], "midi_effects": [], "packs": [{"name": "Core Library"}],
-        "drums": [{"name": "Drum Hits"}], "sounds": []
-    }));
-    let server = server_with(bridge.clone());
+    // The fake's browser is a couple of dozen items, not Live's library —
+    // so this reads as a Live with a partial instrument set, which is
+    // exactly the case the readout exists for.
+    let (server, _bridge) = server_on_fake_live();
     let r = server
         .run(
             &tools::GET_LIBRARY_STATUS,
@@ -530,15 +607,14 @@ async fn library_status_names_what_is_missing() {
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
     let t = text_of(&r);
+    assert!(t.starts_with("Live 12.4.6 ("), "{t}");
     assert!(
-        t.starts_with("Live 12.1.5 (Standard or Intro-level instrument set)."),
-        "{t}"
+        t.contains("Analog") && t.contains("Operator") && t.contains("Wavetable"),
+        "the instruments that are there are named: {t}"
     );
     assert!(
-        t.contains("Not available here")
-            && t.contains("Wavetable")
-            && !t.contains("here (11): Drift"),
-        "{t}"
+        t.contains("Not available here"),
+        "what Live does not have is named too: {t}"
     );
     assert!(
         t.contains("Packs installed (1): Core Library") && t.contains("Packs tab"),
@@ -548,19 +624,19 @@ async fn library_status_names_what_is_missing() {
 
 #[tokio::test]
 async fn a_long_batch_answers_with_a_grouped_summary_and_verbose_prints_every_step() {
-    let bridge = FakeBridge::responding(json!({}));
-    bridge.script(
-        "delete_arrangement_clips",
-        vec![json!({"track": "Drums", "remaining": 0, "removed": [
-            {"index": 0, "name": "a", "start_time": 0.0, "end_time": 4.0},
-            {"index": 1, "name": "b", "start_time": 4.0, "end_time": 8.0},
-            {"index": 2, "name": "c", "start_time": 8.0, "end_time": 12.0}]})],
-    );
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let track = set.build(&[("Drums", "midi", "")])[0];
+    set.write_clip(track, 0, "a", json!([]));
+    // Twenty steps, each clearing a freshly filled Arrangement, so the
+    // grouped summary is counting real removals.
+    set.place(track, 0, &[0.0, 4.0, 8.0]);
+    assert_eq!(set.arrangement(track).len(), 3);
+    bridge.clear();
     let steps: Vec<BatchStep> = (0..20)
         .map(|_| BatchStep {
             tool: "delete_arrangement_clip".into(),
-            args: json!({"track_index": 2, "all": true}),
+            args: json!({"track_index": track, "all": true}),
         })
         .collect();
     let r = server
@@ -578,9 +654,12 @@ async fn a_long_batch_answers_with_a_grouped_summary_and_verbose_prints_every_st
     let t = text_of(&r);
     assert!(t.starts_with("20 steps, 20 ok\n"), "{t}");
     assert!(
-        t.contains("  delete_arrangement_clip ×20 ✓ — removed 60\n"),
+        t.contains("  delete_arrangement_clip ×20 ✓ — removed 3\n"),
         "the group line carries the work, not only the step count: {t}"
     );
+    // The first step cleared the track; the other nineteen found nothing,
+    // and the Arrangement really is empty.
+    assert!(set.arrangement(track).is_empty());
     assert!(
         !t.contains("1. delete_arrangement_clip"),
         "twenty identical confirmations are not the reply: {t}"
@@ -608,18 +687,14 @@ async fn a_long_batch_answers_with_a_grouped_summary_and_verbose_prints_every_st
         "the summary comes first: {t}"
     );
     assert!(
-        t.contains("1. delete_arrangement_clip ✓ Removed 3 ")
-            && t.contains("20. delete_arrangement_clip ✓"),
+        t.contains("1. delete_arrangement_clip ✓") && t.contains("20. delete_arrangement_clip ✓"),
         "verbose keeps every step: {t}"
     );
 }
 
 #[tokio::test]
 async fn batch_returns_whole_multi_line_results() {
-    let bridge = FakeBridge::responding(
-        json!({"count": 1, "returns": [{"index": 0, "letter": "A", "name": "Reverb", "volume": 0.85, "mute": false, "devices": ["Reverb"]}]}),
-    );
-    let server = server_with(bridge.clone());
+    let (server, _bridge) = server_on_fake_live();
     let p = BatchParams {
         steps: vec![BatchStep {
             tool: "get_returns".into(),
@@ -629,29 +704,29 @@ async fn batch_returns_whole_multi_line_results() {
         verbose: true,
     };
     let r = server.run(&tools::BATCH, p, tools::batch_body).await;
-    assert!(!is_error(&r));
+    assert!(!is_error(&r), "{}", text_of(&r));
     let t = text_of(&r);
+    // A new Live set has two returns, A Reverb and B Delay, and the batch
+    // keeps the whole reply rather than a one-line confirmation.
     assert!(
         t.contains("\"letter\": \"A\"") && t.contains("\"devices\""),
         "full JSON kept: {t}"
     );
+    assert!(t.contains("A Reverb") && t.contains("B Delay"), "{t}");
 }
 
 #[tokio::test]
 async fn delete_arrangement_clips_all_and_by_indices() {
-    let bridge = FakeBridge::responding(
-        json!({"name": "x", "start_time": 0.0, "end_time": 4.0, "remaining": 0}),
-    );
-    bridge.script(
-        "delete_arrangement_clips",
-        vec![json!({"track": "Drums", "remaining": 0, "removed": [
-            {"index": 0, "name": "x", "start_time": 0.0, "end_time": 4.0},
-            {"index": 1, "name": "x", "start_time": 4.0, "end_time": 8.0},
-            {"index": 2, "name": "x", "start_time": 8.0, "end_time": 12.0}]})],
-    );
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let track = set.build(&[("Drums", "midi", "")])[0];
+    set.write_clip(track, 0, "x", json!([]));
+    set.place(track, 0, &[0.0, 4.0, 8.0]);
+    assert_eq!(set.arrangement(track).len(), 3);
+    bridge.clear();
+
     let p = tools::DeleteArrangementClipParams {
-        track_index: 2,
+        track_index: track as i64,
         clip_index: -1,
         clip_indices: vec![],
         all: true,
@@ -668,15 +743,22 @@ async fn delete_arrangement_clips_all_and_by_indices() {
         bridge.sent()[0],
         (
             "delete_arrangement_clips".to_string(),
-            json!({"track_index": 2, "all": true})
+            json!({"track_index": track, "all": true})
         ),
         "every clip in one round trip"
     );
     assert!(
-        text_of(&r).contains("Removed 3 Arrangement clip(s) from track 2 in one round trip"),
+        text_of(&r).contains(&format!(
+            "Removed 3 Arrangement clip(s) from track {track} in one round trip"
+        )),
         "{}",
         text_of(&r)
     );
+    assert!(
+        set.arrangement(track).is_empty(),
+        "the clips are still there"
+    );
+
     let none = tools::DeleteArrangementClipParams {
         track_index: 2,
         clip_index: -1,
@@ -695,13 +777,33 @@ async fn delete_arrangement_clips_all_and_by_indices() {
 
 #[tokio::test]
 async fn add_notes_can_refresh_arrangement_copies() {
-    let bridge = FakeBridge::responding(json!({"clip_name": "bass", "track_name": "Bass"}));
-    bridge.script("get_clip_info", vec![json!({"name": "bass"})]);
-    bridge.script("get_arrangement_clips", vec![json!({"clip_count": 3, "clips": [
-        {"name": "bass", "start_time": 0.0, "end_time": 4.0}, {"name": "other", "start_time": 4.0, "end_time": 8.0}, {"name": "bass", "start_time": 8.0, "end_time": 12.0}]})]);
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let track = set.build(&[("Bass", "midi", "")])[0];
+    // Two copies of 'bass' in the Arrangement, with something else between
+    // them, so the refresh has to pick out its own.
+    set.write_clip(
+        track,
+        0,
+        "bass",
+        json!([{"pitch": 41, "start_time": 0.0, "duration": 1.0, "velocity": 90}]),
+    );
+    set.write_clip(track, 1, "other", json!([]));
+    set.place(track, 0, &[0.0]);
+    set.place(track, 1, &[4.0]);
+    set.place(track, 0, &[8.0]);
+    assert_eq!(
+        set.arrangement(track),
+        vec![
+            ("bass".to_string(), 0.0),
+            ("other".to_string(), 4.0),
+            ("bass".to_string(), 8.0)
+        ]
+    );
+    bridge.clear();
+
     let p = tools::AddNotesParams {
-        track_index: 1,
+        track_index: track as i64,
         clip_index: 0,
         clear: true,
         propagate_to_arrangement: true,
@@ -738,6 +840,17 @@ async fn add_notes_can_refresh_arrangement_copies() {
         "{}",
         text_of(&r)
     );
+    // The Arrangement still has three clips in the same places, and the
+    // refreshed ones carry the new note.
+    assert_eq!(
+        set.arrangement(track),
+        vec![
+            ("bass".to_string(), 0.0),
+            ("other".to_string(), 4.0),
+            ("bass".to_string(), 8.0)
+        ]
+    );
+    assert_eq!(set.clip_pitches(track, 0), vec![36], "the Session clip");
 }
 
 #[tokio::test]

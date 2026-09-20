@@ -115,5 +115,58 @@ class Derivation(unittest.TestCase):
                          "a command moved into or out of the dispatch chain")
 
 
+class NoNameDefinedTwice(unittest.TestCase):
+    """A method defined twice in one class is not an error in Python: the
+    later one silently wins.
+
+    That is how 1.33.0 shipped with `fire_clip`, `fire_scene`, `record_clip`
+    and `start_live_capture` all raising TypeError inside Live. #47 added a
+    `_landing(param, asked, clamped)` beside the `_landing()` that says which
+    bar a launch lands on, and every zero-argument call started failing. No
+    test saw it, because every test that called the new one got the new one
+    and no test called the old one against a real Song.
+
+    This is the cheap guard: one scan of the file, no name defined twice.
+    """
+
+    def test_the_script_defines_no_name_twice_in_one_class(self):
+        import ast
+        with open(SCRIPT) as handle:
+            tree = ast.parse(handle.read(), SCRIPT)
+        clashes = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            seen = {}
+            for item in node.body:
+                names = []
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    names = [item.name]
+                elif isinstance(item, ast.Assign):
+                    names = [t.id for t in item.targets if isinstance(t, ast.Name)]
+                for name in names:
+                    if name in seen:
+                        clashes.append("%s.%s: line %d shadows line %d" % (
+                            node.name, name, item.lineno, seen[name]))
+                    seen[name] = item.lineno
+        self.assertEqual(clashes, [], "a name is defined twice in one class:\n  " +
+                         "\n  ".join(clashes))
+
+    def test_no_module_level_name_is_defined_twice_either(self):
+        import ast
+        with open(SCRIPT) as handle:
+            tree = ast.parse(handle.read(), SCRIPT)
+        seen, clashes = {}, []
+        for item in tree.body:
+            names = []
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names = [item.name]
+            for name in names:
+                if name in seen:
+                    clashes.append("%s: line %d shadows line %d" % (name, item.lineno, seen[name]))
+                seen[name] = item.lineno
+        self.assertEqual(clashes, [])
+
+
 if __name__ == "__main__":
     unittest.main()

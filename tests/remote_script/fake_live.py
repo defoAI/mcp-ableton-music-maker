@@ -32,7 +32,55 @@ missing here or has the wrong shape, so the model cannot drift from what
 the script needs.
 """
 import bisect
+import time
 import types
+
+# Live's main-thread tick, the rate `schedule_message(1, ...)` comes back at.
+# Measured 2026-09-20 on Live 12.4.6 (macOS 26.6) through
+# `ableton-music-maker --check`: period_ms 100.0, jitter_ms 0.24, over 211
+# samples. Decision 0010 records the same period from a longer run (jitter
+# 9.6 ms, 600 samples). Nothing here invents it.
+TICK_S = 0.1
+TICK_PERIOD_MS = 100.0
+TICK_JITTER_MS = 0.24
+TICK_MEASURED = "2026-09-20, Live 12.4.6, ableton-music-maker --check, 211 samples"
+
+
+# ── The clock ───────────────────────────────────────────────────────────────
+
+class WallClock(object):
+    """Now is now. What `scripts/fake-live.py` runs on, because a real
+    socket and a real tick pass real time."""
+
+    driven = False
+
+    def now(self):
+        return time.time()
+
+    def sleep(self, seconds):
+        if seconds > 0:
+            time.sleep(seconds)
+
+
+class DrivenClock(object):
+    """Now is what the test has advanced to. What the harness runs on, so
+    the transport, the tick sampler and the latency table are deterministic
+    and cost no wall-clock time."""
+
+    driven = True
+
+    def __init__(self, start=1_600_000_000.0):
+        self._t = float(start)
+
+    def now(self):
+        return self._t
+
+    def advance(self, seconds):
+        self._t += float(seconds)
+
+    def sleep(self, seconds):
+        self.advance(seconds)
+
 
 # ── Descriptors ─────────────────────────────────────────────────────────────
 
@@ -79,6 +127,143 @@ class LiveObject(object):
 
     def __hash__(self):
         return self._id
+
+
+# ── What a call costs Live ──────────────────────────────────────────────────
+#
+# Live's API is not free, and the calls that are expensive are the ones the
+# product keeps tripping over: a track create and a device load reinitialise
+# the audio graph inside a single uninterruptible Live call, which is what
+# #43 (the main thread held for seconds) and #45 (ten tracks took Live down)
+# both ride on. A fake Live that answers instantly cannot reproduce either.
+#
+# Every number below was MEASURED against a real Live and is stamped with
+# where it came from. Nothing here is invented, and a call nobody has
+# measured gets no row rather than a guess — `LatencyTable.unmeasured()`
+# lists those, and `scripts/fake-live.py --latency-report` prints them, so
+# the gap is visible instead of silently filled in.
+
+class Measured(object):
+    """One measurement: what it cost, where it was taken, and what the
+    number IS (`main_ms` inside Live's main thread, or a whole round trip
+    including the tick)."""
+
+    __slots__ = ("typical_ms", "worst_ms", "kind", "source", "note")
+
+    def __init__(self, typical_ms, worst_ms, kind, source, note=""):
+        self.typical_ms = float(typical_ms)
+        self.worst_ms = float(worst_ms)
+        self.kind = kind            # "main_ms" or "round_trip"
+        self.source = source
+        self.note = note
+
+    def ms(self, worst=False):
+        return self.worst_ms if worst else self.typical_ms
+
+    def as_dict(self):
+        return {"typical_ms": self.typical_ms, "worst_ms": self.worst_ms,
+                "kind": self.kind, "source": self.source, "note": self.note}
+
+
+# Issue #43, second comment: single commands while the transport ran,
+# `main_ms` straight from the activity log. Live 12.4.6, macOS 26.6,
+# Remote Script 1.23.0, 2026-09-19.
+_I43 = "issue #43, activity log main_ms, Live 12.4.6, script 1.23.0, 2026-09-19"
+# Issue #45, both comments: the ten-track build, before and after the fix.
+# Live 12.4.6, macOS 26.6, Remote Script 1.32.0, 2026-09-20. The worst
+# figures are one track's device load, which Live runs in a single
+# uninterruptible call ("the 709 ms and the 1411 ms seen under stress are
+# one track's device load").
+_I45 = "issue #45, Live's log and cargo run --example ten_track_build, Live 12.4.6, script 1.32.0, 2026-09-20"
+
+LATENCY_12_4_6 = {
+    # The device load is the expensive one, and it is measured directly:
+    # `load_instrument_or_effect` (one Reverb) was 839 ms of main thread.
+    # #45's worst single-track slices — 1411 ms under stress, 2154 ms
+    # before the grouping fix — are the same call.
+    "Browser.load_item": Measured(839.0, 1411.0, "main_ms", _I43 + "; worst from " + _I45,
+                                  "one Reverb; the worst is one track's device load under stress"),
+    "Song.create_scene": Measured(68.0, 68.0, "main_ms", _I43, "create_scene, one call"),
+    "Song.duplicate_scene": Measured(68.0, 68.0, "main_ms", _I43, "make_section, two calls at 68 ms"),
+    "Song.delete_track": Measured(75.0, 110.0, "main_ms", _I43, "measured as a 40-110 ms range"),
+    "ClipSlot.create_clip": Measured(5.4, 5.4, "main_ms", _I43, "create_clip, one call"),
+    "Clip.set_notes": Measured(0.5, 0.6, "main_ms", _I43,
+                               "add_notes_to_clip: 0.5 ms into a stopped slot, 0.6 ms into a playing clip"),
+    "Clip.get_notes_extended": Measured(0.5, 0.5, "main_ms", _I43, "get_clip_notes, one call"),
+    "MixerDevice.write": Measured(0.7, 0.7, "main_ms", _I43, "set_track_mixer in dB, one call"),
+    "Track.meter_read": Measured(0.5, 0.5, "main_ms", _I43, "listen, 5 meter reads over 6 calls at 3.0 ms"),
+}
+
+# Calls the model can charge for but that nobody has measured yet. They are
+# named rather than guessed: each is a line in the PR and a row a real-Live
+# run can fill. `Song.create_midi_track` is the sharp one — #43's first
+# table has it at 0.25 s median / 2.0 s worst, but those are ROUND TRIPS
+# from before `main_ms` existed ("a 200-300 ms figure is the round trip
+# itself"), so the main-thread share of it is not known.
+LATENCY_UNMEASURED = {
+    "Song.create_midi_track": "#43's 0.25 s median / 2.0 s worst are round trips, not main_ms",
+    "Song.create_audio_track": "not separated from create_midi_track in any run",
+    "Song.create_return_track": "named in #43 as a graph reinitialisation; never timed on its own",
+    "Track.duplicate_clip_to_arrangement": "#53 asks for it; no run has timed it",
+    "ClipSlot.create_audio_clip": "sample read from disk; never timed on its own",
+    "Track.delete_device": "never timed",
+    "Song.move_device": "never timed",
+}
+
+
+class LatencyTable(object):
+    """What the model charges for a Live call, and how.
+
+    `LatencyTable.measured()` is the table above; `off()` charges nothing,
+    which is what the harness uses so the script's 94 tests stay fast.
+    `scale` shortens every charge by the same factor for a fast run and is
+    reported, so a scaled run can never be read as a real one.
+    """
+
+    def __init__(self, table=None, worst=False, scale=1.0, clock=None):
+        self.table = dict(table or {})
+        self.worst = bool(worst)
+        self.scale = float(scale)
+        self.clock = clock or WallClock()
+        self.charged = {}       # call -> (count, total_ms) actually charged
+
+    @classmethod
+    def measured(cls, **kw):
+        return cls(LATENCY_12_4_6, **kw)
+
+    @classmethod
+    def off(cls, **kw):
+        return cls({}, **kw)
+
+    def charge(self, call):
+        """Spend what this call costs Live. Real elapsed time on a wall
+        clock, so the executor's slice budget spreads work over ticks and
+        `main_ms` is real; virtual time on a driven clock."""
+        m = self.table.get(call)
+        if m is None:
+            return 0.0
+        ms = m.ms(self.worst) * self.scale
+        count, total = self.charged.get(call, (0, 0.0))
+        self.charged[call] = (count + 1, total + ms)
+        self.clock.sleep(ms / 1000.0)
+        return ms
+
+    def unmeasured(self):
+        """Calls the model would charge for if anyone had measured them."""
+        return dict(LATENCY_UNMEASURED)
+
+    def report(self):
+        rows = []
+        for call in sorted(self.table):
+            m = self.table[call]
+            d = m.as_dict()
+            d["call"] = call
+            d["charged_ms"] = round(self.charged.get(call, (0, 0.0))[1], 2)
+            d["charged_calls"] = self.charged.get(call, (0, 0.0))[0]
+            rows.append(d)
+        return {"scale": self.scale, "worst": self.worst, "rows": rows,
+                "unmeasured": self.unmeasured(), "tick_ms": TICK_PERIOD_MS,
+                "tick_measured": TICK_MEASURED}
 
 
 # ── Display curves ──────────────────────────────────────────────────────────
@@ -170,6 +355,10 @@ class DeviceParameter(LiveObject):
         self._default_value = float(value)
         self._automation_state = self.AUTOMATION_NONE
         self._is_enabled = True
+        # Set for a mixer strip's parameters: the only write anyone has
+        # timed (`set_track_mixer`, 0.7 ms) is a mixer write.
+        self._song = None
+        self._charge_as = None
 
     name = live_prop("name", readonly=True)
     original_name = live_prop("original_name", readonly=True)
@@ -196,6 +385,8 @@ class DeviceParameter(LiveObject):
         if v < self._min - 1e-9 or v > self._max + 1e-9:
             raise RuntimeError("Invalid value %r for parameter '%s' (%s..%s)" % (
                 v, self._name, self._min, self._max))
+        if self._song is not None and self._charge_as:
+            self._song._charge(self._charge_as)
         self._value = float(int(round(v))) if self._is_quantized else v
         # A manual move while automation plays: Live shows it overridden.
         if self._automation_state == self.AUTOMATION_PLAYING:
@@ -233,6 +424,8 @@ class MixerDevice(LiveObject):
         self._track_activator = DeviceParameter("Track Activator", 1.0, 0.0, 1.0,
                                                 value_items=("Off", "On"))
         self._sends = [self._new_send(i) for i in range(sends)]
+        for p in (self._volume, self._panning, self._crossfader, self._track_activator):
+            p._song, p._charge_as = song, "MixerDevice.write"
         self._crossfade_assign = 1  # 0 A, 1 none, 2 B
 
     @staticmethod
@@ -513,10 +706,12 @@ class Clip(LiveObject):
         return tuple(n.as_tuple() for n in self._select(from_time, from_pitch, time_span, pitch_span))
 
     def get_notes_extended(self, from_pitch, pitch_span, from_time, time_span):
+        self._song._charge("Clip.get_notes_extended")
         self._midi_only("get_notes_extended")
         return tuple(self._select(from_time, from_pitch, time_span, pitch_span))
 
     def set_notes(self, notes):
+        self._song._charge("Clip.set_notes")
         """Adds. Live's set_notes does not replace what is there."""
         self._midi_only("set_notes")
         for note in notes:
@@ -612,6 +807,8 @@ class ClipSlot(LiveObject):
         self._song = song
         self._track = track
         self._scene = scene
+        self._record_length = None
+        self._launch_quantization = None
         self._clip = None
         self._has_stop_button = True
         self._is_triggered = False
@@ -648,6 +845,7 @@ class ClipSlot(LiveObject):
         return 2 if self.is_recording else 0
 
     def create_clip(self, length):
+        self._song._charge("ClipSlot.create_clip")
         if self._clip is not None:
             raise RuntimeError("Clip slot already has a clip")
         if not self._track._has_midi_input:
@@ -658,6 +856,7 @@ class ClipSlot(LiveObject):
         self._song._touch()
 
     def create_audio_clip(self, path):
+        self._song._charge("ClipSlot.create_audio_clip")
         if self._clip is not None:
             raise RuntimeError("Clip slot already has a clip")
         if self._track._has_midi_input:
@@ -672,7 +871,29 @@ class ClipSlot(LiveObject):
         self._clip = None
         self._song._touch()
 
-    def fire(self):
+    def fire(self, record_length=None, launch_quantization=None, force_legato=False):
+        """Live 11+: `record_length` fires the slot as a fixed-length
+        recording, `launch_quantization` overrides the global grid for this
+        launch. The script passes both (`_record_clip`, `_start_capture`,
+        `_start_live_capture`), and a model that did not take them made
+        every fixed-length recording read as "needs Live 11 or newer"."""
+        if record_length is not None:
+            self._record_length = float(record_length)
+            self._launch_quantization = launch_quantization
+            if self._clip is None:
+                # Live records what the track carries: MIDI on a MIDI track,
+                # audio on an audio one. The Capture track is audio, which is
+                # the whole point of `start_capture`.
+                if self._track._has_midi_input:
+                    self.create_clip(float(record_length))
+                else:
+                    self._clip = Clip(self._song, self._track, float(record_length),
+                                      midi=False, name="", file_path=None)
+                    self._song._touch()
+            self._clip._is_recording = True
+            self._track._arm = True
+            self._track._fire_clip(self._clip)
+            return
         if self._clip is None:
             # Firing an empty slot stops the track's clip, as in Live.
             self._track._stop_playing()
@@ -776,10 +997,20 @@ class Track(LiveObject):
     output_routing_type = live_prop("output_routing_type")
     playing_slot_index = live_prop("playing_slot_index", readonly=True)
     fired_slot_index = live_prop("fired_slot_index", readonly=True)
-    output_meter_left = live_prop("output_meter_left", readonly=True)
-    output_meter_right = live_prop("output_meter_right", readonly=True)
-    output_meter_level = live_prop("output_meter_level", readonly=True)
-    input_meter_level = live_prop("input_meter_level", readonly=True)
+
+    def _meter(attr):
+        storage = "_" + attr
+
+        def getter(self):
+            self._song._charge("Track.meter_read")
+            return getattr(self, storage)
+        return property(getter)
+
+    output_meter_left = _meter("output_meter_left")
+    output_meter_right = _meter("output_meter_right")
+    output_meter_level = _meter("output_meter_level")
+    input_meter_level = _meter("input_meter_level")
+    del _meter
     implicit_arm = live_prop("implicit_arm", cast=bool)
 
     @property
@@ -816,6 +1047,7 @@ class Track(LiveObject):
 
     # ── What Live's Track can do ──
     def duplicate_clip_to_arrangement(self, clip, destination_time):
+        self._song._charge("Track.duplicate_clip_to_arrangement")
         if float(destination_time) < 0.0:
             raise RuntimeError("Invalid destination time")
         copy = Clip(self._song, self, clip.length, midi=clip._is_midi_clip,
@@ -870,6 +1102,7 @@ class Track(LiveObject):
         raise RuntimeError("Clip is not on this track")
 
     def delete_device(self, index):
+        self._song._charge("Track.delete_device")
         if index < 0 or index >= len(self._devices):
             raise IndexError("Device index out of range")
         del self._devices[index]
@@ -1173,6 +1406,7 @@ class Browser(LiveObject):
         sample), replacing the instrument when the item is one."""
         if not item.is_loadable:
             raise RuntimeError("'%s' is not loadable" % item.name)
+        self._song._charge("Browser.load_item")
         track = self._song._view._selected_track
         if track is None:
             raise RuntimeError("No track selected")
@@ -1311,6 +1545,11 @@ class Song(LiveObject):
         self._application = Application(self, self._browser, version)
         self._playing_since = None
         self._color_cursor = 0
+        # Where the model reads "now" and what a Live call costs. A wall
+        # clock and no charge by default: `scripts/fake-live.py` swaps in
+        # the measured table, `harness.load()` a driven clock.
+        self._clock = WallClock()
+        self._latency = None
 
     # ── plain properties ──
     signature_numerator = live_prop("signature_numerator", cast=int)
@@ -1367,6 +1606,10 @@ class Song(LiveObject):
 
     @property
     def current_song_time(self):
+        # Live's play position moves with the transport, so a reader that
+        # keeps asking sees it move. Without this the cue tick and the clock
+        # channel read a frozen 0.0 while the transport runs.
+        self._advance()
         return self._current_song_time
 
     @current_song_time.setter
@@ -1375,6 +1618,11 @@ class Song(LiveObject):
         if value < 0.0:
             raise RuntimeError("Invalid song time")
         self._current_song_time = value
+        # Live relocates: play continues from here, not from wherever the
+        # transport had got to. Without this the next `_advance` would add
+        # everything elapsed since `start_playing`.
+        if self._is_playing:
+            self._playing_since = self._now()
 
     @property
     def song_length(self):
@@ -1392,7 +1640,7 @@ class Song(LiveObject):
     # ── transport ──
     def start_playing(self):
         self._is_playing = True
-        self._playing_since = _now()
+        self._playing_since = self._now()
 
     def stop_playing(self):
         self._advance()
@@ -1402,7 +1650,7 @@ class Song(LiveObject):
 
     def continue_playing(self):
         self._is_playing = True
-        self._playing_since = _now()
+        self._playing_since = self._now()
 
     def stop_all_clips(self, quantized=True):
         for t in self._tracks:
@@ -1443,11 +1691,21 @@ class Song(LiveObject):
         return types.SimpleNamespace(hours=int(seconds // 3600), minutes=int(seconds // 60) % 60,
                                      seconds=int(seconds) % 60, frames=0)
 
+    def _now(self):
+        return self._clock.now()
+
+    def _charge(self, call):
+        """What this Live call costs, off the measured table. No table
+        means a free call, which is what the script's own suite runs on."""
+        if self._latency is not None:
+            return self._latency.charge(call)
+        return 0.0
+
     def _advance(self):
         """Play position moves while playing: the beats since we started."""
         if self._is_playing and self._playing_since is not None:
-            elapsed = _now() - self._playing_since
-            self._playing_since = _now()
+            elapsed = self._now() - self._playing_since
+            self._playing_since = self._now()
             beats = elapsed * self._tempo / 60.0
             t = self._current_song_time + beats
             if self._loop and self._loop_length > 0 and t >= self._loop_start + self._loop_length:
@@ -1487,14 +1745,17 @@ class Song(LiveObject):
         self._touch()
 
     def create_midi_track(self, index=-1):
+        self._charge("Song.create_midi_track")
         n = sum(1 for t in self._tracks if t._kind == "midi") + 1
         self._insert_track(Track(self, "%d MIDI" % n, "midi", self._next_color()), index)
 
     def create_audio_track(self, index=-1):
+        self._charge("Song.create_audio_track")
         n = sum(1 for t in self._tracks if t._kind == "audio") + 1
         self._insert_track(Track(self, "%d Audio" % n, "audio", self._next_color()), index)
 
     def create_return_track(self):
+        self._charge("Song.create_return_track")
         if len(self._return_tracks) >= 12:
             raise RuntimeError("Live allows at most 12 return tracks")
         letter = chr(ord("A") + len(self._return_tracks))
@@ -1506,6 +1767,7 @@ class Song(LiveObject):
         self._touch()
 
     def delete_track(self, index):
+        self._charge("Song.delete_track")
         if index < 0 or index >= len(self._tracks):
             raise IndexError("Track index out of range")
         gone = self._tracks.pop(index)
@@ -1532,6 +1794,7 @@ class Song(LiveObject):
                 copy._clip_slots[i]._clip = new
 
     def create_scene(self, index=-1):
+        self._charge("Song.create_scene")
         if index < -1 or index > len(self._scenes):
             raise IndexError("Scene index out of range")
         scene = Scene(self)
@@ -1557,6 +1820,7 @@ class Song(LiveObject):
         self._touch()
 
     def duplicate_scene(self, index):
+        self._charge("Song.duplicate_scene")
         if index < 0 or index >= len(self._scenes):
             raise IndexError("Scene index out of range")
         src = self._scenes[index]
@@ -1595,6 +1859,7 @@ class Song(LiveObject):
         self._touch()
 
     def move_device(self, device, target, index):
+        self._charge("Song.move_device")
         """Live: a device from wherever it is to `index` on `target`, which
         is a track or a chain."""
         owner = None
@@ -1651,11 +1916,6 @@ class Song(LiveObject):
 
     def is_cue_point_selected(self):
         return any(abs(c._time - self._current_song_time) < 1e-6 for c in self._cue_points)
-
-
-def _now():
-    import time
-    return time.time()
 
 
 # ── A set to start from ─────────────────────────────────────────────────────
