@@ -58,6 +58,10 @@ class Client(object):
         self.sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
         self.buf = b""
         self.next_id = 1
+        # Events that arrived while `ask` was waiting for a reply. Without
+        # this they are dropped, and a test that counts events against
+        # ticks undercounts the events while counting every tick.
+        self.stray_events = []
 
     def send(self, command, params=None):
         rid = self.next_id
@@ -91,7 +95,12 @@ class Client(object):
 
     def ask(self, command, params=None, seconds=30):
         """One request, its reply, and no waiting past it — a slow `ask`
-        would let the transport run while the test thinks it is idle."""
+        would let the transport run while the test thinks it is idle.
+
+        Anything else that arrives meanwhile is kept in `stray_events`, not
+        thrown away: on a subscribed socket a reply and an event race each
+        other, and dropping the event makes the stream look slower than it
+        is."""
         rid = self.send(command, params)
         end = time.time() + seconds
         while time.time() < end:
@@ -101,6 +110,8 @@ class Client(object):
             for doc in docs:
                 if doc.get("id") == rid:
                     return doc
+                if "event" in doc:
+                    self.stray_events.append(doc)
         raise AssertionError("no reply to %s in %ss" % (command, seconds))
 
     def close(self):
@@ -236,11 +247,16 @@ class TheClock(unittest.TestCase):
             c.ask("subscribe", {"channels": ["clock"], "clock_every_ms": 100})
             c.ask("start_playback")
             before = c.ask("get_script_info")["result"]["tick"]["samples"]
+            # The window is between the two handshakes, so every tick it
+            # counts has had its chance to carry an event — including the
+            # ticks that pass during the closing round trip, whose events
+            # land in `stray_events`.
+            c.stray_events = []
             docs = c.lines(2.0)
             after = c.ask("get_script_info")["result"]["tick"]["samples"]
 
             ticks = after - before
-            events = [d for d in docs if d.get("event") == "clock"]
+            events = [d for d in docs + c.stray_events if d.get("event") == "clock"]
             self.assertGreater(ticks, 5, "the fake's clock barely ticked: %d" % ticks)
             ratio = len(events) / float(ticks)
             self.assertGreater(
