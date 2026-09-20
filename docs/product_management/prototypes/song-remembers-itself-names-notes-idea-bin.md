@@ -237,9 +237,14 @@ top of every get_context.
 > true` is there for a rewrite. Otherwise a one-key update would silently erase the form and
 > the track model.
 >
-> **A cap, deliberately.** 8 KB stored, and the whole of it is served in every `get_context`
-> — one rule, no "is it small enough today?" branch. Over the cap, the write is refused with
-> what to trim; a mental model that does not fit in a header was going to be ignored anyway.
+> **A cap, deliberately.** 8 KB stored. Over it, the write is refused with what to trim; a
+> mental model that does not fit in a header was going to be ignored anyway.
+>
+> **Full once, then a line.** The whole overview is rendered on the **first** `get_context` of
+> a session and again after any change; later calls in the same session get one line —
+> `Overview: 8 keys, unchanged since you wrote it 20 minutes ago.` At the cap a repeat render
+> would put some two thousand tokens into every later call for something the agent itself last
+> wrote. It is a rule the server applies, not a parameter, so there is still nothing to decide.
 >
 > **A light schema, with an escape hatch.** `intent`, `form`, `tracks`, `decided`, `next`,
 > `open`, `as_of` are the keys the header knows how to render and the instructions name; any
@@ -267,6 +272,17 @@ Live 12.4.6 · script 1.34.2 · 84 BPM 4/4 · …
 **Claude:** You changed the tempo to 84 and added two sections — I'll work from the set, not
 from my notes. What are the two new ones for?
 
+> **And the drift line travels.** `get_context` is called once, at the top of a session — which
+> is why the overview rides there, and exactly why the staleness check cannot ride there alone.
+> If the producer nudges the tempo mid-arrange, a session that never calls `get_context` again
+> would end without noticing. So the same one line rides on `capture_mix` and `play_song`,
+> beside the clock line they already return:
+>
+> ```
+> Captured 8 bars from bar 41 · peak -3.1 dB · RMS -14.2 dB · no clipping
+> ⚠ 84 BPM now (your overview says 88) — trust the set.
+> ```
+>
 > The overview is the only place in this design where a fact Live owns may be repeated, and it
 > is repeated **stamped**. The rule the header enforces: Live is the truth, the overview is a
 > memory of it, and a disagreement is reported rather than resolved silently. `as_of` is
@@ -275,6 +291,32 @@ from my notes. What are the two new ones for?
 ---
 
 ## 5. The idea bin — ten sketches, in Live, audible
+
+**Producer:** find me three vocal chops and let me hear them before we commit to one
+
+**Claude calls** `search_browser`, then `stash` three times
+```json
+{"action": "save", "sample": "voice_okay_chop", "track": "Voices", "tags": ["chop"]}
+```
+
+**Result:**
+```
+Stashed 'voice_okay_chop' on Voices — audio clip in the Stash: row (scene 8, slot 4), 1.2 s, warped
+to 1 bar. Referenced where it is, nothing copied. Fire it in Live to hear it.
+```
+
+**Claude:** All three are in the stash on Voices, one per slot. Fire them top to bottom and
+tell me which one.
+
+> **This is the case that could not be done at all before.** `add_sample` puts audio into a
+> section or at a bar, so choosing between three chops meant choosing from a search listing —
+> **by filename, unheard** — and committing one to the song to find out. Audio is exactly the
+> material a name cannot describe. Parking all three makes A/B the default.
+>
+> The stash still stores no audio: the clip references the file where it sits, as `add_sample`
+> does (`src/samples.rs`), and the reply says so.
+
+---
 
 **Producer:** try a few answer phrases for the breakdown, don't put them in the song yet
 

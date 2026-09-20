@@ -1,4 +1,4 @@
-# The song remembers itself: an overview the agent keeps, roles and ideas in the set, names instead of numbers
+# The song remembers itself: an overview the agent keeps, roles and ideas in the set
 
 ## Story
 **As a** producer who worked on this track with Claude for an afternoon and came back a week later,
@@ -51,8 +51,8 @@ Four separate costs in the same session (#50):
 | `export_set` writes a rebuildable document, only on an explicit call | `src/sets.rs`, `tests/sets.rs` |
 | `build_song` can write that snapshot itself with `snapshot: true` | `src/tools.rs:905` |
 | Tracks resolve by name, return letter or index | `resolve_track_name`, `src/tools.rs:1215` |
-| `arrange` addresses a clip by integer only (`clip: Option<i64>`) | `src/arrange.rs:358` |
-| `create_clip`, `add_notes_to_clip`, `delete_clip` take `track_index` + `clip_index` | `src/tools.rs:471`, `:532`, `:370` |
+| **Seven core tools take a track by index only** — `set_track_mixer` (`src/tools.rs:614`), `set_send` (`:633`), `load_instrument_or_effect` (`:560`), `delete_track` (`TrackParams`, `:348`), `create_clip` (`:471`), `add_notes_to_clip` (`:532`), `delete_clip` (`ClipParams`, `:370`) — while five take it by name: `shape_sound` (`:426`), `feel`, `add_sample`, `record_clip`, `arrange` | audit of `CORE_TOOLS`, 2026-09-20 |
+| `arrange` takes the track by name and the clip by integer, disagreeing with itself in one call | `src/arrange.rs:358` |
 | Locators can be created and deleted, never listed | `create_locator` / `delete_locator`, `__init__.py:2022`, `:2767` |
 | The server writes only under `state_dir()` | `src/state.rs` |
 | The activity log is on by default, payloads off | `src/activity.rs`, `tests/activity.rs` |
@@ -179,8 +179,11 @@ stash — Park an idea that is not in the song yet, where it can still be heard.
 
   stash(action: "save" | "list" | "place" | "drop", name, track, tags, section, slot, + note forms)
 
-  save:  puts the notes in a clip in this set's "Stash:" scene row, on the track you name (default:
-         the track the material came from). Tags ride in the clip name: "answer B [breakdown]".
+  save:  puts the material in a clip in this set's "Stash:" scene row, on the track you name
+         (default: the track it came from). Notes in any of the compact forms, or a sample the way
+         add_sample takes one - a browser URI, a path, or words. Tags ride in the clip name:
+         "answer B [breakdown]". Park the alternatives you have not chosen: three vocal chops in the
+         stash can be HEARD against each other, where a search listing can only be read.
          The row is a normal Live scene row, so the producer can fire the clip to hear it — but it
          is not a section, the setlist ignores it, and no section launch touches it.
   list:  every stashed idea with its track, length, note count and tags.
@@ -235,44 +238,49 @@ adv_song_memory — What is remembered about this song, and the producer's contr
 - [ ] **AC13:** When the set matches `as_of`, no drift line appears.
 - [ ] **AC14:** The overview survives a Live restart, a server restart and the set being closed and
       reopened, and comes back attached to the same song.
-- [ ] **AC15:** With the memory off, `remember(overview: …)` writes nothing and says so.
+- [ ] **AC15:** **Full once, then a digest.** The first `get_context` of a session renders the whole
+      overview; every later call in the same session renders one line — which keys it holds and when
+      it last changed — and says how to get it in full. The rule is the server's; no parameter, no
+      decision for the agent.
+- [ ] **AC16:** A `get_context` after the overview changed in this session renders it in full again.
+- [ ] **AC17:** **The drift line travels.** When Live has moved away from `as_of`, the one-line drift
+      also rides on `capture_mix` and `play_song` replies, beside the clock line they already carry —
+      so a set the producer nudges mid-session is noticed without a second `get_context`.
+- [ ] **AC18:** With the memory off, `remember(overview: …)` writes nothing and says so.
 
 ### Identity
-- [ ] **AC16:** The set is identified by `song.file_path`, read with a generic `run` op — no new
+- [ ] **AC19:** The set is identified by `song.file_path`, read with a generic `run` op — no new
       Remote Script command and no `SCRIPT_VERSION` bump.
-- [ ] **AC17:** A set that has never been saved gets a provisional key, and notes written against it
+- [ ] **AC20:** A set that has never been saved gets a provisional key, and notes written against it
       are kept.
-- [ ] **AC18:** When `song.file_path` first appears, the provisional file is renamed to the set's key
+- [ ] **AC21:** When `song.file_path` first appears, the provisional file is renamed to the set's key
       and the rename is reported once.
-- [ ] **AC19:** Opening a different set in the same server process switches to that set's notes.
-- [ ] **AC20:** A renamed or reordered track keeps its notes; every re-attachment is reported; where
+- [ ] **AC22:** Opening a different set in the same server process switches to that set's notes.
+- [ ] **AC23:** A renamed or reordered track keeps its notes; every re-attachment is reported; where
       it is not certain the notes are left unattached and said so — **never repointed by guess**.
 
 ### Roles, in the set
-- [ ] **AC21:** `remember(about: "Sitar", role: "lead")` renames the track to `Sitar [lead]` and says so.
-- [ ] **AC22:** Any tool that takes a track resolves `"lead"` to that track (`resolve_track_name`).
-- [ ] **AC23:** A role matching two tracks errors and names both; it never picks one.
-- [ ] **AC24:** Setting a role twice replaces the suffix instead of stacking it.
-- [ ] **AC25:** Roles survive with the memory deleted or switched off — they are in the `.als`.
+- [ ] **AC24:** `remember(about: "Sitar", role: "lead")` renames the track to `Sitar [lead]` and says so.
+- [ ] **AC25:** Any tool that takes a track resolves `"lead"` to that track (`resolve_track_name`).
+- [ ] **AC26:** A role matching two tracks errors and names both; it never picks one.
+- [ ] **AC27:** Setting a role twice replaces the suffix instead of stacking it.
+- [ ] **AC28:** Roles survive with the memory deleted or switched off — they are in the `.als`.
 
 ### The stash, in the set
-- [ ] **AC26:** `stash save` creates the clip in a scene whose name starts with `Stash:`, creating
+- [ ] **AC29:** `stash save` creates the clip in a scene whose name starts with `Stash:`, creating
       the row when there is none and another row when every slot on that track is taken.
-- [ ] **AC27:** A `Stash:` row is not a section: `get_context`'s sections, `make_section`, `set_song`
+- [ ] **AC30:** **`stash save` takes a sample** the way `add_sample` does — a browser URI, a path, or
+      words — and parks it as an audio clip in the `Stash:` row on an audio track, warped and looped
+      like `add_sample` does, so three candidates can be **heard against each other before one is
+      committed to the song**.
+- [ ] **AC31:** `stash list` shows an audio idea with its file name and length, and `stash place`
+      puts it into a section the way `add_sample` would.
+- [ ] **AC32:** A `Stash:` row is not a section: `get_context`'s sections, `make_section`, `set_song`
       and `play_song` ignore it, and a section launch never fires it.
-- [ ] **AC28:** `stash list` reports every idea with track, bars, note count and tags.
-- [ ] **AC29:** `stash place` copies into the section or slot named and leaves the stashed clip.
-- [ ] **AC30:** `stash drop` deletes only that clip.
-- [ ] **AC31:** The stash survives the memory being deleted or switched off.
-
-### Names instead of numbers
-- [ ] **AC32:** `arrange` takes `clip` as a name or an index.
-- [ ] **AC33:** `create_clip`, `add_notes_to_clip` and `delete_clip` take `track` (name or index) and
-      `clip` (name or slot); `track_index` / `clip_index` keep working.
-- [ ] **AC34:** An ambiguous clip name errors listing every candidate with its slot.
-- [ ] **AC35:** `arrange`'s `at_bar`, `from_bar`, `to_bar` and `capture_mix`'s `start_bar` accept a
-      locator name, resolved by reading `song.cue_points` through ops — no new command.
-- [ ] **AC36:** An unknown locator name errors listing the locators that exist.
+- [ ] **AC33:** `stash list` reports every idea with track, bars, note count and tags.
+- [ ] **AC34:** `stash place` copies into the section or slot named and leaves the stashed clip.
+- [ ] **AC35:** `stash drop` deletes only that clip.
+- [ ] **AC36:** The stash survives the memory being deleted or switched off.
 
 ### The agent is told
 - [ ] **AC37:** `src/context.rs` `INSTRUCTIONS` says to read the memory back before the first change
@@ -304,13 +312,14 @@ adv_song_memory — What is remembered about this song, and the producer's contr
 ### Modified
 | File | Change |
 |------|--------|
-| `src/tools.rs` | `remember`, `stash`, `adv_song_memory` bodies and `#[tool]` bindings; `CORE_TOOLS`; `resolve_track_name` matches a `[role]` token; clip-by-name resolution; `ClipParams`, `CreateClipParams`, `AddNotesParams` take `track` / `clip` |
-| `src/arrange.rs` | `clip` becomes name-or-index; `at_bar`/`from_bar`/`to_bar` accept a locator name |
+| `src/tools.rs` | `remember`, `stash`, `adv_song_memory` bodies and `#[tool]` bindings; `CORE_TOOLS`; `resolve_track_name` matches a `[role]` token |
 | `src/context.rs` | the memory header; `INSTRUCTIONS` and `FOOTER` |
 | `src/song.rs` | a `Stash:` scene is not a section (beside the `Setlist:` rule) |
 | `src/sections.rs` | `make_section` / `set_song` / `play_song` skip `Stash:` rows |
 | `src/state.rs` | `songs_dir()` |
 | `src/activity.rs` | the per-song digest counters |
+| `src/samples.rs` | `add_sample`'s placement reused by `stash save` for an audio idea |
+| `src/capture.rs` / `src/sections.rs` | the drift line beside the clock line on `capture_mix` and `play_song` |
 | `src/lom.rs` | `Path::song().attr("file_path")`, the `cue_points` read helper |
 | `prompts/*.md` (4) | read the memory first, keep it up to date |
 | `TERMS.md` | one row: song notes, on by default, where, how to delete |
@@ -397,34 +406,38 @@ Every AC has a test. New suite `tests/song_memory.rs` unless the row says otherw
 | | `a_drift_from_as_of_is_reported_and_live_is_called_the_truth` | AC12 |
 | | `no_drift_line_when_the_set_matches` | AC13 |
 | | `the_overview_survives_a_restart_and_reattaches` | AC14 |
-| | `the_off_switch_stops_the_overview_too` | AC15, AC40 |
+| | `full_on_the_first_context_of_a_session_then_a_digest` | AC15 |
+| | `a_change_makes_the_next_context_render_it_in_full_again` | AC16 |
+| | `the_drift_line_rides_on_capture_mix_and_play_song` | AC17 |
+| | `stash_save_takes_a_sample_and_parks_it_as_an_audio_clip` | AC30 |
+| | `stash_list_and_place_handle_an_audio_idea` | AC31 |
+| | `the_off_switch_stops_the_overview_too` | AC18, AC40 |
 | | `context_header_is_absent_when_there_is_nothing_to_say` | AC1 |
 | | `a_session_with_no_memory_calls_still_writes_a_digest` | AC2 |
 | | `no_notes_tool_is_served` | AC3, AC49 |
-| | `identity_comes_from_song_file_path_through_one_op` | AC16 |
-| | `an_unsaved_set_gets_a_provisional_key_and_keeps_its_notes` | AC17 |
-| | `the_first_save_renames_the_file_and_says_so_once` | AC18 |
-| | `opening_another_set_switches_the_notes` | AC19 |
-| | `a_renamed_track_keeps_its_notes_and_the_move_is_reported` | AC20 |
-| | `an_uncertain_match_leaves_the_notes_unattached_and_says_so` | AC20 |
-| | `a_role_is_written_into_the_track_name` | AC21 |
-| | `a_role_addresses_the_track` | AC22 |
-| | `an_ambiguous_role_names_both_tracks_and_changes_nothing` | AC23 |
-| | `a_second_role_replaces_the_suffix` | AC24 |
-| | `roles_and_stash_survive_forget_and_the_off_switch` | AC25, AC31, AC40 |
-| | `stash_save_makes_the_row_then_a_second_row_when_full` | AC26 |
-| | `stash_list_reports_track_bars_notes_and_tags` | AC28 |
-| | `stash_place_copies_and_keeps_the_original` | AC29 |
-| | `stash_drop_deletes_only_that_clip` | AC30 |
+| | `identity_comes_from_song_file_path_through_one_op` | AC19 |
+| | `an_unsaved_set_gets_a_provisional_key_and_keeps_its_notes` | AC20 |
+| | `the_first_save_renames_the_file_and_says_so_once` | AC21 |
+| | `opening_another_set_switches_the_notes` | AC22 |
+| | `a_renamed_track_keeps_its_notes_and_the_move_is_reported` | AC23 |
+| | `an_uncertain_match_leaves_the_notes_unattached_and_says_so` | AC23 |
+| | `a_role_is_written_into_the_track_name` | AC24 |
+| | `a_role_addresses_the_track` | AC25 |
+| | `an_ambiguous_role_names_both_tracks_and_changes_nothing` | AC26 |
+| | `a_second_role_replaces_the_suffix` | AC27 |
+| | `roles_and_stash_survive_forget_and_the_off_switch` | AC28, AC36, AC40 |
+| | `stash_save_makes_the_row_then_a_second_row_when_full` | AC29 |
+| | `stash_list_reports_track_bars_notes_and_tags` | AC33 |
+| | `stash_place_copies_and_keeps_the_original` | AC34 |
+| | `stash_drop_deletes_only_that_clip` | AC35 |
 | | `show_names_the_file_what_is_in_it_and_what_is_not` | AC41 |
 | | `forget_deletes_the_file_and_sends_nothing_to_live` | AC42 |
 | | `the_file_holds_no_midi_note_no_audio_and_no_foreign_path` | AC43 |
-| `tests/song.rs` | `a_stash_scene_is_not_a_section` | AC27 |
+| `tests/song.rs` | `a_stash_scene_is_not_a_section` | AC32 |
+| `tests/capture.rs` | `capture_mix_carries_the_drift_line` | AC17 |
+| `tests/samples.rs` | `a_stashed_sample_is_referenced_not_copied` | AC30 |
 | `tests/artist.rs` | the core/advanced split and the served spellings | AC49 |
-| `tests/arrangement.rs` | `arrange_takes_a_clip_name`, `an_ambiguous_clip_name_lists_the_candidates`, `arrange_takes_a_locator_name`, `an_unknown_locator_lists_the_locators` | AC32, AC34, AC35, AC36 |
-| `tests/clip_notes.rs` | `create_and_add_notes_take_track_and_clip_by_name`, `the_index_parameters_still_work` | AC33 |
-| `tests/capture.rs` | `capture_mix_starts_at_a_locator` | AC35 |
-| `tests/orchestration.rs` | `play_song_and_make_section_skip_the_stash_row` | AC27 |
+| `tests/orchestration.rs` | `play_song_and_make_section_skip_the_stash_row` | AC32 |
 | `tests/prompts.rs` | passes with the new names in the prompts | AC38, AC39 |
 | `src/context.rs` unit tests | the instructions name `remember` and `stash`; the header renders | AC37, AC1 |
 | `src/tools.rs` unit tests | `tool_count_and_schema_defaults` → 108 | AC49 |
@@ -481,33 +494,51 @@ of it.
   changed something by hand — so the server writes the numbers it is already reading.
 - **Why merge is the default.** The common write is one key ("next"). Replace-by-default would
   quietly delete the form and the track model the first time an agent patched a single field.
+- **Why full once, then a digest.** The overview is only worth reading again when it has changed,
+  and at the 8 KB cap a repeat render would put roughly two thousand tokens into every later
+  `get_context` for something the agent itself last wrote. Serving it in full on the first call of a
+  session and after every change keeps retrieval unskippable without paying for it twice; making it
+  a server rule rather than a parameter keeps the no-branch property that made this work.
+- **Why the drift line travels beyond `get_context`.** `get_context` is called once, at the top of a
+  session — that is exactly why the overview rides on it, and exactly why the staleness check cannot
+  ride there alone. A producer who nudges the tempo mid-session would otherwise be invisible until
+  the next session. `capture_mix` and `play_song` are the calls an agent makes repeatedly and both
+  already return a clock line, so the drift costs a line beside something already being read.
+- **Why the stash takes audio, not just MIDI.** Audio is the material that cannot be judged from its
+  name — choosing between three vocal chops from a search listing is choosing blind, because
+  `add_sample` can only put one into a section or a bar, so auditioning means committing. Parking
+  all three in the `Stash:` row makes A/B the default instead of the exception. The stash still
+  stores no audio: it references the file, as `add_sample` does.
 - **Why the digest is the server's job.** The requirement is that this works without the agent
   thinking about it. Anything that depends on the agent remembering to call a tool will be missing
   from exactly the sessions that most needed it.
 
 ## Verification
 
+### Manual verification steps
 With Live open, the current Remote Script installed (no reinstall required — that is AC47):
 
 1. New empty set, never saved. Build something small. Confirm the reply names a provisional memory.
    Kill Live. Reopen. `get_context` — the notes are offered, and the stash and roles are gone with
    the unsaved set, as they must be.
 2. Save the set. `get_context` — the rename to the set's key is reported once, and not again.
-3. `remember(overview: {"intent": "…", "next": "…"})`, then `get_context` — the object comes back
-   in full at the top. Patch one key; the others are still there. Change the tempo in Live by hand
-   and call `get_context` again: the drift is stated and the set is called the truth.
-4. `remember(about: "<a track>", role: "lead")` — the track is renamed in Live's mixer in front of
-   you. `set_track_mixer(track: "lead", volume_db: -4)` moves that fader.
-5. `stash save` twice on one track — a `Stash:` scene row appears at the bottom of the Session view.
-   Fire one clip: it plays. Fire a section: it does not.
-6. Rename the track in Live and drag it two places up. `get_context` — the notes followed it and the
+3. `remember(overview: {"intent": "…", "next": "…"})`, then `get_context` — the object comes back in
+   full at the top. Call `get_context` again: one line, not the object. Patch one key: full again,
+   and the other keys are still there.
+4. Change the tempo in Live by hand, then `capture_mix` — the drift rides beside the clock line,
+   without a second `get_context`.
+5. `remember(about: "<a track>", role: "lead")` — the track is renamed in Live's mixer in front of
+   you. `set_track_mixer(track: "lead", …)` moves that fader (needs the naming issue shipped).
+6. `stash save` three samples onto an audio track straight from a `search_browser` listing, fire
+   each in turn, `stash place` the one that wins — the A/B that is impossible today.
+7. `stash save` two MIDI ideas on one track — a `Stash:` scene row appears at the bottom of the
+   Session view. Fire one clip: it plays. Fire a section: it does not.
+8. Rename the track in Live and drag it two places up. `get_context` — the notes followed it and the
    move is reported.
-7. `arrange(action: "move", track: "<name>", clip: "<clip name>", at_bar: "<locator name>")` moves
-   the right clip to the right bar.
-8. `ABLETON_MCP_SONG_MEMORY=false` and restart the server: `remember` says the overview and notes
+9. `ABLETON_MCP_SONG_MEMORY=false` and restart the server: `remember` says the overview and notes
    are off, the role still lands in the track name, `songs/` gains no file.
-9. `adv_song_memory(action: "forget")` — the file is gone; the `Stash:` row and the `[lead]` suffix
-   are still in the set.
+10. `adv_song_memory(action: "forget")` — the file is gone; the `Stash:` row and the `[lead]` suffix
+    are still in the set.
 
 ## Out of Scope
 - **A cross-song idea library** ("the bassline from the last track"). A stashed clip belongs to its
@@ -517,6 +548,17 @@ With Live open, the current Remote Script installed (no reinstall required — t
 - **Audio in the stash.** The server copies no audio; an audio idea can only be a reference to a
   file that exists.
 - **Storing the notes beside the `.als`.** Open Question 3 — it would need a numbered decision.
+- **Names instead of numbers.** Split out and shipping **first** — it needs none of this story's
+  machinery: no file, no identity, no reconciliation, no cap, no `as_of`, no privacy section. Seven
+  core tools take a track by index only while five take it by name, and the two halves meet inside a
+  single mixing move. That is a defect in the artist surface (decision 0006), not a design question,
+  so it is an issue with an audit table rather than a story.
+- **A device vocabulary the server learns and keeps** — that "Vinyl Drawbs" answers to Vinyl Drive,
+  Release and Rotation Amount rather than a cutoff, and that VHS Dreams' Release macro runs
+  backwards. Those are facts about Ableton's factory content, true in every set anyone ever builds,
+  and song-scoped memory throws them away. They belong in a cache keyed on the device, not in this
+  file — its own issue, and it has no privacy story to write because it is not about the producer's
+  music.
 - **A profile of the producer across songs** (taste, habits, house style). This file is per song and
   keyed to a set; a profile is a different object with a different privacy story.
 - **Making `export_set` automatic.** #46 owns that; this story only points at the last snapshot.
@@ -542,4 +584,4 @@ With Live open, the current Remote Script installed (no reinstall required — t
 | Date | Change |
 |------|--------|
 | 2026-09-20 | Created |
-| 2026-09-20 | Song overview added: a structured model the agent patches and gets back in full on every `get_context` (AC4–AC15) |
+| 2026-09-20 | Song overview added: a structured model the agent patches and gets back in full on every `get_context` (AC4–AC18) |
