@@ -112,7 +112,9 @@ def load(bind=False):
         Quantization=types.SimpleNamespace(q_bar=1, q_quarter=2, q_no_q=0))
     sys.modules["Live"] = live
     ns = {"__name__": "ableton_remote_script_under_test", "__file__": SCRIPT}
-    exec(compile(io.open(SCRIPT, encoding="utf-8").read(), SCRIPT, "exec"), ns)
+    with io.open(SCRIPT, encoding="utf-8") as handle:
+        source = handle.read()
+    exec(compile(source, SCRIPT, "exec"), ns)
     return ns
 
 

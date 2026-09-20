@@ -33,7 +33,7 @@ async fn fake_live(received: Arc<Mutex<Vec<Value>>>) -> u16 {
                     };
                     buf.clear();
                     received.lock().unwrap().push(command.clone());
-                    let reply = match command["type"].as_str().unwrap_or("") {
+                    let mut reply = match command["type"].as_str().unwrap_or("") {
                         "get_script_info" => json!({"status": "success", "result": {
                             "script_version": mcp_ableton_music_maker::handshake::expected_remote_script_version(),
                             "protocol_version": 1,
@@ -53,8 +53,12 @@ async fn fake_live(received: Arc<Mutex<Vec<Value>>>) -> u16 {
                             json!({"status": "error", "message": format!("Unknown command: {other}")})
                         }
                     };
+                    // Protocol 2: the reply carries the request's id.
+                    if let Some(id) = command.get("id").cloned() {
+                        reply["id"] = id;
+                    }
                     stream
-                        .write_all(reply.to_string().as_bytes())
+                        .write_all(format!("{reply}\n").as_bytes())
                         .await
                         .unwrap();
                 }

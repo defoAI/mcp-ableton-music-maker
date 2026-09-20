@@ -3,6 +3,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 from _Framework.ControlSurface import ControlSurface
 import os
+import errno
 import math
 import socket
 import sys
@@ -61,14 +62,70 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.28.0"
-PROTOCOL_VERSION = 1
-# Where client sockets are read. "background_thread": a Python thread per
-# client, scheduled by Live on its own terms (measured 2026-09-20: about
-# 200 ms per message whatever the command does). The alternative is the
-# main-thread tick, which is what phase 1 of the streams story tries once
-# the tick period below is known.
-SOCKET_READER = "background_thread"
+SCRIPT_VERSION = "1.29.0"
+PROTOCOL_VERSION = 2
+# Where client sockets are read. "main_thread_tick": sockets are non-blocking
+# and drained from the same tick the clock runs on, so a message waits one
+# tick, not one turn of Live's thread scheduler. "background_thread": a
+# Python thread per client, scheduled by Live on its own terms (measured
+# 2026-09-20: about 200 ms per message whatever the command does). A file
+# named socket_reader.txt beside this script holding the word "thread"
+# selects the old reader, so the two can be compared on the same Live.
+READER_FILE_NAME = "socket_reader.txt"
+
+
+def _configured_reader():
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(here, READER_FILE_NAME)
+        if os.path.isfile(path):
+            handle = open(path, "r")
+            try:
+                text = handle.read()
+            finally:
+                handle.close()
+            for line in text.splitlines():
+                value = line.strip().lower()
+                if value and not value.startswith("#"):
+                    return "background_thread" if value == "thread" else "main_thread_tick"
+    except Exception:
+        pass
+    return "main_thread_tick"
+
+
+SOCKET_READER = _configured_reader()
+
+
+def _split_documents(buf):
+    """Every complete JSON document at the front of `buf` (bytes), and what is
+    left. Documents may be newline-delimited or simply concatenated; a
+    partial one stays in the remainder until the rest arrives."""
+    try:
+        text = buf.decode("utf-8")
+    except AttributeError:
+        text = buf
+    except UnicodeDecodeError:
+        # A multi-byte character split across reads: wait for the rest.
+        return [], buf
+    decoder = json.JSONDecoder()
+    docs = []
+    pos = 0
+    n = len(text)
+    while True:
+        while pos < n and text[pos] in " \t\r\n":
+            pos += 1
+        if pos >= n:
+            return docs, b""
+        try:
+            doc, end = decoder.raw_decode(text, pos)
+        except ValueError:
+            rest = text[pos:]
+            try:
+                return docs, rest.encode("utf-8")
+            except AttributeError:
+                return docs, rest
+        docs.append(doc)
+        pos = end
 
 # A handler returns this when it will answer the socket itself, from a later
 # tick. Needed wherever Live applies the first step asynchronously (moving
@@ -228,6 +285,53 @@ class _TickSampler(object):
                 "max_ms": round(xs[-1], 2), "samples": n}
 
 
+class _Client(object):
+    """One socket, read and written on the main-thread tick.
+
+    Requests carrying an `id` may overlap and are answered whenever their
+    handler finishes; requests without one are answered in order, one at a
+    time, which is how a server from before ids sees exactly the behaviour
+    it always had. Writes are buffered and bounded: a client that stops
+    reading is dropped, never allowed to stall the tick."""
+
+    MAX_OUTBOUND = 4 * 1024 * 1024
+    MAX_STARTS_PER_TICK = 8
+
+    def __init__(self, sock, address):
+        self.sock = sock
+        self.address = address
+        self.inbuf = b""
+        self.outbuf = b""
+        self.closed = False
+        self.queue = []          # parsed requests not started yet
+        self.busy = False        # an id-less request is in flight
+        self.inflight = {}       # token -> (deadline, sink, command_type)
+        self.subscriptions = {}  # channel -> options (phase 2)
+        self.next_token = 1
+
+
+class _ClientSink(object):
+    """Where a handler's answer goes when the request came in on the tick:
+    the client's outbound buffer, with the request's id attached. Stands in
+    for the queue the background-thread reader waits on."""
+
+    def __init__(self, script, client, request_id, token):
+        self.script = script
+        self.client = client
+        self.request_id = request_id
+        self.token = token
+        self.done = False
+
+    def put(self, payload):
+        if self.done:
+            return  # answered already (a timeout got there first)
+        self.done = True
+        self.client.inflight.pop(self.token, None)
+        if self.request_id is None:
+            self.client.busy = False
+        self.script._client_write(self.client, self.request_id, payload)
+
+
 class AbletonMCP(ControlSurface):
     """AbletonMCP Remote Script for Ableton Live"""
     
@@ -242,6 +346,10 @@ class AbletonMCP(ControlSurface):
         # Socket server for communication
         self.server = None
         self.client_threads = []
+        # Clients read on the tick (SOCKET_READER == "main_thread_tick").
+        # Appended by the accept thread, drained by the main thread.
+        self._clients = []
+        self._clients_lock = threading.Lock()
         self.server_thread = None
         self.running = False
         
@@ -320,6 +428,14 @@ class AbletonMCP(ControlSurface):
             except:
                 pass
         
+        with self._clients_lock:
+            for c in self._clients:
+                try:
+                    c.sock.close()
+                except Exception:
+                    pass
+            self._clients = []
+
         # Wait for the server thread to exit
         if self.server_thread and self.server_thread.is_alive():
             self.server_thread.join(1.0)
@@ -364,7 +480,16 @@ class AbletonMCP(ControlSurface):
                     client, address = self.server.accept()
                     self.log_message("Connection accepted from " + str(address))
                     self.show_message("AbletonMCP: Client connected")
-                    
+
+                    if SOCKET_READER == "main_thread_tick":
+                        try:
+                            client.setblocking(False)
+                        except Exception:
+                            pass
+                        with self._clients_lock:
+                            self._clients.append(_Client(client, address))
+                        continue
+
                     # Handle client in a separate thread
                     client_thread = threading.Thread(
                         target=self._handle_client,
@@ -529,8 +654,13 @@ class AbletonMCP(ControlSurface):
             return {"status": "success", "result": self._get_script_info()}
         return self._run_on_main(command_type, params)
 
-    def _run_on_main(self, command_type, params):
-        response_queue = queue.Queue()
+    def _run_on_main(self, command_type, params, sink=None):
+        """Run a command on Live's main thread. Without `sink` (the
+        background-thread reader) this blocks the calling thread until the
+        answer arrives. With one (the tick reader, already on the main
+        thread) the first slice runs now, later slices on later ticks, and
+        the answer is written to the sink; nothing waits."""
+        response_queue = sink if sink is not None else queue.Queue()
         acc = {"gen": None, "ms": 0.0, "slices": 0}
         mutates = command_type in self.MUTATING_COMMANDS
 
@@ -592,6 +722,9 @@ class AbletonMCP(ControlSurface):
                     self.log_message("slow slice: %s held Live's main thread %.0f ms (slice %d)" % (
                         command_type, held, acc["slices"]))
 
+        if sink is not None:
+            task()
+            return None
         try:
             self.schedule_message(0, task)
         except AssertionError:
@@ -5209,10 +5342,129 @@ class AbletonMCP(ControlSurface):
             self._tick_sampler.note(time.time())
             if self._live_version is None:
                 self._live_version = self._read_live_version()
+            if SOCKET_READER == "main_thread_tick":
+                self._drain_clients()
         except Exception as e:
             self.log_message("clock tick error: " + str(e))
         if self.running:
             self._arm_clock_tick()
+
+    # ── Clients on the tick ─────────────────────────────────────────────────
+
+    def _drain_clients(self):
+        with self._clients_lock:
+            clients = list(self._clients)
+        now = time.time()
+        for c in clients:
+            if c.closed:
+                continue
+            self._client_read(c)
+            self._client_start(c, now)
+            self._client_expire(c, now)
+            self._client_flush(c)
+        with self._clients_lock:
+            self._clients = [c for c in self._clients if not c.closed]
+
+    def _client_close(self, c, why):
+        if c.closed:
+            return
+        c.closed = True
+        try:
+            c.sock.close()
+        except Exception:
+            pass
+        self.log_message("Client %s closed: %s" % (str(c.address), why))
+
+    def _client_read(self, c):
+        while True:
+            try:
+                data = c.sock.recv(65536)
+            except socket.error as e:
+                code = e.args[0] if e.args else None
+                if code in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    break
+                self._client_close(c, "read error: " + str(e))
+                return
+            except Exception as e:
+                self._client_close(c, "read error: " + str(e))
+                return
+            if not data:
+                self._client_close(c, "disconnected")
+                return
+            c.inbuf += data
+        if c.inbuf:
+            docs, rest = _split_documents(c.inbuf)
+            c.inbuf = rest
+            for d in docs:
+                if isinstance(d, dict):
+                    c.queue.append(d)
+                else:
+                    self._client_write(c, None, {"status": "error", "message": "a request must be a JSON object"})
+
+    def _client_start(self, c, now):
+        started = 0
+        while c.queue and started < c.MAX_STARTS_PER_TICK:
+            if c.busy:
+                break
+            req = c.queue.pop(0)
+            rid = req.get("id")
+            command_type = req.get("type", "")
+            params = req.get("params", {}) or {}
+            if LOG_EVERY_COMMAND:
+                self.log_message("Received command: " + str(command_type))
+            if command_type == "get_script_info":
+                self._client_write(c, rid, {"status": "success", "result": self._get_script_info()})
+                continue
+            token = c.next_token
+            c.next_token += 1
+            sink = _ClientSink(self, c, rid, token)
+            if rid is None:
+                c.busy = True
+            deadline = now + self.COMMAND_TIMEOUTS.get(command_type, 10.0)
+            c.inflight[token] = (deadline, sink, command_type)
+            started += 1
+            try:
+                self._run_on_main(command_type, params, sink=sink)
+            except Exception as e:
+                sink.put({"status": "error", "message": str(e)})
+
+    def _client_expire(self, c, now):
+        for token, (deadline, sink, command_type) in list(c.inflight.items()):
+            if now > deadline and not sink.done:
+                sink.put({"status": "error",
+                          "message": "Timeout waiting for %s to complete" % command_type})
+
+    def _client_write(self, c, request_id, payload):
+        if c.closed:
+            return
+        if request_id is not None:
+            payload = dict(payload)
+            payload["id"] = request_id
+        line = json.dumps(payload) + "\n"
+        try:
+            line = line.encode("utf-8")
+        except AttributeError:
+            pass
+        c.outbuf += line
+        if len(c.outbuf) > c.MAX_OUTBOUND:
+            self._client_close(c, "not reading: %d bytes waiting" % len(c.outbuf))
+
+    def _client_flush(self, c):
+        while c.outbuf and not c.closed:
+            try:
+                sent = c.sock.send(c.outbuf)
+            except socket.error as e:
+                code = e.args[0] if e.args else None
+                if code in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    return
+                self._client_close(c, "write error: " + str(e))
+                return
+            except Exception as e:
+                self._client_close(c, "write error: " + str(e))
+                return
+            if sent <= 0:
+                return
+            c.outbuf = c.outbuf[sent:]
 
     def _read_live_version(self):
         try:

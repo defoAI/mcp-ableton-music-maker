@@ -83,8 +83,8 @@ class ClockTick(unittest.TestCase):
     def test_the_handshake_reports_the_tick_without_touching_live(self):
         self.script.tick(3)
         info = self.script._get_script_info()
-        self.assertEqual(info["socket_reader"], "background_thread")
-        self.assertEqual(info["protocol_version"], 1)
+        self.assertIn(info["socket_reader"], ("main_thread_tick", "background_thread"))
+        self.assertEqual(info["protocol_version"], 2)
         self.assertEqual(info["live"]["version"], "12.4.6")
         self.assertIn("python", info["live"])
         tick = info["tick"]

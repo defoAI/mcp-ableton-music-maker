@@ -1,9 +1,13 @@
 //! The TCP bridge to the AbletonMusicMaker Remote Script.
 //!
-//! Wire protocol: the server writes one JSON document `{"type": ..., "params":
-//! {...}}` and the script answers with one JSON document `{"status": "success",
-//! "result": ...}` or `{"status": "error", "message": ...}`. There is no
-//! framing, so the reader accumulates bytes until the buffer parses.
+//! Wire protocol: the server writes one JSON document `{"id": n, "type": ...,
+//! "params": {...}}` and the script answers with one JSON document carrying
+//! the same `id`: `{"status": "success", "result": ...}` or `{"status":
+//! "error", "message": ...}`. Documents are newline-delimited or simply
+//! concatenated; the reader pulls complete documents off the front of its
+//! buffer. A script from before protocol 2 answers without an `id`, and since
+//! one request is in flight per socket that answer is unambiguous. Documents
+//! with an `event` field are pushed by the script, never answers.
 
 use crate::activity::Activity;
 use crate::handshake::ScriptInfoCache;
@@ -12,6 +16,7 @@ use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -363,6 +368,60 @@ pub struct AbletonConnection {
     pub host: String,
     pub port: u16,
     sock: Mutex<Option<TcpStream>>,
+    /// Bytes read but not yet a whole document, and whole documents read
+    /// but not yet claimed: a reply that arrived before its request was
+    /// waited on, or an event pushed by the script.
+    pending: Mutex<Inbox>,
+    next_id: AtomicU64,
+}
+
+#[derive(Default)]
+pub struct Inbox {
+    bytes: Vec<u8>,
+    docs: std::collections::VecDeque<Value>,
+}
+
+impl Inbox {
+    fn clear(&mut self) {
+        self.bytes.clear();
+        self.docs.clear();
+    }
+}
+
+/// Every complete JSON document at the front of `buf`, removed from it. A
+/// partial document at the end stays for the next read.
+pub fn pop_documents(buf: &mut Vec<u8>) -> Vec<Value> {
+    let mut docs = Vec::new();
+    let mut consumed = 0usize;
+    {
+        let mut it = serde_json::Deserializer::from_slice(buf).into_iter::<Value>();
+        loop {
+            match it.next() {
+                Some(Ok(v)) => {
+                    docs.push(v);
+                    consumed = it.byte_offset();
+                }
+                Some(Err(e)) if e.is_eof() => break,
+                Some(Err(_)) => {
+                    // Not JSON at all: drop it rather than wedge the socket.
+                    consumed = buf.len();
+                    break;
+                }
+                None => {
+                    consumed = buf.len();
+                    break;
+                }
+            }
+        }
+    }
+    // Whitespace (a newline delimiter) between documents is consumed too.
+    let rest_start = buf[consumed..]
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map(|p| consumed + p)
+        .unwrap_or(buf.len());
+    buf.drain(..rest_start);
+    docs
 }
 
 impl AbletonConnection {
@@ -371,6 +430,8 @@ impl AbletonConnection {
             host: host.into(),
             port,
             sock: Mutex::new(None),
+            pending: Mutex::new(Inbox::default()),
+            next_id: AtomicU64::new(1),
         }
     }
 
@@ -452,36 +513,64 @@ impl AbletonConnection {
         outcome
     }
 
-    /// Read until the accumulated bytes parse as one JSON document.
-    fn receive_document(
+    /// Read until the reply to request `id` arrives. Documents that are not
+    /// it — an event pushed by the script, a stray reply — are set aside or
+    /// dropped; a reply without an `id` is from a script before protocol 2
+    /// and, with one request in flight, is the answer.
+    fn receive_reply(
         stream: &mut TcpStream,
+        inbox: &mut Inbox,
+        id: u64,
         command: &str,
         timeout: Duration,
     ) -> LiveResult<Value> {
-        let mut data: Vec<u8> = Vec::new();
         let mut buf = vec![0u8; 8192];
-        stream
-            .set_read_timeout(Some(timeout))
-            .map_err(|e| LiveError::Lost(e.to_string()))?;
+        let deadline = Instant::now() + timeout;
         loop {
+            inbox.docs.extend(pop_documents(&mut inbox.bytes));
+            // Walk what has arrived: our reply (or an id-less one from an old
+            // script) is the answer; an event or a reply to an earlier id is
+            // noise and goes; a reply to a later id stays for its own turn.
+            let mut i = 0;
+            while i < inbox.docs.len() {
+                let doc = &inbox.docs[i];
+                if doc.get("event").is_some() {
+                    tracing::trace!("event before a subscriber exists: {}", doc);
+                    inbox.docs.remove(i);
+                    continue;
+                }
+                match doc.get("id").and_then(Value::as_u64) {
+                    Some(got) if got == id => return Ok(inbox.docs.remove(i).unwrap()),
+                    Some(other) if other > id => i += 1,
+                    Some(other) => {
+                        tracing::warn!("reply for request {other} while waiting for {id}; dropped");
+                        inbox.docs.remove(i);
+                    }
+                    None => return Ok(inbox.docs.remove(i).unwrap()),
+                }
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(LiveError::Timeout {
+                    command: command.to_string(),
+                    secs: timeout.as_secs_f64(),
+                });
+            }
+            stream
+                .set_read_timeout(Some(left))
+                .map_err(|e| LiveError::Lost(e.to_string()))?;
             match stream.read(&mut buf) {
                 Ok(0) => {
-                    return Err(LiveError::Lost(if data.is_empty() {
+                    return Err(LiveError::Lost(if inbox.bytes.is_empty() {
                         "connection closed before any data arrived".to_string()
                     } else {
                         format!(
                             "connection closed after {} bytes of an incomplete response",
-                            data.len()
+                            inbox.bytes.len()
                         )
                     }));
                 }
-                Ok(n) => {
-                    data.extend_from_slice(&buf[..n]);
-                    if let Ok(doc) = serde_json::from_slice::<Value>(&data) {
-                        tracing::debug!("Received complete response ({} bytes)", data.len());
-                        return Ok(doc);
-                    }
-                }
+                Ok(n) => inbox.bytes.extend_from_slice(&buf[..n]),
                 Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                     return Err(LiveError::Timeout {
                         command: command.to_string(),
@@ -497,25 +586,37 @@ impl AbletonConnection {
     pub fn send_command(&self, command_type: &str, params: Option<Value>) -> LiveResult<Value> {
         let mut guard = self.lock();
         Self::connect_locked(&mut guard, &self.host, self.port)?;
-        let outcome = Self::exchange(guard.as_mut().expect("connected"), command_type, params);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let outcome = Self::exchange(
+            guard.as_mut().expect("connected"),
+            &mut pending,
+            id,
+            command_type,
+            params,
+        );
         if outcome.is_err() {
             // Any failure poisons the socket: the next call reconnects.
             *guard = None;
+            pending.clear();
         }
         outcome
     }
 
     fn exchange(
         stream: &mut TcpStream,
+        pending: &mut Inbox,
+        id: u64,
         command_type: &str,
         params: Option<Value>,
     ) -> LiveResult<Value> {
         let params = params.unwrap_or_else(|| json!({}));
-        let command = json!({"type": command_type, "params": params});
+        let command = json!({"id": id, "type": command_type, "params": params});
         tracing::debug!("Sending command: {}", command);
 
-        let payload =
+        let mut payload =
             serde_json::to_vec(&command).map_err(|e| LiveError::InvalidResponse(e.to_string()))?;
+        payload.push(b'\n');
         let timeout = command_timeout(command_type);
         stream.set_write_timeout(Some(timeout)).ok();
         stream.write_all(&payload).map_err(|e| match e.kind() {
@@ -526,7 +627,7 @@ impl AbletonConnection {
             _ => LiveError::Lost(e.to_string()),
         })?;
 
-        let response = Self::receive_document(stream, command_type, timeout)?;
+        let response = Self::receive_reply(stream, pending, id, command_type, timeout)?;
         let status = response
             .get("status")
             .and_then(Value::as_str)
@@ -684,10 +785,11 @@ mod tests {
         let conn = AbletonConnection::new("127.0.0.1", port);
         let result = conn.send_command("get_session_info", None).unwrap();
         assert_eq!(result, json!({"tempo": 120.0, "tracks": []}));
-        assert_eq!(
-            live.join().unwrap(),
-            json!({"type": "get_session_info", "params": {}})
-        );
+        // Protocol 2: the request carries an id the reply is matched by.
+        let received = live.join().unwrap();
+        assert_eq!(received["type"], json!("get_session_info"));
+        assert_eq!(received["params"], json!({}));
+        assert!(received["id"].is_u64(), "{received}");
     }
 
     #[test]
@@ -718,5 +820,110 @@ mod tests {
         );
         assert_eq!(command_timeout("set_tempo"), Duration::from_secs(15));
         assert_eq!(command_timeout("get_session_info"), Duration::from_secs(10));
+    }
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn documents_come_off_the_front_delimited_or_not() {
+        let mut buf = b"{\"a\":1}\n{\"b\":2}{\"c\":3}\n{\"d\":".to_vec();
+        let docs = pop_documents(&mut buf);
+        assert_eq!(docs, vec![json!({"a":1}), json!({"b":2}), json!({"c":3})]);
+        assert_eq!(buf, b"{\"d\":".to_vec(), "the partial one waits");
+        buf.extend_from_slice(b"4}\n");
+        assert_eq!(pop_documents(&mut buf), vec![json!({"d":4})]);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn a_split_multibyte_character_waits() {
+        let text = serde_json::to_vec(&json!({"name": "Groove \u{00b7} 8"})).unwrap();
+        let cut = text.iter().position(|b| *b == 0xc2).unwrap() + 1;
+        let mut buf = text[..cut].to_vec();
+        assert!(pop_documents(&mut buf).is_empty());
+        assert_eq!(buf.len(), cut);
+        buf.extend_from_slice(&text[cut..]);
+        assert_eq!(
+            pop_documents(&mut buf),
+            vec![json!({"name": "Groove \u{00b7} 8"})]
+        );
+    }
+
+    /// A fake script that answers on one socket in a scripted order.
+    fn fake_script(replies: Vec<String>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut got = [0u8; 4096];
+            let _ = stream.read(&mut got);
+            for r in replies {
+                stream.write_all(r.as_bytes()).unwrap();
+                stream.flush().unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        port
+    }
+
+    #[test]
+    fn the_reply_is_matched_by_id_past_events_and_strays() {
+        let port = fake_script(vec![
+            "{\"event\":\"clock\",\"bar\":3}\n".into(),
+            "{\"id\":999,\"status\":\"success\",\"result\":{\"stray\":true}}\n".into(),
+            "{\"id\":1,\"status\":\"success\",\"result\":{\"tempo\":126}}\n".into(),
+        ]);
+        let conn = AbletonConnection::new("127.0.0.1", port);
+        let r = conn.send_command("get_session_info", None).unwrap();
+        assert_eq!(r, json!({"tempo":126}));
+    }
+
+    #[test]
+    fn a_script_before_ids_still_answers() {
+        let port = fake_script(vec![
+            "{\"status\":\"success\",\"result\":{\"old\":true}}".into()
+        ]);
+        let conn = AbletonConnection::new("127.0.0.1", port);
+        let r = conn.send_command("get_session_info", None).unwrap();
+        assert_eq!(r, json!({"old":true}));
+    }
+
+    #[test]
+    fn the_request_carries_an_id_and_a_newline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut got = vec![0u8; 4096];
+            let n = stream.read(&mut got).unwrap();
+            seen2.lock().unwrap().extend_from_slice(&got[..n]);
+            stream
+                .write_all(b"{\"id\":1,\"status\":\"success\",\"result\":{}}\n")
+                .unwrap();
+        });
+        let conn = AbletonConnection::new("127.0.0.1", port);
+        conn.send_command("get_session_info", None).unwrap();
+        let raw = seen.lock().unwrap().clone();
+        assert!(raw.ends_with(b"\n"));
+        let doc: Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(doc["id"], json!(1));
+        assert_eq!(doc["type"], json!("get_session_info"));
+    }
+
+    #[test]
+    fn ids_climb_per_connection() {
+        let port = fake_script(vec![
+            "{\"id\":1,\"status\":\"success\",\"result\":1}\n{\"id\":2,\"status\":\"success\",\"result\":2}\n".into(),
+        ]);
+        let conn = AbletonConnection::new("127.0.0.1", port);
+        assert_eq!(conn.send_command("a", None).unwrap(), json!(1));
+        // The second reply was already in the buffer: matched without a read.
+        assert_eq!(conn.send_command("b", None).unwrap(), json!(2));
     }
 }
