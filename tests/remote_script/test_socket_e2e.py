@@ -146,8 +146,12 @@ class SocketEndToEnd(unittest.TestCase):
                 c.request("get_session_info")
                 c.read()
             per = (time.time() - t) / 20 * 1000.0
-            # 5 ms ticks: a round trip is a tick or two, not hundreds of ms.
-            self.assertLess(per, 60.0, "round trip averaged %.1f ms" % per)
+            # 5 ms ticks: a round trip is a tick or two. The point is that
+            # it is nothing like the 200 ms scheduling quantum the
+            # background-thread reader cost (decision 0010), so the band is
+            # wide enough that a loaded runner cannot fail it while still
+            # being far below what it is contrasted with.
+            self.assertLess(per, 150.0, "round trip averaged %.1f ms" % per)
             c.close()
 
     def test_overlapping_requests_come_back_by_id(self):

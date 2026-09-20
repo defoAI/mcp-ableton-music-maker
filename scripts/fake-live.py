@@ -487,12 +487,15 @@ def main(argv=None):
     ticker = Ticker(surface, args.tick_ms / 1000.0)
     ticker.start()
 
-    sys.stdout.write("%d\n" % port)
-    sys.stdout.flush()
+    # The log line goes out BEFORE the port. The port on stdout is the
+    # handshake a parent waits on, and a parent that has it may stop this
+    # process at once — so anything written after it can be lost.
     if not args.quiet:
         log("listening on 127.0.0.1:%d, script %s, tick %.1f ms, latency %s x%g, %s"
             % (port, ns["SCRIPT_VERSION"], args.tick_ms, args.latency, args.latency_scale,
                "one shared set" if args.shared_set else "one set per connection"))
+    sys.stdout.write("%d\n" % port)
+    sys.stdout.flush()
 
     stop = threading.Event()
 
