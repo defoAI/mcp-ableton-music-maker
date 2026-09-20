@@ -135,6 +135,7 @@ fn document() -> BuildSongParams {
         locators,
         on_existing: "converge".into(),
         dry_run: false,
+        snapshot: false,
     }
 }
 

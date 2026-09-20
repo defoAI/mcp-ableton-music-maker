@@ -82,6 +82,7 @@ fn document(round: usize, tracks: usize) -> BuildSongParams {
         locators: vec![],
         on_existing: "converge".into(),
         dry_run: false,
+        snapshot: false,
     }
 }
 

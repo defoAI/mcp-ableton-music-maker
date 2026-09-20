@@ -917,6 +917,10 @@ params!(BuildSongParams {
     on_existing: String = "String::new",
     /// Validate and describe the plan without touching Live (default false)
     dry_run: bool = "bool::default",
+    /// Write a rebuildable copy of the finished set under the server's state
+    /// folder, the way export_set does (default false). The Live set itself
+    /// is still only saved by you, in Live.
+    snapshot: bool = "bool::default",
 });
 params!(SetArrangementLoopParams {
     /// The bar the loop starts on (Live's 1-based bars)
@@ -6953,6 +6957,13 @@ fn song_track_index(name: &str, created: &BTreeMap<String, i64>) -> Result<i64, 
 /// the document, when Live does go away.
 const TRACKS_PER_GROUP: usize = 3;
 
+/// What `build_song` ends on once it has changed the set. A crash costs
+/// whatever exists only in Live's memory, and the Live API has no save to
+/// call — that is Cmd+S, the producer's. The one thing this server can do is
+/// write the document back out, and the moment nobody reaches for it is the
+/// moment it is worth saying (#46).
+const SNAPSHOT_OFFER: &str = "\nWhat is in the set exists only in Live's memory until you save it there (Cmd+S — the Live API has no save of its own). export_set {\"name\": \"…\"} writes a rebuildable copy under the server's state folder; build_song takes snapshot: true to write one as part of the build.";
+
 pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     // ── validate everything before the first command ──
     let mode = match p.on_existing.trim().to_lowercase().as_str() {
@@ -7055,7 +7066,7 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     let mut done = plan;
     let fail = |done: &str, what: String| -> String {
         format!(
-            "{done}Stopped: {what}\nWhat is above is in the set; the rest is not. Re-run the same document — build_song converges: a track whose name already exists is reused, and a slot that already holds the named clip is left alone."
+            "{done}Stopped: {what}\nWhat is above is in the set; the rest is not. Re-run the same document — build_song converges: a track whose name already exists is reused, and a slot that already holds the named clip is left alone.{SNAPSHOT_OFFER}"
         )
     };
     if let Some(k) = p.key.as_ref().filter(|k| !k.trim().is_empty()) {
@@ -7159,6 +7170,7 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
             out.push_str("The document is unchanged, so run build_song again with it: ");
             out.push_str("on_existing \"converge\" (the default) reuses the tracks that ");
             out.push_str("exist and carries on from there.");
+            out.push_str(SNAPSHOT_OFFER);
             out
         };
 
@@ -7409,9 +7421,24 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
             skipped_places
         ));
     }
+    if p.snapshot {
+        // The flag is the consent: a set export is written only when it was
+        // asked for (CLAUDE.md, tests/sets.rs), so this cannot become a
+        // default without the story and the TERMS.md change that go with it.
+        let name = format!("build-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+        match crate::sets::export_set_body(live, &crate::sets::ExportSetParams { name }) {
+            Ok(text) => done.push_str(&format!("Snapshot: {text}\n")),
+            Err(e) => done.push_str(&format!(
+                "Snapshot asked for but not written: {e}\nThe set itself is untouched; export_set can be run again.\n"
+            )),
+        }
+    }
     done.push_str(
         "Done. switch_to_arrangement_view to see it; play_and_measure to hear the balance.",
     );
+    if !p.snapshot {
+        done.push_str(SNAPSHOT_OFFER);
+    }
     Ok(done)
 }
 
@@ -8396,7 +8423,10 @@ impl Server {
     /// Stops at the first failure and says what was built — re-run the same
     /// document and it converges: a track whose name already exists is reused
     /// and a slot that already holds the named clip is left alone, so nothing
-    /// is duplicated (on_existing: "add" or "fail" changes that).
+    /// is duplicated (on_existing: "add" or "fail" changes that). What it
+    /// builds lives only in Live's memory until you save the set in Live —
+    /// the Live API has no save — so snapshot: true writes a rebuildable copy
+    /// under the server's state folder, the way export_set does.
     #[tool(name = "build_song")]
     async fn build_song(&self, Parameters(p): Parameters<BuildSongParams>) -> CallToolResult {
         self.run(&BUILD_SONG, p, build_song_body).await

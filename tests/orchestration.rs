@@ -409,6 +409,7 @@ fn song() -> BuildSongParams {
             time: 0.0,
         }],
         dry_run: false,
+        snapshot: false,
     }
 }
 
@@ -498,7 +499,14 @@ async fn build_song_executes_in_order() {
     assert!(
         t.contains("Track 2 'Drums'")
             && t.contains("Placed track 2 slot 0 at 4 position(s)")
-            && t.ends_with("hear the balance."),
+            && t.contains("hear the balance."),
+        "{t}"
+    );
+    // A build that changed the set ends on the snapshot offer: a crash costs
+    // whatever is only in Live's memory and nobody reaches for export_set.
+    assert!(
+        t.ends_with("build_song takes snapshot: true to write one as part of the build.")
+            && t.contains("Cmd+S — the Live API has no save of its own"),
         "{t}"
     );
     let _: Value = json!(null);
