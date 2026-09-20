@@ -81,17 +81,18 @@ class FakeSurface(object):
         ran = 0
         for _ in range(n):
             self.now_tick += 1
-            # Live's tick is 100 ms; on a driven clock the test's time moves
-            # with it, so the transport, the tick sampler and the latency
-            # table all see the same now.
-            clock = self._song_obj._clock
-            if clock.driven:
-                clock.advance(fake_live.TICK_S)
             due = [c for (t, c) in self.scheduled if t <= self.now_tick]
             self.scheduled = collections.deque((t, c) for (t, c) in self.scheduled if t > self.now_tick)
             for cb in due:
                 cb()
                 ran += 1
+            # Live's tick is 100 ms. The callbacks run at the instant the
+            # tick is for, and time moves on afterwards — so a test that
+            # puts the playhead somewhere and ticks once sees the handler
+            # read the position it set, not that position plus a tick.
+            clock = self._song_obj._clock
+            if clock.driven:
+                clock.advance(fake_live.TICK_S)
         return ran
 
     def run_until(self, done, limit=400):
@@ -122,7 +123,8 @@ def two_track_set(clips=False):
     return song
 
 
-def load(bind=False, song=None, version=(12, 4, 6), latency=None, clock=None):
+def load(bind=False, song=None, version=(12, 4, 6), latency=None, clock=None,
+         surface_class=None):
     """The script's namespace with Live stubbed by the model. `bind=False`
     keeps the constructor from opening a real socket: the class is returned
     and the test builds an instance with `instance(ns)`.
@@ -142,7 +144,7 @@ def load(bind=False, song=None, version=(12, 4, 6), latency=None, clock=None):
 
     framework = types.ModuleType("_Framework")
     surface = types.ModuleType("_Framework.ControlSurface")
-    surface.ControlSurface = FakeSurface
+    surface.ControlSurface = surface_class or FakeSurface
     framework.ControlSurface = surface
     sys.modules["_Framework"] = framework
     sys.modules["_Framework.ControlSurface"] = surface

@@ -856,6 +856,7 @@ class ClipSlot(LiveObject):
         self._song._touch()
 
     def create_audio_clip(self, path):
+        self._song._charge("ClipSlot.create_audio_clip")
         if self._clip is not None:
             raise RuntimeError("Clip slot already has a clip")
         if self._track._has_midi_input:
@@ -1046,6 +1047,7 @@ class Track(LiveObject):
 
     # ── What Live's Track can do ──
     def duplicate_clip_to_arrangement(self, clip, destination_time):
+        self._song._charge("Track.duplicate_clip_to_arrangement")
         if float(destination_time) < 0.0:
             raise RuntimeError("Invalid destination time")
         copy = Clip(self._song, self, clip.length, midi=clip._is_midi_clip,
@@ -1100,6 +1102,7 @@ class Track(LiveObject):
         raise RuntimeError("Clip is not on this track")
 
     def delete_device(self, index):
+        self._song._charge("Track.delete_device")
         if index < 0 or index >= len(self._devices):
             raise IndexError("Device index out of range")
         del self._devices[index]
@@ -1603,6 +1606,10 @@ class Song(LiveObject):
 
     @property
     def current_song_time(self):
+        # Live's play position moves with the transport, so a reader that
+        # keeps asking sees it move. Without this the cue tick and the clock
+        # channel read a frozen 0.0 while the transport runs.
+        self._advance()
         return self._current_song_time
 
     @current_song_time.setter
@@ -1738,14 +1745,17 @@ class Song(LiveObject):
         self._touch()
 
     def create_midi_track(self, index=-1):
+        self._charge("Song.create_midi_track")
         n = sum(1 for t in self._tracks if t._kind == "midi") + 1
         self._insert_track(Track(self, "%d MIDI" % n, "midi", self._next_color()), index)
 
     def create_audio_track(self, index=-1):
+        self._charge("Song.create_audio_track")
         n = sum(1 for t in self._tracks if t._kind == "audio") + 1
         self._insert_track(Track(self, "%d Audio" % n, "audio", self._next_color()), index)
 
     def create_return_track(self):
+        self._charge("Song.create_return_track")
         if len(self._return_tracks) >= 12:
             raise RuntimeError("Live allows at most 12 return tracks")
         letter = chr(ord("A") + len(self._return_tracks))
@@ -1849,6 +1859,7 @@ class Song(LiveObject):
         self._touch()
 
     def move_device(self, device, target, index):
+        self._charge("Song.move_device")
         """Live: a device from wherever it is to `index` on `target`, which
         is a track or a chain."""
         owner = None
