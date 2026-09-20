@@ -21,6 +21,7 @@ scripts/fake-live.py                         # a Live that is not Live: the real
 scripts/fake-live.py --latency-report        # what a Live call costs, and which calls nobody has measured
 scripts/live-latency.sh                      # against a running Live: measures the tick, the round trip and every phase
 scripts/live-transcript.sh                   # against a running Live: records tests/fixtures/live-transcript-<version>.json
+python3 scripts/live-transcript.py --diff REAL.json FAKE.json   # the field-by-field differential
 ABLETON_TARGET=live cargo test -- --test-threads=1   # the whole suite against a real Live (builds in the open set)
 cd app && npm run dev                        # the Mac app against this checkout (Tauri 2)
 cargo clippy --all-targets -- -D warnings    # CI runs this

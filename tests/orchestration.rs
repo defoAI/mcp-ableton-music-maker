@@ -687,8 +687,7 @@ async fn a_long_batch_answers_with_a_grouped_summary_and_verbose_prints_every_st
         "the summary comes first: {t}"
     );
     assert!(
-        t.contains("1. delete_arrangement_clip ✓")
-            && t.contains("20. delete_arrangement_clip ✓"),
+        t.contains("1. delete_arrangement_clip ✓") && t.contains("20. delete_arrangement_clip ✓"),
         "verbose keeps every step: {t}"
     );
 }
@@ -755,7 +754,10 @@ async fn delete_arrangement_clips_all_and_by_indices() {
         "{}",
         text_of(&r)
     );
-    assert!(set.arrangement(track).is_empty(), "the clips are still there");
+    assert!(
+        set.arrangement(track).is_empty(),
+        "the clips are still there"
+    );
 
     let none = tools::DeleteArrangementClipParams {
         track_index: 2,
@@ -780,7 +782,12 @@ async fn add_notes_can_refresh_arrangement_copies() {
     let track = set.build(&[("Bass", "midi", "")])[0];
     // Two copies of 'bass' in the Arrangement, with something else between
     // them, so the refresh has to pick out its own.
-    set.write_clip(track, 0, "bass", json!([{"pitch": 41, "start_time": 0.0, "duration": 1.0, "velocity": 90}]));
+    set.write_clip(
+        track,
+        0,
+        "bass",
+        json!([{"pitch": 41, "start_time": 0.0, "duration": 1.0, "velocity": 90}]),
+    );
     set.write_clip(track, 1, "other", json!([]));
     set.place(track, 0, &[0.0]);
     set.place(track, 1, &[4.0]);

@@ -51,7 +51,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 /// Stand-in for the Live bridge. Records every command sent and returns a
 /// canned response (or error) so tool logic is tested in isolation.
