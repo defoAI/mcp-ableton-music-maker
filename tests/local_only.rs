@@ -107,3 +107,34 @@ fn remote_script_binds_loopback_by_default() {
     // The escape hatch is documented where someone looking at the port finds it.
     assert!(script.contains("bind_host.txt"));
 }
+
+/// The Remote Script runs inside Live's own interpreter: Python 2.7 on Live
+/// 10, 3.x on 11 and 12. Two things a modern editor reaches for by reflex
+/// would stop it loading on the old one, so the source is checked for them.
+#[test]
+fn remote_script_stays_compatible_with_the_python_live_bundles() {
+    let script = include_str!("../AbletonMusicMaker_Remote_Script/__init__.py");
+    let mut offenders = Vec::new();
+    for (i, line) in script.lines().enumerate() {
+        let code = line.split('#').next().unwrap_or("");
+        // f"..." / f'...' at a token boundary; the prefix is never valid 2.7.
+        let bytes = code.as_bytes();
+        for (j, w) in bytes.windows(2).enumerate() {
+            if (w[0] == b'f' || w[0] == b'F') && (w[1] == b'"' || w[1] == b'\'') {
+                let boundary =
+                    j == 0 || !(bytes[j - 1].is_ascii_alphanumeric() || bytes[j - 1] == b'_');
+                if boundary {
+                    offenders.push(format!("line {}: f-string", i + 1));
+                    break;
+                }
+            }
+        }
+        if code.trim_start().starts_with("def ") && code.contains(") ->") {
+            offenders.push(format!("line {}: return annotation", i + 1));
+        }
+        if code.trim_start().starts_with("nonlocal ") {
+            offenders.push(format!("line {}: nonlocal", i + 1));
+        }
+    }
+    assert!(offenders.is_empty(), "{offenders:?}");
+}

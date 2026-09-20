@@ -61,8 +61,14 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.27.2"
+SCRIPT_VERSION = "1.28.0"
 PROTOCOL_VERSION = 1
+# Where client sockets are read. "background_thread": a Python thread per
+# client, scheduled by Live on its own terms (measured 2026-09-20: about
+# 200 ms per message whatever the command does). The alternative is the
+# main-thread tick, which is what phase 1 of the streams story tries once
+# the tick period below is known.
+SOCKET_READER = "background_thread"
 
 # A handler returns this when it will answer the socket itself, from a later
 # tick. Needed wherever Live applies the first step asynchronously (moving
@@ -186,6 +192,42 @@ def create_instance(c_instance):
     """Create and return the AbletonMCP script instance"""
     return AbletonMCP(c_instance)
 
+class _TickSampler(object):
+    """How often Live calls a schedule_message(1, ...) callback: the period
+    of the main-thread tick, which nothing else in this product measures.
+
+    Every callback notes the time; the intervals go into a ring. stats() is
+    the median period, the jitter (p95 minus p50) and the worst interval
+    over the ring, in milliseconds. Read from any thread; written from the
+    main thread only."""
+
+    def __init__(self, capacity=600):
+        self._capacity = max(2, int(capacity))
+        self._intervals = []
+        self._last = None
+        self._lock = threading.Lock()
+
+    def note(self, now):
+        """Called from the tick. `now` is time.time()."""
+        with self._lock:
+            if self._last is not None:
+                self._intervals.append((now - self._last) * 1000.0)
+                if len(self._intervals) > self._capacity:
+                    del self._intervals[0:len(self._intervals) - self._capacity]
+            self._last = now
+
+    def stats(self):
+        with self._lock:
+            xs = sorted(self._intervals)
+        n = len(xs)
+        if n == 0:
+            return {"period_ms": None, "jitter_ms": None, "max_ms": None, "samples": 0}
+        p50 = xs[int(0.5 * (n - 1))]
+        p95 = xs[int(0.95 * (n - 1))]
+        return {"period_ms": round(p50, 2), "jitter_ms": round(p95 - p50, 2),
+                "max_ms": round(xs[-1], 2), "samples": n}
+
+
 class AbletonMCP(ControlSurface):
     """AbletonMCP Remote Script for Ableton Live"""
     
@@ -221,6 +263,12 @@ class AbletonMCP(ControlSurface):
         self._cue_lock = threading.Lock()
         self._perf_events = []
         self._perf_tick_armed = False
+        # The clock tick: armed for the life of the script, it only samples
+        # the tick period and caches what Live says its version is, so the
+        # handshake can report both without touching Live from its thread.
+        self._tick_sampler = _TickSampler(600)
+        self._clock_tick_armed = False
+        self._live_version = None
         self._pending_record = None
         # Performance mode: while on, every response carries a clock and the
         # tick watches which scene row plays (phrases count from there).
@@ -244,6 +292,7 @@ class AbletonMCP(ControlSurface):
         
         # Start the socket server
         self.start_server()
+        self._arm_clock_tick()
 
         # Passive LOM listeners (a dataset-tier leftover) are no longer
         # registered: attaching listeners to a clip while it records, from
@@ -913,7 +962,15 @@ class AbletonMCP(ControlSurface):
             "snapshot_schema": "ableton_mcp_snapshot_v2",
             "passive_listeners": True,
             "performance_mode": bool(getattr(self, "_performance_mode", False)),
+            "socket_reader": SOCKET_READER,
+            "tick": self._tick_stats(),
+            "live": {"version": self._live_version, "python": sys.version.split()[0]},
         }
+
+    def _tick_stats(self):
+        st = self._tick_sampler.stats()
+        st["playing"] = self._safe_song_property("is_playing", bool, None)
+        return st
     
     def _safe_song_property(self, attr, cast, default):
         """Read self._song.<attr> with cast, returning default on common failures.
@@ -5132,6 +5189,38 @@ class AbletonMCP(ControlSurface):
         return {"cancelled": [c["id"] for c in gone], "reason": reason}
 
     # ── the clock ────────────────────────────────────────────────────────────
+
+    def _arm_clock_tick(self):
+        if self._clock_tick_armed or not self.running:
+            return
+        self._clock_tick_armed = True
+        try:
+            self.schedule_message(1, self._clock_tick)
+        except Exception as e:
+            self._clock_tick_armed = False
+            self.log_message("could not arm the clock tick: " + str(e))
+
+    def _clock_tick(self):
+        """One callback per tick, for the life of the script. Records the
+        interval and re-arms; the cost is a timestamp. Live's version is read
+        here once, on the main thread, for the handshake to report."""
+        self._clock_tick_armed = False
+        try:
+            self._tick_sampler.note(time.time())
+            if self._live_version is None:
+                self._live_version = self._read_live_version()
+        except Exception as e:
+            self.log_message("clock tick error: " + str(e))
+        if self.running:
+            self._arm_clock_tick()
+
+    def _read_live_version(self):
+        try:
+            app = self.application()
+            parts = [app.get_major_version(), app.get_minor_version(), app.get_bugfix_version()]
+            return ".".join(str(int(x)) for x in parts)
+        except Exception:
+            return "unknown"
 
     def _arm_perf_tick(self):
         if self._perf_tick_armed:

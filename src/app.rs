@@ -53,6 +53,12 @@ pub fn check() -> (Value, bool) {
         "capabilities": info.capabilities.len(),
         "bind_host": info.extra.get("bind_host"),
         "bind_is_loopback": info.extra.get("bind_is_loopback"),
+        "protocol_version": info.protocol_version,
+        // Phase 0 of the streams story: the tick period the script measures,
+        // and where it reads its sockets. Absent on a script older than 1.28.
+        "tick": info.extra.get("tick"),
+        "socket_reader": info.extra.get("socket_reader"),
+        "live": info.extra.get("live"),
         "session": session.as_ref().map(|s| json!({
             "tempo": s.get("tempo"),
             "track_count": s.get("track_count"),
