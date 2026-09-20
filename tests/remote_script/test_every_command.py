@@ -137,7 +137,24 @@ case("get_drum_rack_pads", {"track_index": 1},
 case("get_clip_automation", {"track_index": 0, "clip_index": 0,
                              "target": {"mixer": "volume"}},
      lambda t, r, s: t.assertIn("has_envelope", r))
-case("get_browser_tree", {"category_type": "all"}, lambda t, r, s: t.assertIn("categories", r))
+def _categories_are_browsable(t, r, s):
+    """#58: `available_categories` is what you may ask for, so every name in
+    it has to be a place to browse. It used to be `dir(browser)`, which
+    offered `load_item`, `preview_item` and the listener boilerplate."""
+    t.assertIn("categories", r)
+    offered = r["available_categories"]
+    t.assertTrue(offered, "no categories offered")
+    for name in offered:
+        t.assertFalse(name.endswith("_listener"), "%s is a listener, not a category" % name)
+        t.assertNotIn(name, ("load_item", "preview_item", "stop_preview",
+                             "relation_to_hotswap_target", "hotswap_target",
+                             "filter_type", "colors"),
+                      "%s is not a place to browse" % name)
+    t.assertIn("instruments", offered)
+    t.assertIn("drums", offered)
+
+
+case("get_browser_tree", {"category_type": "all"}, _categories_are_browsable)
 case("get_browser_items_at_path", {"path": "instruments"},
      lambda t, r, s: t.assertTrue(r["items"]))
 case("get_browser_index", {"category": "instruments", "limit": 50},
