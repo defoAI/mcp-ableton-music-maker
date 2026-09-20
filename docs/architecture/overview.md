@@ -105,6 +105,17 @@ script is loaded and up to date. Both are for CI and the Mac app.
   through a Resampling track as a fixed-length Session clip, the server polls until the clip
   has a file, stops the transport (a `Drop` guard stops it on any early exit), and
   `src/audio.rs` reads the WAV or AIFF Live wrote and measures it. Nothing is copied.
+  - **Capture needs the server on Live's machine.** The file is read off the server's own
+    filesystem, and the recording folder belongs to the set, on the host. The native binary
+    and the Mac app share that filesystem; the hardened container does not — it mounts
+    nothing but `/state` and by the image's contract should not casually mount more. So
+    capture is native-only today, and a read that fails says that instead of "no such file"
+    (`unreachable_recording` in `src/audio.rs`). The route that would make it work in the
+    container is the script sending the bytes over the socket it already has — it is on
+    Live's machine, and the duplex protocol has streams — into a file under `state_dir()`;
+    not a new mount and not a new socket. Not built ([#49](https://github.com/defoAI/mcp-ableton-music-maker/issues/49)).
+    Nothing in the measurements needs the file to leave the server: peak, RMS per bar,
+    crest, octave bands, LF/HF and stereo correlation are all in the reply.
   - **The playhead is confirmed before the fire.** The seek and the transport are
     asynchronous, so the script seeks to a whole bar before the asked bar, starts playing,
     and only fires once its own tick reads a playhead inside that preroll and still before

@@ -154,6 +154,28 @@ async fn capture_times_out_and_stops_live() {
 }
 
 #[tokio::test]
+async fn a_recording_the_server_cannot_see_says_why_and_not_no_such_file() {
+    // The hardened container mounts nothing but its state folder, so Live's
+    // recording folder is not there. A bare io error sends the producer
+    // looking in Live for a clip that is sitting right in front of them.
+    let missing = std::path::Path::new("/nowhere/a-set/Samples/Recorded/Capture 0001.wav");
+    let e = mcp_ableton_music_maker::audio::read_file(missing).unwrap_err();
+    assert!(e.contains("Capture 0001.wav"), "{e}");
+    assert!(
+        e.contains("this server's own filesystem") && e.contains("the container mounts nothing"),
+        "the reply says why the file is unreachable: {e}"
+    );
+    assert!(
+        e.contains("the native binary or the Mac app"),
+        "and what to use instead: {e}"
+    );
+    assert!(
+        e.contains("on the Capture track in Live either way"),
+        "and that the take itself is not lost: {e}"
+    );
+}
+
+#[tokio::test]
 async fn capture_refuses_bad_lengths_before_live() {
     let bridge = FakeBridge::responding(json!({}));
     let server = server_with(bridge.clone());

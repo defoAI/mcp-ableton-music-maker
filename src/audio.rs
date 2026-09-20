@@ -4,6 +4,12 @@
 //! This module reads those files (nothing else) and turns them into the
 //! numbers the feedback loop needs: peak, RMS per bar, silence, clipping and
 //! stereo correlation. It never writes, copies or sends audio.
+//!
+//! The folder is Live's, on Live's machine, so **capture needs the server to
+//! be on that machine too** — the native binary or the Mac app. The hardened
+//! container mounts nothing but its state folder (`docker-compose.yml`,
+//! `docker/verify-image.sh`), so it cannot reach the recording; a read that
+//! fails says that rather than "no such file" (#49).
 
 use std::path::Path;
 
@@ -24,9 +30,21 @@ impl Audio {
     }
 }
 
+/// Why the recording could not be opened. Live wrote it on Live's machine;
+/// this server reads it off its own filesystem, and the two are the same
+/// filesystem only when the server runs natively. A bare "no such file"
+/// sends the producer looking in Live for a clip that is sitting right
+/// there, so the reason comes with the path.
+fn unreachable_recording(path: &Path, e: &std::io::Error) -> String {
+    format!(
+        "{}: {e}. The recording is read from this server's own filesystem. That is Live's only when the server runs on the same machine — the native binary or the Mac app; the container mounts nothing but its state folder, so capture cannot reach Live's recording folder from there. On a Mac the folder may also need its own access grant. The clip itself is on the Capture track in Live either way.",
+        path.display()
+    )
+}
+
 /// Read a WAV or AIFF file by extension, then by magic bytes.
 pub fn read_file(path: &Path) -> Result<Audio, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let bytes = std::fs::read(path).map_err(|e| unreachable_recording(path, &e))?;
     if bytes.len() < 12 {
         return Err(format!("{}: too short to be an audio file", path.display()));
     }
