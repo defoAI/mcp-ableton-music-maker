@@ -200,6 +200,14 @@ def first_client(script):
     return script._clients[0] if script._clients else None
 
 
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 class Wire(object):
     """Every request and every reply, and what they cost.
 
@@ -441,6 +449,9 @@ def main(argv=None):
     parser.add_argument("--slow", action="append", metavar="CALL=MS",
                         help="make one Live call cost MS. Marked NOT MEASURED "
                              "everywhere it is reported.")
+    parser.add_argument("--exit-with-pid", type=int, metavar="PID",
+                        help="stop when this process is gone. A test binary that "
+                             "crashes must not leave a fake Live listening.")
     parser.add_argument("--print-port-only", action="store_true",
                         help="print the port and nothing else on stdout (the default)")
     args = parser.parse_args(argv)
@@ -492,7 +503,11 @@ def main(argv=None):
         while not stop.is_set():
             stop.wait(0.25)
             # A parent that went away takes the fake with it, so a killed
-            # test run never leaves one of these listening.
+            # test run never leaves one of these listening. `--exit-with-pid`
+            # is the reliable form: reparenting does not always land on 1.
+            if args.exit_with_pid is not None and not alive(args.exit_with_pid):
+                log("pid %d is gone; stopping" % args.exit_with_pid)
+                break
             if os.getppid() == 1:
                 log("parent gone; stopping")
                 break
