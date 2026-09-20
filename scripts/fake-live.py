@@ -449,6 +449,10 @@ def main(argv=None):
     parser.add_argument("--slow", action="append", metavar="CALL=MS",
                         help="make one Live call cost MS. Marked NOT MEASURED "
                              "everywhere it is reported.")
+    parser.add_argument("--quiet", action="store_true",
+                        help="no startup line, and the readout on exit only when "
+                             "something went wrong (an error, or a slow slice). What a "
+                             "test run uses, so a green suite is silent.")
     parser.add_argument("--exit-with-pid", type=int, metavar="PID",
                         help="stop when this process is gone. A test binary that "
                              "crashes must not leave a fake Live listening.")
@@ -485,9 +489,10 @@ def main(argv=None):
 
     sys.stdout.write("%d\n" % port)
     sys.stdout.flush()
-    log("listening on 127.0.0.1:%d, script %s, tick %.1f ms, latency %s x%g, %s"
-        % (port, ns["SCRIPT_VERSION"], args.tick_ms, args.latency, args.latency_scale,
-           "one shared set" if args.shared_set else "one set per connection"))
+    if not args.quiet:
+        log("listening on 127.0.0.1:%d, script %s, tick %.1f ms, latency %s x%g, %s"
+            % (port, ns["SCRIPT_VERSION"], args.tick_ms, args.latency, args.latency_scale,
+               "one shared set" if args.shared_set else "one set per connection"))
 
     stop = threading.Event()
 
@@ -518,6 +523,9 @@ def main(argv=None):
         except Exception as e:
             log("disconnect: %s" % e)
         slow = [line for line in script.logged if "slow slice" in line]
+        errors = sum(row[3] for row in wire.by_command.values())
+        if args.quiet and not errors and not slow:
+            return 0
         sys.stderr.write(wire.report(surface.primary._latency) + "\n")
         sys.stderr.write("  slow slices (over %s ms, as Live's Log.txt records them): %d\n"
                          % (script.SLOW_SLICE_MS, len(slow)))

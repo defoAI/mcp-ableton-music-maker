@@ -13,6 +13,20 @@
 //!   Live's 100 ms tick. Wrapped in a [`RecordingBridge`], so a test gets
 //!   both what was sent **and** what the set became.
 //!
+//! ## Isolation
+//!
+//! **Every test gets its own fake Live, in its own process, with one set** —
+//! which is exactly what Live is, so there is no divergence to remember and
+//! no test can see another's tracks. It costs about 110 ms to start one, and
+//! eight start in 131 ms because they overlap, so the whole suite pays a few
+//! seconds and buys perfect isolation for it. The process is killed when the
+//! test's bridge is dropped, and `--exit-with-pid` stops any that outlive a
+//! crashed test binary.
+//!
+//! A test that wants several connections onto **one** set (two clients, the
+//! event channels) starts its own with [`spawn_fake_live`] and connects
+//! twice.
+//!
 //! ## Pointing the same tests at a real Live
 //!
 //! ```bash
@@ -146,6 +160,9 @@ impl LiveBridge for FakeBridge {
 pub struct RecordingBridge<B: LiveBridge> {
     inner: B,
     sent: Mutex<Vec<(String, Value)>>,
+    /// The fake Live this bridge talks to, when it owns one: dropping the
+    /// bridge stops the process, so a test cleans up after itself.
+    process: Option<FakeLive>,
 }
 
 impl<B: LiveBridge> RecordingBridge<B> {
@@ -153,6 +170,7 @@ impl<B: LiveBridge> RecordingBridge<B> {
         Arc::new(Self {
             inner,
             sent: Mutex::new(Vec::new()),
+            process: None,
         })
     }
 
@@ -207,7 +225,7 @@ pub fn server_with(bridge: Arc<FakeBridge>) -> Server {
 
 // ── The fake Live, one per test binary ──────────────────────────────────────
 
-/// A `scripts/fake-live.py` owned by this test binary.
+/// A `scripts/fake-live.py` process.
 pub struct FakeLive {
     pub port: u16,
     child: Option<Child>,
@@ -254,8 +272,6 @@ pub fn spawn_fake_live(args: &[&str]) -> FakeLive {
     }
 }
 
-static FAKE_LIVE: OnceLock<FakeLive> = OnceLock::new();
-
 /// True when the suites should talk to a real Ableton Live instead of
 /// spawning the fake: `ABLETON_TARGET=live`, or an explicit `ABLETON_PORT`.
 pub fn targets_a_real_live() -> bool {
@@ -268,40 +284,47 @@ fn repo_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Start (or join) this binary's fake Live and return its port.
+/// A server wired through the real wire to a fake Live of this test's own:
+/// a real `AbletonConnection` over a real socket, tapped by a
+/// [`RecordingBridge`].
 ///
-/// One process per test binary, started once. Each connection gets its own
-/// set, so tests running in parallel inside the binary cannot collide —
-/// which is not what Live is, and is written down as such in
-/// `docs/architecture/overview.md`.
-fn fake_live() -> &'static FakeLive {
-    FAKE_LIVE.get_or_init(|| {
-        if targets_a_real_live() {
-            let (_, port) = mcp_ableton_music_maker::connection::live_address();
-            eprintln!("tests: ABLETON_TARGET=live — talking to a real Live on port {port}");
-            return FakeLive { port, child: None };
-        }
-        spawn_fake_live(&[])
-    })
-}
-
-/// A server wired through the real wire to the fake Live: a real
-/// `AbletonConnection` over a real socket, tapped by a [`RecordingBridge`].
+/// One process, one set — what Live is. The process is killed when the
+/// returned bridge is dropped, so nothing leaks between tests and nothing
+/// outlives the run.
 ///
-/// The returned bridge answers both questions — `commands()` for what was
-/// sent, and [`LiveSet`] (`set()`) for what the set became.
+/// Calls are free here (`--latency none`) because most tests are about what
+/// the set became, not what it cost. A test that is about the cost asks for
+/// the measured table with [`server_on_fake_live_with`].
 ///
 /// With `ABLETON_TARGET=live` this is a real Ableton Live and the suite is
 /// a real-Live verification pass. It builds in the open set; use a scratch
 /// one and `--test-threads=1`.
 pub fn server_on_fake_live() -> (Server, Arc<RecordingBridge<AbletonConnection>>) {
-    let fake = fake_live();
-    let host = if targets_a_real_live() {
-        mcp_ableton_music_maker::connection::live_address().0
+    server_on_fake_live_with(&["--latency", "none"])
+}
+
+/// The same, with extra flags for the fake — `--latency measured` when the
+/// test is about what a call costs Live, `--die-on <command>` when it is
+/// about Live going away.
+pub fn server_on_fake_live_with(
+    args: &[&str],
+) -> (Server, Arc<RecordingBridge<AbletonConnection>>) {
+    let (host, port, process) = if targets_a_real_live() {
+        let (host, port) = mcp_ableton_music_maker::connection::live_address();
+        (host, port, None)
     } else {
-        "127.0.0.1".to_string()
+        // `--quiet`: a green run says nothing. A run with an error or a
+        // slow slice still prints its readout.
+        let mut with_shared: Vec<&str> = vec!["--shared-set", "--quiet"];
+        with_shared.extend_from_slice(args);
+        let fake = spawn_fake_live(&with_shared);
+        ("127.0.0.1".to_string(), fake.port, Some(fake))
     };
-    let bridge = RecordingBridge::wrapping(AbletonConnection::new(host, fake.port));
+    let bridge = Arc::new(RecordingBridge {
+        inner: AbletonConnection::new(host, port),
+        sent: Mutex::new(Vec::new()),
+        process,
+    });
     let live = Arc::new(LiveState::with_activity(
         bridge.clone(),
         mcp_ableton_music_maker::activity::Activity::disabled(),

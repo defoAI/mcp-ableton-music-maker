@@ -394,14 +394,21 @@ Anything that depends on sound is a real-Live check, always. `TheModelIsNotLive`
 `tests/remote_script/test_live_semantics.py` pins each of those as a test, so the limits are
 executable rather than a paragraph nobody reads.
 
-**Isolation is the one deliberate divergence.** `--set-per-connection` (the default) gives
-each connecting client its own `default_set()`, so tests running in parallel inside one test
-binary cannot collide. Live is not like that: Live has one set and one main thread, and the
-event channels and scheduled cues run on that thread rather than on a socket. So in
-per-connection mode those channels read the first connection's set, and a `subscribe` from
-any other connection is **refused**, naming `--shared-set`, rather than answered about a set
-it is not looking at. `--shared-set` is one set for every client, which is what Live is, and
-is what the end-to-end run and the latency runs use.
+**Isolation: one process, one set, per test.** Each Rust test starts its own
+`scripts/fake-live.py` with `--shared-set` — one set behind every connection, which is what
+Live is — and kills it when the test's bridge is dropped. Nothing is shared, so nothing has
+to be reset, and there is no divergence from Live to remember. It costs about 110 ms to
+start one and eight start in 131 ms because they overlap, so the suite pays a few seconds
+for perfect isolation. `--exit-with-pid` stops any process that outlives a crashed test
+binary.
+
+`--set-per-connection` also exists, and gives each connecting client its own
+`default_set()` inside one process. That one **is** a divergence: Live has one set and one
+main thread, and the event channels and scheduled cues run on that thread rather than on a
+socket, so those channels read the first connection's set. A `subscribe` from any other
+connection is therefore **refused**, naming `--shared-set`, rather than answered about a set
+it is not looking at. Nothing in the Rust suite uses that mode; it is there for a Python
+test that wants two clients in one process.
 
 **Debugging, and failing on purpose.** `--record FILE` writes the wire as it went, one JSON
 line per request and per reply; `--script-log FILE` collects the script's own log lines

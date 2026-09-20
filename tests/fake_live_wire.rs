@@ -99,22 +99,27 @@ async fn notes_written_through_the_tool_read_back_out_of_the_clip() {
 }
 
 #[tokio::test]
-async fn every_connection_gets_a_set_of_its_own_so_these_tests_do_not_collide() {
+async fn every_test_gets_a_live_of_its_own() {
+    // Two `server_on_fake_live()` calls are two processes, each with one
+    // set — which is what Live is. Nothing a test builds can reach another.
     let (_a, bridge_a) = server_on_fake_live();
     let (_b, bridge_b) = server_on_fake_live();
     let set_a = LiveSet::of(bridge_a.as_ref());
     let set_b = LiveSet::of(bridge_b.as_ref());
 
     if common::targets_a_real_live() {
-        // A real Live is one set. That is the point of the flag.
+        // A real Live is one Live. That is the point of the flag, and why
+        // that run is single-threaded.
         assert_eq!(set_a.track_count(), set_b.track_count());
         return;
     }
     let before = set_b.track_count();
-    let _ = set_a.session();
+    set_a.build(&[("Only in A", "midi", "")]);
+    assert_eq!(set_a.track_names().last().unwrap(), "Only in A");
     assert_eq!(
         set_b.track_count(),
         before,
-        "one connection's work showed up in another's set"
+        "one test's work showed up in another's set"
     );
+    assert!(!set_b.track_names().contains(&"Only in A".to_string()));
 }

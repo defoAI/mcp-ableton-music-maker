@@ -139,8 +139,10 @@ docker/                verify-image.sh, Claude Desktop example config
     that it was not and why.
   - What the fake is **not** is written down, in `docs/architecture/overview.md` and as tests
     in `TheModelIsNotLive`: no audio, no rendering, no real browser index, no Max for Live,
-    and `--set-per-connection` is not Live. Anything that depends on those is a real-Live
-    check, always, and the issue says so rather than the suite pretending.
+    and `--set-per-connection` is not Live (the Rust suite does not use it: every test gets
+    its own process with `--shared-set`, one set, as Live is). Anything that depends on
+    those is a real-Live check, always, and the issue says so rather than the suite
+    pretending.
 - **The Remote Script touches Live only from Live's main thread** (decision 0007). The
   socket is read *on* that thread, on Live's own 100 ms tick, not from a Python thread
   (`SOCKET_READER`, decision 0010); `_run_on_main` → `_dispatch` runs every command there. A

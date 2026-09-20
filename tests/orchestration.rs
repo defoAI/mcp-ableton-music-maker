@@ -594,13 +594,10 @@ async fn build_song_executes_in_order() {
 
 #[tokio::test]
 async fn library_status_names_what_is_missing() {
-    let bridge = FakeBridge::responding(json!({
-        "live_version": "12.1.5", "edition_hint": "Standard or Intro-level instrument set",
-        "instruments": [{"name": "Drift"}, {"name": "Simpler"}, {"name": "Drum Rack"}],
-        "audio_effects": [{"name": "Reverb"}], "midi_effects": [], "packs": [{"name": "Core Library"}],
-        "drums": [{"name": "Drum Hits"}], "sounds": []
-    }));
-    let server = server_with(bridge.clone());
+    // The fake's browser is a couple of dozen items, not Live's library —
+    // so this reads as a Live with a partial instrument set, which is
+    // exactly the case the readout exists for.
+    let (server, _bridge) = server_on_fake_live();
     let r = server
         .run(
             &tools::GET_LIBRARY_STATUS,
@@ -610,15 +607,14 @@ async fn library_status_names_what_is_missing() {
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
     let t = text_of(&r);
+    assert!(t.starts_with("Live 12.4.6 ("), "{t}");
     assert!(
-        t.starts_with("Live 12.1.5 (Standard or Intro-level instrument set)."),
-        "{t}"
+        t.contains("Analog") && t.contains("Operator") && t.contains("Wavetable"),
+        "the instruments that are there are named: {t}"
     );
     assert!(
-        t.contains("Not available here")
-            && t.contains("Wavetable")
-            && !t.contains("here (11): Drift"),
-        "{t}"
+        t.contains("Not available here"),
+        "what Live does not have is named too: {t}"
     );
     assert!(
         t.contains("Packs installed (1): Core Library") && t.contains("Packs tab"),
@@ -628,19 +624,19 @@ async fn library_status_names_what_is_missing() {
 
 #[tokio::test]
 async fn a_long_batch_answers_with_a_grouped_summary_and_verbose_prints_every_step() {
-    let bridge = FakeBridge::responding(json!({}));
-    bridge.script(
-        "delete_arrangement_clips",
-        vec![json!({"track": "Drums", "remaining": 0, "removed": [
-            {"index": 0, "name": "a", "start_time": 0.0, "end_time": 4.0},
-            {"index": 1, "name": "b", "start_time": 4.0, "end_time": 8.0},
-            {"index": 2, "name": "c", "start_time": 8.0, "end_time": 12.0}]})],
-    );
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let track = set.build(&[("Drums", "midi", "")])[0];
+    set.write_clip(track, 0, "a", json!([]));
+    // Twenty steps, each clearing a freshly filled Arrangement, so the
+    // grouped summary is counting real removals.
+    set.place(track, 0, &[0.0, 4.0, 8.0]);
+    assert_eq!(set.arrangement(track).len(), 3);
+    bridge.clear();
     let steps: Vec<BatchStep> = (0..20)
         .map(|_| BatchStep {
             tool: "delete_arrangement_clip".into(),
-            args: json!({"track_index": 2, "all": true}),
+            args: json!({"track_index": track, "all": true}),
         })
         .collect();
     let r = server
@@ -658,9 +654,12 @@ async fn a_long_batch_answers_with_a_grouped_summary_and_verbose_prints_every_st
     let t = text_of(&r);
     assert!(t.starts_with("20 steps, 20 ok\n"), "{t}");
     assert!(
-        t.contains("  delete_arrangement_clip ×20 ✓ — removed 60\n"),
+        t.contains("  delete_arrangement_clip ×20 ✓ — removed 3\n"),
         "the group line carries the work, not only the step count: {t}"
     );
+    // The first step cleared the track; the other nineteen found nothing,
+    // and the Arrangement really is empty.
+    assert!(set.arrangement(track).is_empty());
     assert!(
         !t.contains("1. delete_arrangement_clip"),
         "twenty identical confirmations are not the reply: {t}"
@@ -688,7 +687,7 @@ async fn a_long_batch_answers_with_a_grouped_summary_and_verbose_prints_every_st
         "the summary comes first: {t}"
     );
     assert!(
-        t.contains("1. delete_arrangement_clip ✓ Removed 3 ")
+        t.contains("1. delete_arrangement_clip ✓")
             && t.contains("20. delete_arrangement_clip ✓"),
         "verbose keeps every step: {t}"
     );
@@ -696,10 +695,7 @@ async fn a_long_batch_answers_with_a_grouped_summary_and_verbose_prints_every_st
 
 #[tokio::test]
 async fn batch_returns_whole_multi_line_results() {
-    let bridge = FakeBridge::responding(
-        json!({"count": 1, "returns": [{"index": 0, "letter": "A", "name": "Reverb", "volume": 0.85, "mute": false, "devices": ["Reverb"]}]}),
-    );
-    let server = server_with(bridge.clone());
+    let (server, _bridge) = server_on_fake_live();
     let p = BatchParams {
         steps: vec![BatchStep {
             tool: "get_returns".into(),
@@ -709,29 +705,29 @@ async fn batch_returns_whole_multi_line_results() {
         verbose: true,
     };
     let r = server.run(&tools::BATCH, p, tools::batch_body).await;
-    assert!(!is_error(&r));
+    assert!(!is_error(&r), "{}", text_of(&r));
     let t = text_of(&r);
+    // A new Live set has two returns, A Reverb and B Delay, and the batch
+    // keeps the whole reply rather than a one-line confirmation.
     assert!(
         t.contains("\"letter\": \"A\"") && t.contains("\"devices\""),
         "full JSON kept: {t}"
     );
+    assert!(t.contains("A Reverb") && t.contains("B Delay"), "{t}");
 }
 
 #[tokio::test]
 async fn delete_arrangement_clips_all_and_by_indices() {
-    let bridge = FakeBridge::responding(
-        json!({"name": "x", "start_time": 0.0, "end_time": 4.0, "remaining": 0}),
-    );
-    bridge.script(
-        "delete_arrangement_clips",
-        vec![json!({"track": "Drums", "remaining": 0, "removed": [
-            {"index": 0, "name": "x", "start_time": 0.0, "end_time": 4.0},
-            {"index": 1, "name": "x", "start_time": 4.0, "end_time": 8.0},
-            {"index": 2, "name": "x", "start_time": 8.0, "end_time": 12.0}]})],
-    );
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let track = set.build(&[("Drums", "midi", "")])[0];
+    set.write_clip(track, 0, "x", json!([]));
+    set.place(track, 0, &[0.0, 4.0, 8.0]);
+    assert_eq!(set.arrangement(track).len(), 3);
+    bridge.clear();
+
     let p = tools::DeleteArrangementClipParams {
-        track_index: 2,
+        track_index: track as i64,
         clip_index: -1,
         clip_indices: vec![],
         all: true,
@@ -748,15 +744,19 @@ async fn delete_arrangement_clips_all_and_by_indices() {
         bridge.sent()[0],
         (
             "delete_arrangement_clips".to_string(),
-            json!({"track_index": 2, "all": true})
+            json!({"track_index": track, "all": true})
         ),
         "every clip in one round trip"
     );
     assert!(
-        text_of(&r).contains("Removed 3 Arrangement clip(s) from track 2 in one round trip"),
+        text_of(&r).contains(&format!(
+            "Removed 3 Arrangement clip(s) from track {track} in one round trip"
+        )),
         "{}",
         text_of(&r)
     );
+    assert!(set.arrangement(track).is_empty(), "the clips are still there");
+
     let none = tools::DeleteArrangementClipParams {
         track_index: 2,
         clip_index: -1,
@@ -775,13 +775,28 @@ async fn delete_arrangement_clips_all_and_by_indices() {
 
 #[tokio::test]
 async fn add_notes_can_refresh_arrangement_copies() {
-    let bridge = FakeBridge::responding(json!({"clip_name": "bass", "track_name": "Bass"}));
-    bridge.script("get_clip_info", vec![json!({"name": "bass"})]);
-    bridge.script("get_arrangement_clips", vec![json!({"clip_count": 3, "clips": [
-        {"name": "bass", "start_time": 0.0, "end_time": 4.0}, {"name": "other", "start_time": 4.0, "end_time": 8.0}, {"name": "bass", "start_time": 8.0, "end_time": 12.0}]})]);
-    let server = server_with(bridge.clone());
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let track = set.build(&[("Bass", "midi", "")])[0];
+    // Two copies of 'bass' in the Arrangement, with something else between
+    // them, so the refresh has to pick out its own.
+    set.write_clip(track, 0, "bass", json!([{"pitch": 41, "start_time": 0.0, "duration": 1.0, "velocity": 90}]));
+    set.write_clip(track, 1, "other", json!([]));
+    set.place(track, 0, &[0.0]);
+    set.place(track, 1, &[4.0]);
+    set.place(track, 0, &[8.0]);
+    assert_eq!(
+        set.arrangement(track),
+        vec![
+            ("bass".to_string(), 0.0),
+            ("other".to_string(), 4.0),
+            ("bass".to_string(), 8.0)
+        ]
+    );
+    bridge.clear();
+
     let p = tools::AddNotesParams {
-        track_index: 1,
+        track_index: track as i64,
         clip_index: 0,
         clear: true,
         propagate_to_arrangement: true,
@@ -818,6 +833,17 @@ async fn add_notes_can_refresh_arrangement_copies() {
         "{}",
         text_of(&r)
     );
+    // The Arrangement still has three clips in the same places, and the
+    // refreshed ones carry the new note.
+    assert_eq!(
+        set.arrangement(track),
+        vec![
+            ("bass".to_string(), 0.0),
+            ("other".to_string(), 4.0),
+            ("bass".to_string(), 8.0)
+        ]
+    );
+    assert_eq!(set.clip_pitches(track, 0), vec![36], "the Session clip");
 }
 
 #[tokio::test]
