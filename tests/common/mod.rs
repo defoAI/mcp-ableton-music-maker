@@ -331,6 +331,54 @@ impl<'a> LiveSet<'a> {
             .unwrap_or_else(|e| panic!("{command} failed against the set: {e}"))
     }
 
+    /// Put named tracks in the set before the test starts, the way a
+    /// producer's session would already have them. `(name, kind,
+    /// instrument_uri)`; an empty uri loads nothing.
+    ///
+    /// This is set-up, not the thing under test, so it goes straight to the
+    /// script rather than through a tool.
+    pub fn build(&self, tracks: &[(&str, &str, &str)]) -> Vec<usize> {
+        let specs: Vec<Value> = tracks
+            .iter()
+            .map(|(name, kind, uri)| {
+                let mut spec = json!({"name": name, "kind": kind});
+                if !uri.is_empty() {
+                    spec["instrument_uri"] = json!(uri);
+                }
+                spec
+            })
+            .collect();
+        let reply = self.ask(
+            "create_tracks",
+            json!({"tracks": specs, "on_existing": "converge"}),
+        );
+        reply["created"]
+            .as_array()
+            .expect("create_tracks said nothing about what it created")
+            .iter()
+            .map(|c| c["index"].as_u64().unwrap_or_default() as usize)
+            .collect()
+    }
+
+    /// A clip in a Session slot, with notes, as set-up.
+    pub fn write_clip(&self, track: usize, slot: usize, name: &str, notes: Value) {
+        self.ask(
+            "write_clips",
+            json!({"clips": [{
+                "track_index": track, "clip_index": slot,
+                "length": 4.0, "name": name, "notes": notes
+            }]}),
+        );
+    }
+
+    /// Put a Session clip into the Arrangement at these beats, as set-up.
+    pub fn place(&self, track: usize, slot: usize, times: &[f64]) {
+        self.ask(
+            "place_clips",
+            json!({"track_index": track, "clip_index": slot, "times": times}),
+        );
+    }
+
     pub fn session(&self) -> Value {
         self.ask("get_session_info", json!({}))
     }
@@ -377,6 +425,38 @@ impl<'a> LiveSet<'a> {
         pitches
     }
 
+    /// Everything Live says about a Session clip: name, length, loop points,
+    /// launch mode, colour.
+    pub fn clip_info(&self, track: usize, clip: usize) -> Value {
+        self.ask(
+            "get_clip_info",
+            json!({"track_index": track, "clip_index": clip}),
+        )
+    }
+
+    /// One device parameter's value, read back off the device.
+    pub fn parameter(&self, track: usize, device: usize, index: usize) -> f64 {
+        let reply = self.ask(
+            "get_device_parameters",
+            json!({"track_index": track, "device_index": device}),
+        );
+        reply["device"]["parameters"][index]["value"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("no parameter {index} on device {device}: {reply}"))
+    }
+
+    /// A clip's automation for one device parameter, sampled by Live.
+    pub fn automation(&self, track: usize, clip: usize, device: usize, parameter: usize) -> Value {
+        self.ask(
+            "get_clip_automation",
+            json!({
+                "track_index": track, "clip_index": clip, "arrangement": false,
+                "target": {"device_index": device, "parameter_index": parameter},
+                "resolution": 1.0
+            }),
+        )
+    }
+
     pub fn clip_name(&self, track: usize, clip: usize) -> Option<String> {
         let reply = self.ask(
             "get_clip_info",
@@ -396,6 +476,28 @@ impl<'a> LiveSet<'a> {
                         (
                             c["name"].as_str().unwrap_or_default().to_string(),
                             c["start_time"].as_f64().unwrap_or_default(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The locators, as `(name, beat)`. They ride on the session snapshot,
+    /// which is where the script serialises `song.cue_points`.
+    pub fn locators(&self) -> Vec<(String, f64)> {
+        let reply = self.ask(
+            "get_session_snapshot",
+            json!({"include_notes": false, "include_params": false}),
+        );
+        reply["cue_points"]
+            .as_array()
+            .map(|ls| {
+                ls.iter()
+                    .map(|l| {
+                        (
+                            l["name"].as_str().unwrap_or_default().to_string(),
+                            l["time"].as_f64().unwrap_or_default(),
                         )
                     })
                     .collect()
@@ -434,11 +536,16 @@ impl<'a> LiveSet<'a> {
             "get_device_parameters",
             json!({"track_index": track, "device_index": 0}),
         );
+        // `devices` is a list of names; `device` is the one that was asked for.
         reply["devices"]
             .as_array()
             .map(|ds| {
                 ds.iter()
-                    .map(|d| d["name"].as_str().unwrap_or_default().to_string())
+                    .map(|d| {
+                        d.as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| d["name"].as_str().unwrap_or_default().to_string())
+                    })
                     .collect()
             })
             .unwrap_or_default()
