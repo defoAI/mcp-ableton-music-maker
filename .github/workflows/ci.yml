@@ -77,6 +77,12 @@ jobs:
       - name: Tauri CLI
         run: npm ci
         working-directory: app
+      # The UI's own suites: the Listen state machine, the visual's wander, and
+      # the Prompts screen. They need no bundle and no Live, so they run before
+      # the twenty-minute build rather than after it.
+      - name: Front-end tests
+        run: node --test *.test.mjs
+        working-directory: app/src
       # Two things make this reliable, and both are easy to lose:
       # GitHub sets CI=true, which is what makes Tauri pass --skip-jenkins to
       # bundle_dmg.sh — a runner has no Finder to send the cosmetic AppleScript

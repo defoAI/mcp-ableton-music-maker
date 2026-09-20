@@ -180,6 +180,7 @@ Live instead of the fake — the same tests, the same assertions. It builds in t
 | Setup: install the Remote Script, check Live, connect Claude Desktop / Claude Code / Cursor, test | Built |
 | Delete all local data: activity, sessions, the library index and the set exports | Built |
 | Activity: per-session table, detail, estimated tokens, filters, retention | Built |
+| Prompts: the four finished prompts in `prompts/`, embedded with `include_str!`, one copied into Claude; a banner says which call fails first when no client is configured or Live is not running | Built — `cargo test --test prompts` (10) against the server's tool list, `node --test app/src/prompts.test.mjs` (11). Adds no tool and no Remote Script command |
 | Listen: spectrum, master meters, six ranges from a process tap of Live (macOS 14.4+; the app itself still runs on 12) | Built — `cargo test` in `app/src-tauri` (19 unit, 5 integration of which 2 need Live), `node --test app/src/listen.test.mjs` (16), `cargo run --example listen_probe` against Live |
 | Float window (always on top) and the full-screen visual (WebGL, eight presets) | Built |
 | The visual never repeats and never cuts: each visit re-rolls the preset into a variant (palette, warp mode, shape, fold, swirl, ripple, chroma), wanders at random, and cross-dissolves — both warp modes mixed per pixel, both folds crossfaded, the shapes dissolving on one feedback buffer | Built — `node --test app/src/visual.test.mjs` (18), including a simulated twenty minutes in which no field moves more than 6% of its own range in a frame |

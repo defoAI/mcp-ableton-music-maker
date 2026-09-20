@@ -21,6 +21,8 @@
     selected: null,
     client: 'desktop',
     clientInfo: null,
+    prompts: null,
+    prompt: 'song',
     setup: { installing: false, checking: false, check: null, testing: false, test: null, installMsg: null },
   };
 
@@ -272,6 +274,70 @@
     $('#steps').innerHTML = steps.join('');
   }
 
+  // ── Prompts ───────────────────────────────────────────────────────────────
+  // Four finished prompts, read out of prompts/*.md by the Rust side. The UI
+  // holds no copy of the text: `state.prompts` is whatever the command
+  // returned, and the copy button copies the body of the selected one.
+  const selectedPrompt = () => (state.prompts || []).find((p) => p.id === state.prompt) || (state.prompts || [])[0] || null;
+
+  // What a pasted prompt would hit first, if it would not work. Nothing here
+  // probes anything: it reads the chain the Overview already computed.
+  function promptBanner() {
+    const st = state.status;
+    if (!st) return null;
+    const configured = !!st.clients?.desktop?.configured || (st.sessions || []).length > 0;
+    if (!configured) {
+      return { text: '<b>No client is configured yet.</b> Your client starts the server, so a pasted prompt has nothing to run it. Copying still works if you are getting ready.', action: 'Finish setup' };
+    }
+    if (!st.live?.live_reachable) {
+      return { text: '<b>Live is not open.</b> Every prompt here starts with <span class="mono">get_context</span>, which needs a running set. Open Live with AbletonMusicMaker selected as a Control Surface, then paste.', action: 'How to select it' };
+    }
+    return null;
+  }
+
+  function renderPrompts() {
+    const list = state.prompts;
+    const banner = $('#pbanner');
+    const b = promptBanner();
+    banner.hidden = !b;
+    banner.innerHTML = b ? `<span>${b.text}</span><button class="btn small" data-go="setup">${esc(b.action)}</button>` : '';
+    if (!list) {
+      $('#prail').innerHTML = '<div class="empty">Loading…</div>';
+      return;
+    }
+    $('#prail').innerHTML = list.map((p) => `
+      <button class="pcard" type="button" data-pick="${esc(p.id)}" aria-pressed="${p.id === state.prompt}">
+        <span class="t">${esc(p.title)}</span>
+        <span class="d">${esc(p.card)}</span>
+        <span class="m">${esc(p.meta)}</span>
+      </button>`).join('');
+    const p = selectedPrompt();
+    if (!p) return;
+    $('#p-title').textContent = p.title;
+    $('#p-why').textContent = p.when;
+    $('#p-text').textContent = p.body;
+    $('#p-path').textContent = p.file;
+    $('#p-len').textContent = `${fmt(p.words)} words · about ${fmt(Math.round(p.words / 0.75 / 100) * 100)} tokens of your conversation`;
+    $('#p-steps').innerHTML = (p.steps || []).map((s) => `
+      <div class="pstep">
+        <span class="n">${esc(s.name)}</span>
+        <span class="s">${esc(s.what)}</span>
+        ${(s.tools || []).length ? `<span class="tchips">${s.tools.map((t) => `<span class="tchip">${esc(t)}</span>`).join('')}</span>` : ''}
+      </div>`).join('');
+  }
+
+  async function loadPrompts() {
+    try {
+      const r = await invoke('prompts');
+      state.prompts = r.prompts || [];
+      if (!state.prompts.some((p) => p.id === state.prompt)) state.prompt = state.prompts[0]?.id || null;
+    } catch (e) {
+      state.prompts = [];
+      toast('Could not read the prompts: ' + e);
+    }
+    renderPrompts();
+  }
+
   function renderSettings() {
     const s = state.settings;
     if (!s) return;
@@ -308,6 +374,7 @@
       renderOverview();
       if (state.screen === 'setup') renderSetup();
       if (state.screen === 'settings') renderSettings();
+      if (state.screen === 'prompts') renderPrompts();
     } catch (e) { toast('Status failed: ' + e); }
   }
 
@@ -403,6 +470,10 @@
       } catch (e) { toast('Could not write the config: ' + e); }
     }
     if (a === 'copy') copy(el.dataset.copy);
+    if (a === 'copyprompt') {
+      const p = selectedPrompt();
+      if (p) copy(p.body, 'Copied. Paste it into Claude and answer its questions.');
+    }
     if (a === 'removelegacy') {
       try {
         const r = await invoke('remove_legacy_client');
@@ -419,8 +490,8 @@
     }
   }
 
-  function copy(text) {
-    const done = () => toast('Copied');
+  function copy(text, msg) {
+    const done = () => toast(msg || 'Copied');
     if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, () => fallback());
     else fallback();
     function fallback() {
@@ -437,6 +508,7 @@
     if (screen === 'setup') { renderSetup(); loadClientInfo(); }
     if (screen === 'settings') loadSettings();
     if (screen === 'activity') { renderActivity(); loadCaptures(); }
+    if (screen === 'prompts') { if (state.prompts) renderPrompts(); else loadPrompts(); }
     if (window.__listen) window.__listen.onScreen(screen);
   }
   window.__goto = go;
@@ -448,6 +520,7 @@
     const open = e.target.closest('[data-open]'); if (open) { e.preventDefault(); invoke('open_external', { target: open.dataset.open }); return; }
     const play = e.target.closest('[data-play]'); if (play) { invoke('play_file', { path: play.dataset.play }).then(() => toast('Playing'), (err) => toast(String(err))); return; }
     const reveal = e.target.closest('[data-reveal]'); if (reveal) { invoke('reveal_file', { path: reveal.dataset.reveal }); return; }
+    const pick = e.target.closest('[data-pick]'); if (pick) { state.prompt = pick.dataset.pick; renderPrompts(); return; }
     const goBtn = e.target.closest('[data-go]'); if (goBtn) { go(goBtn.dataset.go); return; }
     const chip = e.target.closest('.chip'); if (chip) { state.filter = chip.dataset.filter; document.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', c === chip)); renderActivity(); return; }
     const row = e.target.closest('tbody tr[data-i]'); if (row) { state.selected = +row.dataset.i; if (state.screen === 'overview') go('activity'); renderActivity(); return; }
