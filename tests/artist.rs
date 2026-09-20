@@ -559,6 +559,11 @@ async fn arrangement_automation_is_refused_before_live_and_the_surface_is_marked
         "duplicate_to_arrangement",
         "delete_arrangement_clip",
         "get_remote_script_info",
+        // Editing a device chain is the raw layer: the artist verbs are
+        // load_instrument_or_effect and shape_sound (decision 0006).
+        "edit_devices",
+        "get_device_parameters",
+        "set_device_parameter",
     ] {
         assert!(
             !tools_list.iter().any(|t| t.name == n),

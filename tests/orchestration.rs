@@ -120,6 +120,15 @@ async fn play_and_measure_reports_peaks_and_silence() {
         "returns": [{"index": 0, "name": "Reverb", "left": 0.2, "right": 0.2}],
         "master": {"name": "Master", "left": 0.8, "right": 0.8}
     }));
+    // Live's own meter curve: a meter value is not linear amplitude, so the
+    // script hands over the taper it draws the meters against.
+    bridge.script(
+        "get_meter_scale",
+        vec![
+            json!({"points": [[0.0, -80.0], [0.4, -30.0], [0.7, -12.0], [0.85, 0.0], [1.0, 6.0]],
+                    "reference": "post_fader"}),
+        ],
+    );
     let server = server_with(bridge.clone());
     let p = PlayAndMeasureParams {
         start_time: Some(32.0),
@@ -132,17 +141,59 @@ async fn play_and_measure_reports_peaks_and_silence() {
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
     let cmds = bridge.commands();
-    assert_eq!(
-        cmds[0], "play_from",
-        "plays from the position, not the start marker"
-    );
-    assert_eq!(bridge.sent()[0].1["time"], 32.0);
+    let played = cmds
+        .iter()
+        .position(|c| c == "play_from")
+        .expect("plays from the position, not the start marker");
+    assert_eq!(bridge.sent()[played].1["time"], 32.0);
     assert_eq!(cmds.last().unwrap(), "stop_playback");
     assert!(cmds.iter().filter(|c| *c == "get_track_meters").count() >= 3);
     let t = text_of(&r);
     assert!(
-        t.contains("track 0 'Kick': −3.0 dB") && t.contains("Silent during this stretch: Pad"),
-        "{t}"
+        t.contains("track 0 'Kick': −11.2 dB"),
+        "the meter reading goes through Live's curve, not 20·log10: {t}"
+    );
+    assert!(t.contains("Silent during this stretch: Pad"), "{t}");
+    assert!(
+        t.contains("post-fader"),
+        "a meter reading says where it was measured: {t}"
+    );
+    assert_eq!(
+        bridge
+            .commands()
+            .iter()
+            .filter(|c| *c == "get_meter_scale")
+            .count(),
+        1,
+        "the curve is read once per session"
+    );
+}
+
+#[tokio::test]
+async fn an_older_script_still_reads_in_real_db() {
+    // A script that predates get_meter_scale gives no curve; the server holds
+    // the same measured law, so the reading is still dB and still post-fader.
+    let bridge = FakeBridge::responding(json!({
+        "is_playing": true, "song_time": 0.0,
+        "tracks": [{"index": 0, "name": "Kick", "left": 0.71, "right": 0.69}],
+        "returns": [], "master": {"name": "Master", "left": 0.8, "right": 0.8}
+    }));
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::GET_TRACK_METERS,
+            mcp_ableton_music_maker::tools::Empty::default(),
+            tools::get_track_meters_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    // 0.71 on the measured law: 76 × 0.71 − 70 = −16.0 dB.
+    assert!(t.contains("'Kick': −16.0 dB"), "{t}");
+    assert!(t.contains("post-fader"), "{t}");
+    assert!(
+        bridge.commands().iter().all(|c| c != "set_track_mixer"),
+        "a read changes nothing"
     );
 }
 
@@ -292,6 +343,7 @@ fn song() -> BuildSongParams {
     BuildSongParams {
         tempo: Some(128.0),
         key: None,
+        on_existing: String::new(),
         scenes: vec![],
         tracks: vec![
             SongTrack {
@@ -825,5 +877,112 @@ async fn batch_resolves_last_clip_and_build_song_handles_scenes_and_slots() {
         text_of(&r).contains("Scenes: 0 Intro, 1 Groove."),
         "{}",
         text_of(&r)
+    );
+}
+
+// ── A build that died half-way converges when it is run again ───────────────
+
+#[tokio::test]
+async fn build_song_converges_on_a_re_run_instead_of_duplicating() {
+    let bridge = FakeBridge::responding(json!({"index": 2, "name": "2-MIDI", "tempo": 128.0}));
+    // Live answers the second run with the tracks it already has.
+    bridge.script(
+        "create_tracks",
+        vec![json!({"created": [
+            {"index": 0, "name": "Drums", "reused": true},
+            {"index": 1, "name": "Pad", "reused": true}]})],
+    );
+    bridge.script(
+        "get_track_info",
+        vec![json!({"index": 0, "kind": "track", "name": "Drums", "devices": [],
+                    "clip_slots": [{"index": 0, "has_clip": true, "clip": {"name": "Kick", "length": 4.0}}]})],
+    );
+    bridge.script(
+        "get_arrangement_clips",
+        vec![json!({"clips": [
+            {"name": "Kick", "start_time": 0.0, "end_time": 4.0, "length": 4.0},
+            {"name": "Kick", "start_time": 4.0, "end_time": 8.0, "length": 4.0}]})],
+    );
+    bridge.script("write_clips", vec![json!({"written": []})]);
+    bridge.script("place_clips", vec![json!({"placed": 2})]);
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(&tools::BUILD_SONG, song(), tools::build_song_body)
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    assert_eq!(
+        bridge.sent()[1].1["on_existing"],
+        "converge",
+        "Live decides what already exists, in the same round trip"
+    );
+    assert!(t.contains("Track 0 'Drums' — reused"), "{t}");
+    assert!(
+        !bridge.commands().contains(&"write_clips".to_string()),
+        "the slot already holds that clip: nothing was written"
+    );
+    let placed = bridge
+        .sent()
+        .into_iter()
+        .find(|(c, _)| c == "place_clips")
+        .expect("the two free bars are still placed");
+    let times = placed.1["times"]
+        .as_array()
+        .cloned()
+        .or_else(|| placed.1["clips"][0]["times"].as_array().cloned())
+        .unwrap_or_default();
+    assert_eq!(
+        times,
+        vec![json!(8.0), json!(12.0)],
+        "beats 0 and 4 were taken: {placed:?}"
+    );
+    assert!(
+        t.contains("Converged: 2 track(s) reused, 1 clip(s) and 2 placement(s) were already there"),
+        "{t}"
+    );
+}
+
+#[tokio::test]
+async fn build_song_can_be_told_to_fail_on_what_exists() {
+    let bridge = FakeBridge::responding(json!({"index": 2, "name": "2-MIDI", "tempo": 128.0}));
+    let server = server_with(bridge.clone());
+    let mut p = song();
+    p.on_existing = "fail".into();
+    let _ = server
+        .run(&tools::BUILD_SONG, p, tools::build_song_body)
+        .await;
+    assert_eq!(bridge.sent()[1].1["on_existing"], "fail");
+
+    let mut p = song();
+    p.on_existing = "sideways".into();
+    let before = bridge.sent().len();
+    let r = server
+        .run(&tools::BUILD_SONG, p, tools::build_song_body)
+        .await;
+    assert!(
+        is_error(&r) && text_of(&r).contains("on_existing must be converge, add or fail"),
+        "{}",
+        text_of(&r)
+    );
+    assert_eq!(bridge.sent().len(), before, "nothing was sent");
+}
+
+#[tokio::test]
+async fn a_failed_build_says_what_exists_and_that_the_document_can_be_re_run() {
+    let bridge = FakeBridge::responding(json!({"index": 2, "name": "2-MIDI", "tempo": 128.0}));
+    bridge.fail_from(
+        2,
+        mcp_ableton_music_maker::connection::LiveError::Lost("socket closed".into()),
+    );
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(&tools::BUILD_SONG, song(), tools::build_song_body)
+        .await;
+    let t = text_of(&r);
+    assert!(is_error(&r), "{t}");
+    assert!(t.contains("Stopped:"), "{t}");
+    assert!(
+        t.contains("Re-run the same document — build_song converges"),
+        "the way out is in the failure: {t}"
     );
 }

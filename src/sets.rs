@@ -300,6 +300,7 @@ pub fn document(
 /// The build_song document an exported set rebuilds through.
 pub fn build_params(doc: &SetDocument) -> BuildSongParams {
     BuildSongParams {
+        on_existing: "converge".into(),
         tempo: doc.tempo,
         key: doc.key.clone(),
         scenes: doc

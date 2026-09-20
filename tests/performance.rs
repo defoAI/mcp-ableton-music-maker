@@ -50,6 +50,16 @@ fn state(bar: i64, beat_in_bar: i64, playing: bool) -> Value {
 fn bridge() -> Arc<FakeBridge> {
     let b = FakeBridge::responding(json!({}));
     b.script("get_performance_state", vec![state(14, 2, true)]);
+    // Live's own meter taper, as get_meter_scale hands it over. The numbers
+    // here are a stand-in shape, not Live's own curve: what is pinned is that
+    // a reading is interpolated on the curve rather than 20·log10 of it.
+    b.script(
+        "get_meter_scale",
+        vec![
+            json!({"points": [[0.0, -80.0], [0.4, -30.0], [0.7, -12.0], [0.85, 0.0], [1.0, 6.0]],
+                    "reference": "post_fader"}),
+        ],
+    );
     b.script(
         "set_launch_quantization",
         vec![json!({"clip_trigger_quantization": 4, "name": "1_bar"})],
@@ -1206,13 +1216,17 @@ async fn listen_reads_meters_over_a_bar_without_touching_the_transport() {
     let cmds = b.commands();
     assert_eq!(cmds[0], "get_performance_state");
     assert!(
-        cmds[1..].iter().all(|c| c == "get_track_meters"),
-        "{cmds:?}"
+        cmds[1..]
+            .iter()
+            .all(|c| c == "get_track_meters" || c == "get_meter_scale"),
+        "nothing but reads; the transport is never touched: {cmds:?}"
     );
     let t = text_of(&r);
     assert!(t.starts_with("Listened for 0.25 bars from bar 15"), "{t}");
-    assert!(t.contains("Kick") && t.contains("peak −4.4"), "{t}");
-    assert!(t.contains("within 0.5 dB of clipping"), "{t}");
+    // 0.6 on the curve above: −30 dB at 0.4, −12 dB at 0.7, so −18.0 dB.
+    assert!(t.contains("Kick") && t.contains("peak −18.0 dB"), "{t}");
+    assert!(t.contains("over 0 dB: clipping"), "{t}");
+    assert!(t.contains("post-fader"), "{t}");
 }
 
 #[tokio::test]
@@ -1681,4 +1695,99 @@ async fn a_take_never_touches_what_is_already_in_the_arrangement() {
         .find(|(c, _)| c == "start_arrangement_record")
         .expect("armed");
     assert_eq!(arm.1["replace"], json!(false), "nothing may be replaced");
+}
+
+// ── A performance nobody is playing does not block the session ──────────────
+
+fn stale_performance(server: &tools::Server, hours: i64) {
+    use chrono::Local;
+    *server.live().performance.lock().unwrap() =
+        Some(mcp_ableton_music_maker::connection::Performance {
+            started_at: Local::now() - chrono::Duration::hours(hours),
+            start_bar: 1,
+            start_beat: 0.0,
+            key: None,
+            quantization: "1_bar".into(),
+            cues_scheduled: 0,
+            cues_cancelled: 0,
+            follow_key: false,
+            song: None,
+            take: None,
+        });
+}
+
+#[tokio::test]
+async fn a_performance_left_running_is_ended_by_the_next_tool_that_needs_the_transport() {
+    let b = bridge();
+    // Live's transport has been stopped since, and nothing is cued.
+    b.script("get_performance_state", vec![state(14, 2, false)]);
+    b.script("set_tempo", vec![json!({"tempo": 128.0})]);
+    let server = server_with(b.clone());
+    stale_performance(&server, 10);
+    let r = server
+        .run(
+            &tools::SET_TEMPO,
+            SetTempoParams { tempo: 128.0 },
+            tools::set_tempo_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "the work goes through: {t}");
+    assert!(
+        t.starts_with("A performance was left running from 10 h")
+            && t.contains("Live's transport has been stopped since — I ended it."),
+        "the reply says what was ended and why: {t}"
+    );
+    assert!(
+        b.commands().contains(&"set_tempo".to_string()),
+        "the tempo change reached Live"
+    );
+    assert!(
+        server.live().performance.lock().unwrap().is_none(),
+        "the stale performance is gone"
+    );
+}
+
+#[tokio::test]
+async fn a_performance_that_is_playing_still_guards() {
+    let b = bridge(); // state(14, 2, true): the transport is playing
+    let server = server_with(b.clone());
+    stale_performance(&server, 10);
+    let before = b.commands().len();
+    let r = server
+        .run(
+            &tools::SET_TEMPO,
+            SetTempoParams { tempo: 128.0 },
+            tools::set_tempo_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(is_error(&r), "{t}");
+    assert!(t.contains("transport playing"), "{t}");
+    assert!(t.contains("ramp it with cue"), "{t}");
+    assert!(
+        !b.commands()[before..].contains(&"set_tempo".to_string()),
+        "nothing was written"
+    );
+    assert!(server.live().performance.lock().unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_pending_cue_keeps_a_stopped_performance_alive() {
+    let b = bridge();
+    // Stopped, but a cue is waiting to fire: this performance is not over.
+    let mut stopped = state(14, 2, false);
+    stopped["cues"] = json!([{"id": 3, "name": "drop", "beat": 64.0}]);
+    b.script("get_performance_state", vec![stopped]);
+    let server = server_with(b.clone());
+    stale_performance(&server, 10);
+    let r = server
+        .run(
+            &tools::SET_TEMPO,
+            SetTempoParams { tempo: 128.0 },
+            tools::set_tempo_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    assert!(server.live().performance.lock().unwrap().is_some());
 }

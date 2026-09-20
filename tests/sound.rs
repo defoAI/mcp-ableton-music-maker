@@ -28,6 +28,7 @@ fn state() -> Value {
 fn param(i: i64, name: &str, value: f64, min: f64, max: f64, shown: Option<&str>) -> Value {
     let mut v = json!({"index": i, "name": name, "value": value, "min": min, "max": max});
     if let Some(s) = shown {
+        v["display"] = json!(s);
         v["value_string"] = json!(s);
     }
     v
@@ -81,7 +82,7 @@ async fn shape_sound_asks_the_rack_macros_first_and_writes_them_in_one_round_tri
     let sent = b.sent();
     assert_eq!(
         sent[2].1,
-        json!({"track_index": 0, "device_index": 0}),
+        json!({"track_index": 0, "kind": "track", "device_index": 0}),
         "the rack, not the reverb after it"
     );
     let values = sent[3].1["values"].as_array().unwrap().clone();
@@ -94,10 +95,21 @@ async fn shape_sound_asks_the_rack_macros_first_and_writes_them_in_one_round_tri
     assert_eq!(values[1]["index"], 3);
     assert!((values[1]["value"].as_f64().unwrap() - (25.4 + 0.1 * 127.0)).abs() < 1e-9);
     let t = text_of(&r);
-    assert!(t.starts_with("Pad (rack 'Evolving Pad', InstrumentGroupDevice): macro 'Cutoff' 62 % → 37 %, macro 'Res' 20 % → 30 %.\n"), "{t}");
     assert!(
-        t.contains("Not found on this device: attack (no macro says it"),
+        t.starts_with("Pad (rack 'Evolving Pad', InstrumentGroupDevice) — 2 of 3 applied:\n"),
+        "partial success is never reported as success: {t}"
+    );
+    assert!(
+        t.contains("  applied  macro 'Cutoff' 62 % → 37 %  (cutoff)\n"),
         "{t}"
+    );
+    assert!(
+        t.contains("  applied  macro 'Res' 20 % → 30 %  (resonance)\n"),
+        "{t}"
+    );
+    assert!(
+        t.contains("  skipped  attack — no macro on this device says it"),
+        "every word asked for gets a line: {t}"
     );
     assert!(
         t.contains(
@@ -141,7 +153,12 @@ async fn an_unknown_device_lists_its_parameters_and_set_device_parameter_takes_a
         param(3, "Env1 Atk", 0.0, 0.0, 1.0, None)]}})]);
     b.script(
         "set_device_parameter",
-        vec![json!({"name": "Env1 Atk", "old_value": 0.0, "value": 0.25})],
+        vec![
+            json!({"track_index": 1, "kind": "track", "track_name": "Bass",
+                    "device_index": 0, "device": "Serum", "parameter_index": 3,
+                    "name": "Env1 Atk", "old_value": 0.0, "value": 0.25,
+                    "min": 0.0, "max": 1.0}),
+        ],
     );
     let server = server_with(b.clone());
     // A word the device has no name for.
@@ -159,7 +176,7 @@ async fn an_unknown_device_lists_its_parameters_and_set_device_parameter_takes_a
     assert!(is_error(&r), "{}", text_of(&r));
     assert_eq!(
         text_of(&r),
-        "Bass ('Serum', PluginDevice) is not in the vocabulary for width; its parameters by name are: Enable, Cutoff, Res, Env1 Atk. set_device_parameter takes a name substring: {\"track_index\": 1, \"device_index\": 0, \"parameter\": \"<name>\", \"value\": …}."
+        "Bass ('Serum', PluginDevice) is not in the vocabulary for width; its parameters by name are: Enable, Cutoff, Res, Env1 Atk. adv_set_device_parameter takes a name substring: {\"track\": \"Bass\", \"device\": \"Serum\", \"parameter\": \"<name>\", \"value\": …}."
     );
     assert_eq!(
         b.commands().last().unwrap(),
@@ -172,11 +189,10 @@ async fn an_unknown_device_lists_its_parameters_and_set_device_parameter_takes_a
         .run(
             &tools::SET_DEVICE_PARAMETER,
             SetDeviceParameterParams {
-                track_index: 1,
-                device_index: 0,
-                parameter_index: None,
+                track: Some(json!("Bass")),
                 parameter: Some("atk".into()),
-                value: 0.25,
+                value: json!(0.25),
+                ..Default::default()
             },
             tools::set_device_parameter_body,
         )
@@ -184,19 +200,26 @@ async fn an_unknown_device_lists_its_parameters_and_set_device_parameter_takes_a
     assert!(!is_error(&r), "{}", text_of(&r));
     assert_eq!(
         b.commands()[before..],
-        ["get_device_parameters", "set_device_parameter"]
+        [
+            "get_performance_state",
+            "get_device_parameters",
+            "set_device_parameter"
+        ]
     );
     assert_eq!(b.sent().last().unwrap().1["parameter_index"], 3);
-    assert_eq!(text_of(&r), "Set Env1 Atk 0.0 → 0.25");
+    assert_eq!(b.sent().last().unwrap().1["value"], 0.25);
+    assert_eq!(
+        text_of(&r),
+        "Bass · Serum · Env1 Atk: 0 → 0.25 (raw 0 → 0.25 of 0 … 1)."
+    );
     let r = server
         .run(
             &tools::SET_DEVICE_PARAMETER,
             SetDeviceParameterParams {
-                track_index: 1,
-                device_index: 0,
-                parameter_index: None,
+                track: Some(json!("Bass")),
                 parameter: Some("wobble".into()),
-                value: 0.25,
+                value: json!(0.25),
+                ..Default::default()
             },
             tools::set_device_parameter_body,
         )
@@ -206,11 +229,9 @@ async fn an_unknown_device_lists_its_parameters_and_set_device_parameter_takes_a
         .run(
             &tools::SET_DEVICE_PARAMETER,
             SetDeviceParameterParams {
-                track_index: 1,
-                device_index: 0,
-                parameter_index: None,
-                parameter: None,
-                value: 0.25,
+                track: Some(json!("Bass")),
+                value: json!(0.25),
+                ..Default::default()
             },
             tools::set_device_parameter_body,
         )

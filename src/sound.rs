@@ -9,30 +9,76 @@
 
 use serde_json::Value;
 
-/// One parameter as `get_device_parameters` reports it.
-#[derive(Debug, Clone, PartialEq)]
+/// One parameter as `get_device_parameters` reports it: the float Live
+/// automates, and the strings Live shows a person.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Param {
     pub index: i64,
     pub name: String,
     pub value: f64,
     pub min: f64,
     pub max: f64,
+    /// Live's display string for the current value ("200 Hz", "Low Cut 48 dB")
     pub value_string: Option<String>,
+    /// The values a quantized parameter accepts, as Live spells them
+    pub items: Vec<String>,
+    /// The displays of `min` and `max`, for a continuous parameter
+    pub display_min: Option<String>,
+    pub display_max: Option<String>,
+    pub quantized: bool,
+    /// False when a rack macro (or Live itself) owns this parameter
+    pub enabled: bool,
 }
 
 impl Param {
     pub fn from_value(v: &Value) -> Option<Self> {
+        // Live pads some display strings ("0.50  "): trim once, here, so
+        // every readout lines up.
+        let text = |key: &str| {
+            v.get(key)
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
         Some(Self {
             index: v.get("index")?.as_i64()?,
             name: v.get("name")?.as_str()?.to_string(),
             value: v.get("value").and_then(Value::as_f64).unwrap_or(0.0),
             min: v.get("min").and_then(Value::as_f64).unwrap_or(0.0),
             max: v.get("max").and_then(Value::as_f64).unwrap_or(1.0),
-            value_string: v
-                .get("value_string")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            // "display" is what the script sends now; "value_string" is the
+            // older key, kept so a script that predates this still reads.
+            value_string: text("display").or_else(|| text("value_string")),
+            items: v
+                .get("items")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            display_min: text("display_min"),
+            display_max: text("display_max"),
+            quantized: v
+                .get("is_quantized")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            enabled: v.get("is_enabled").and_then(Value::as_bool).unwrap_or(true),
         })
+    }
+
+    /// What this parameter accepts, as a person reads it: the labels of a
+    /// chooser, or the two ends of a continuous range.
+    pub fn range_text(&self) -> String {
+        if !self.items.is_empty() {
+            return format!("[{}]", self.items.join(", "));
+        }
+        match (&self.display_min, &self.display_max) {
+            (Some(lo), Some(hi)) => format!("{lo} … {hi}"),
+            _ => format!("{} … {}", trim_num(self.min), trim_num(self.max)),
+        }
     }
 
     /// Where the value sits in its range, 0–1.
@@ -56,6 +102,17 @@ impl Param {
             Some(s) if !s.trim().is_empty() => s.trim().to_string(),
             _ => format!("{}%", (self.fraction() * 100.0).round() as i64),
         }
+    }
+}
+
+/// `-36.0` rather than `-36`; a short number for a range with no unit.
+fn trim_num(v: f64) -> String {
+    let s = format!("{v:.2}");
+    let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    if s.is_empty() || s == "-" {
+        "0".into()
+    } else {
+        s
     }
 }
 
@@ -362,6 +419,7 @@ mod tests {
                 min: 0.0,
                 max: 1.0,
                 value_string: None,
+                ..Param::default()
             })
             .collect()
     }
@@ -514,6 +572,7 @@ mod tests {
             min: 0.0,
             max: 100.0,
             value_string: Some("62 %".into()),
+            ..Param::default()
         };
         assert_eq!(target_value(&p, &json!(0.37)).unwrap(), 37.0);
         assert_eq!(target_value(&p, &json!("-25%")).unwrap(), 37.0);
@@ -533,8 +592,51 @@ mod tests {
             min: 0.0,
             max: 1.0,
             value_string: None,
+            ..Param::default()
         };
         assert_eq!(q.display(), "30%");
         assert_eq!(q.fraction(), 0.3);
+    }
+
+    #[test]
+    fn a_parameter_reads_as_live_shows_it() {
+        // A chooser: the labels are the contract, not the float.
+        let chooser = Param::from_value(&json!({
+            "index": 5, "name": "1 Filter Type A", "value": 1.0, "min": 0.0, "max": 7.0,
+            "is_quantized": true, "display": "Low Cut 12 dB",
+            "items": ["Low Cut 48 dB", "Low Cut 12 dB", "Low Shelf"]
+        }))
+        .unwrap();
+        assert_eq!(chooser.display(), "Low Cut 12 dB");
+        assert_eq!(
+            chooser.range_text(),
+            "[Low Cut 48 dB, Low Cut 12 dB, Low Shelf]"
+        );
+        assert!(chooser.quantized);
+
+        // A continuous parameter: the two ends, as Live spells them.
+        let freq = Param::from_value(&json!({
+            "index": 6, "name": "1 Frequency A", "value": 0.336, "min": 0.0, "max": 1.0,
+            "display": "80.0 Hz", "display_min": "10.0 Hz", "display_max": "22.0 kHz"
+        }))
+        .unwrap();
+        assert_eq!(freq.display(), "80.0 Hz");
+        assert_eq!(freq.range_text(), "10.0 Hz … 22.0 kHz");
+
+        // Nothing from Live: numbers, and no invented units.
+        let bare = Param::from_value(&json!({
+            "index": 0, "name": "Macro 1", "value": 0.25, "min": 0.0, "max": 1.0
+        }))
+        .unwrap();
+        assert_eq!(bare.display(), "25%");
+        assert_eq!(bare.range_text(), "0 … 1");
+
+        // The older key still reads, so an older script is not a blank table.
+        let old = Param::from_value(&json!({
+            "index": 1, "name": "Drive", "value": 0.5, "min": 0.0, "max": 1.0,
+            "value_string": "3.00 dB"
+        }))
+        .unwrap();
+        assert_eq!(old.display(), "3.00 dB");
     }
 }

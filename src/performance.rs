@@ -1497,8 +1497,14 @@ fn quantization_words(name: &str) -> String {
     }
 }
 
-fn fmt_secs(s: f64) -> String {
-    if s >= 60.0 {
+pub(crate) fn fmt_secs(s: f64) -> String {
+    if s >= 3600.0 {
+        format!(
+            "{} h {} min",
+            (s / 3600.0).floor() as i64,
+            ((s % 3600.0) / 60.0).floor() as i64
+        )
+    } else if s >= 60.0 {
         format!(
             "{} min {} s",
             (s / 60.0).floor() as i64,
