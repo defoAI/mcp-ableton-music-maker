@@ -6718,6 +6718,14 @@ fn song_track_index(name: &str, created: &BTreeMap<String, i64>) -> Result<i64, 
     })
 }
 
+/// How many tracks go to Live in one `create_tracks`. Each track
+/// reinitialises Live's audio graph and most load a device from disk; ten in
+/// one command took Live down twice on a producer's machine (#45, Live
+/// 12.4.6: main-thread slices of 2.1 s, then the socket closed mid-command).
+/// Three keeps each command short enough to answer and costs one group, not
+/// the document, when Live does go away.
+const TRACKS_PER_GROUP: usize = 3;
+
 pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     // ── validate everything before the first command ──
     let mode = match p.on_existing.trim().to_lowercase().as_str() {
@@ -6915,45 +6923,92 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
                 "color_index": t.color_index, "sends": sends,
             }));
         }
-        // Live decides what already exists, inside the same round trip: a
-        // re-run of the document converges instead of building a second copy.
-        let r = live
-            .send_command(
-                "create_tracks",
-                Some(json!({"tracks": specs, "on_existing": mode})),
-            )
-            .map_err(|e| fail(&done, live_err("create the tracks", e)))?;
-        let entries = r
-            .get("created")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        if entries.len() != p.tracks.len() {
-            return Err(fail(
-                &done,
-                format!(
-                    "Live reported {} of {} tracks created",
-                    entries.len(),
-                    p.tracks.len()
-                ),
-            ));
+        // Stopping part-way through the tracks is the failure this is shaped
+        // around, so say what exists and how to carry on from it.
+        let stopped = |done: &str, made: usize, what: String| -> String {
+            let total = p.tracks.len();
+            let mut out = format!("{done}Stopped after {made} of {total} tracks: {what}\n");
+            out.push_str("The tracks listed above are in the set; nothing after them is. ");
+            out.push_str("The document is unchanged, so run build_song again with it: ");
+            out.push_str("on_existing \"converge\" (the default) reuses the tracks that ");
+            out.push_str("exist and carries on from there.");
+            out
+        };
+
+        // One look before the first group: it proves Live is answering, and
+        // it says whether the transport is running. Adding a track or a
+        // device reinitialises Live's audio graph, which pops by hand too,
+        // so the reply says it rather than pretending the build was silent.
+        let session = live
+            .send_command("get_session_info", None)
+            .map_err(|e| fail(&done, live_err("reach Live before building", e)))?;
+        if session.get("is_playing").and_then(Value::as_bool) == Some(true) {
+            done.push_str(
+                "Built while playing: Live pops when a track or device is added — build before the performance.\n",
+            );
         }
-        for (t, e) in p.tracks.iter().zip(entries.iter()) {
-            let index = e.get("index").and_then(Value::as_i64).unwrap_or(-1);
-            created.insert(t.name.clone(), index);
-            if e.get("reused").and_then(Value::as_bool) == Some(true) {
-                reused.push(index);
-                done.push_str(&format!("Track {index} '{}' — reused\n", t.name));
-                continue;
+
+        // Live decides what already exists, inside the round trip: a re-run
+        // of the document converges instead of building a second copy.
+        //
+        // The tracks go in groups rather than all at once. Every track
+        // reinitialises the audio graph and most load a device from disk,
+        // and ten of those in one task is what took Live down (#45): the
+        // socket died mid-command and the set was left half built with
+        // nothing said about it. A group is short enough to answer, and a
+        // death costs one group instead of the document.
+        for (group_no, group) in specs.chunks(TRACKS_PER_GROUP).enumerate() {
+            let first = group_no * TRACKS_PER_GROUP;
+            if group_no > 0 {
+                // Ask something small between groups. If Live went away
+                // while it was loading the last one, this says so now,
+                // naming what exists, instead of blocking on a command that
+                // will never be answered.
+                live.send_command("get_session_info", None).map_err(|e| {
+                    stopped(&done, first, live_err("reach Live between track groups", e))
+                })?;
             }
-            done.push_str(&format!(
-                "Track {index} '{}'{}\n",
-                t.name,
-                e.get("device")
-                    .and_then(Value::as_str)
-                    .map(|d| format!(" with {d}"))
-                    .unwrap_or_default()
-            ));
+            let r = live
+                .send_command(
+                    "create_tracks",
+                    Some(json!({"tracks": group, "on_existing": mode})),
+                )
+                .map_err(|e| stopped(&done, first, live_err("create the tracks", e)))?;
+            let entries = r
+                .get("created")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if entries.len() != group.len() {
+                return Err(stopped(
+                    &done,
+                    first,
+                    format!(
+                        "Live reported {} of {} tracks in this group",
+                        entries.len(),
+                        group.len()
+                    ),
+                ));
+            }
+            // Written as each group lands, so a failure later leaves the
+            // reply naming every track that is really in the set.
+            for (t, e) in p.tracks[first..].iter().zip(entries.iter()) {
+                let index = e.get("index").and_then(Value::as_i64).unwrap_or(-1);
+                created.insert(t.name.clone(), index);
+                if e.get("reused").and_then(Value::as_bool) == Some(true) {
+                    reused.push(index);
+                    done.push_str(&format!("Track {index} '{}' — reused\n", t.name));
+                    continue;
+                }
+                done.push_str(&format!(
+                    "Track {index} '{}'{}\n",
+                    t.name,
+                    e.get("device")
+                        .and_then(Value::as_str)
+                        .map(|d| format!(" with {d}"))
+                        .unwrap_or_default()
+                ));
+            }
         }
         if !found.is_empty() {
             done.push_str(&format!("Found in the library: {}.\n", found.join(", ")));

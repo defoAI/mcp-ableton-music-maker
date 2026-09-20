@@ -226,12 +226,18 @@ script is loaded and up to date. Both are for CI and the Mac app.
   renders it and holds the MCP `instructions` string the server sends at `initialize` (the
   `get_info` override in `tools.rs`), so a client's model knows the workflow before its first
   call.
-- **Whole sections in one round trip.** `create_tracks` and `write_clips` take the document
+- **Whole sections in few round trips.** `create_tracks` and `write_clips` take the document
   `build_song` (and `make_section`) validated on the server and do every create, name,
-  instrument load, fader and note write in one main-thread task; a copy in another row is
+  instrument load, fader and note write in a main-thread task; a copy in another row is
   made inside Live from the first clip (`copy_of`), so the notes cross the socket once. With
   `place_clips` and `delete_arrangement_clips` this is the answer to the 200 ms floor below:
   the count of round trips, not the size of any one, is what a producer waits for.
+  Tracks are the exception, and the one place the server deliberately spends a round trip.
+  Every track reinitialises Live's audio graph and most load a device from disk, and ten of
+  those in one command took Live down twice on a producer's machine — so `build_song` sends
+  them `TRACKS_PER_GROUP` at a time, looks at Live between groups, and writes each track into
+  the reply as its group lands. A death then costs one group instead of the document, and the
+  reply names the tracks that are really in the set and how to finish the build.
 - **A round trip costs about 200 ms, whatever it does.** Measured on Live 12.4.6 over one
   persistent socket: an unknown command, a tiny read and `get_context` all answer in the same
   200 ms, with or without the per-command log line and with `TCP_NODELAY` on both ends. The

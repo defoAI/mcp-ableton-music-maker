@@ -13,6 +13,18 @@ use mcp_ableton_music_maker::tools::{
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+/// The params of the first `name` the bridge was sent. Tests address a
+/// command by what it is rather than by where it landed, so adding a look
+/// before or between the real work does not rewrite every assertion.
+fn sent_for(bridge: &FakeBridge, name: &str) -> Value {
+    bridge
+        .sent()
+        .into_iter()
+        .find(|(c, _)| c == name)
+        .unwrap_or_else(|| panic!("{name} was never sent: {:?}", bridge.commands()))
+        .1
+}
+
 #[tokio::test]
 async fn search_lists_hits_with_uris() {
     let bridge = FakeBridge::responding(json!({
@@ -446,6 +458,9 @@ async fn build_song_executes_in_order() {
     let cmds = bridge.commands();
     let expected: Vec<&str> = vec![
         "set_tempo",
+        // One look before building: it proves Live is answering and says
+        // whether the transport is running (#43, #45).
+        "get_session_info",
         "create_tracks",
         "write_clips",
         "get_arrangement_clips",
@@ -456,7 +471,10 @@ async fn build_song_executes_in_order() {
         cmds, expected,
         "every track, then every clip, in one round trip each"
     );
-    let tracks = bridge.sent()[1].1["tracks"].as_array().unwrap().clone();
+    let tracks = sent_for(&bridge, "create_tracks")["tracks"]
+        .as_array()
+        .unwrap()
+        .clone();
     assert_eq!(tracks.len(), 2);
     assert_eq!(tracks[0]["name"], "Drums");
     assert!(
@@ -468,7 +486,10 @@ async fn build_song_executes_in_order() {
         tracks[1]["sends"],
         json!([{"name": "Reverb", "value": 0.3}])
     );
-    let clips = bridge.sent()[2].1["clips"].as_array().unwrap().clone();
+    let clips = sent_for(&bridge, "write_clips")["clips"]
+        .as_array()
+        .unwrap()
+        .clone();
     assert_eq!(clips.len(), 1);
     assert_eq!(clips[0]["notes"].as_array().unwrap().len(), 4);
     let t = text_of(&r);
@@ -672,12 +693,17 @@ async fn build_song_treats_plain_words_in_instrument_as_a_search() {
     assert!(!is_error(&r), "{}", text_of(&r));
     let cmds = bridge.commands();
     assert_eq!(
-        &cmds[..3],
-        &["set_tempo", "search_browser", "create_tracks"]
+        &cmds[..4],
+        &[
+            "set_tempo",
+            "search_browser",
+            "get_session_info",
+            "create_tracks"
+        ]
     );
     assert_eq!(bridge.sent()[1].1["query"], "ambient evolving pad");
     assert_eq!(
-        bridge.sent()[2].1["tracks"][0]["instrument_uri"],
+        sent_for(&bridge, "create_tracks")["tracks"][0]["instrument_uri"],
         "query:Sounds#Pad:Evolving%20Pad"
     );
     assert!(
@@ -912,7 +938,7 @@ async fn build_song_converges_on_a_re_run_instead_of_duplicating() {
     let t = text_of(&r);
     assert!(!is_error(&r), "{t}");
     assert_eq!(
-        bridge.sent()[1].1["on_existing"],
+        sent_for(&bridge, "create_tracks")["on_existing"],
         "converge",
         "Live decides what already exists, in the same round trip"
     );
@@ -951,7 +977,7 @@ async fn build_song_can_be_told_to_fail_on_what_exists() {
     let _ = server
         .run(&tools::BUILD_SONG, p, tools::build_song_body)
         .await;
-    assert_eq!(bridge.sent()[1].1["on_existing"], "fail");
+    assert_eq!(sent_for(&bridge, "create_tracks")["on_existing"], "fail");
 
     let mut p = song();
     p.on_existing = "sideways".into();
@@ -980,9 +1006,182 @@ async fn a_failed_build_says_what_exists_and_that_the_document_can_be_re_run() {
         .await;
     let t = text_of(&r);
     assert!(is_error(&r), "{t}");
-    assert!(t.contains("Stopped:"), "{t}");
+    assert!(t.contains("Stopped after 0 of 2 tracks"), "{t}");
     assert!(
-        t.contains("Re-run the same document — build_song converges"),
+        t.contains("on_existing \"converge\" (the default) reuses the tracks that exist"),
         "the way out is in the failure: {t}"
     );
+    assert!(
+        !t.contains("  "),
+        "the resume sentence runs together or is double-spaced: {t:?}"
+    );
+}
+
+/// A five-track document is sent to Live in groups (#45). Ten tracks in one
+/// command took Live down twice: every track reinitialises the audio graph
+/// and most load a device, and the socket died mid-command with half a set
+/// built and nothing said about it.
+#[tokio::test]
+async fn tracks_are_built_in_groups_rather_than_one_burst() {
+    let bridge = FakeBridge::responding(json!({"tempo": 128.0}));
+    bridge.script(
+        "create_tracks",
+        vec![
+            json!({"created": [
+                {"index": 0, "name": "T1", "device": "Analog"},
+                {"index": 1, "name": "T2", "device": "Analog"},
+                {"index": 2, "name": "T3", "device": "Analog"}]}),
+            json!({"created": [
+                {"index": 3, "name": "T4", "device": "Analog"},
+                {"index": 4, "name": "T5", "device": "Analog"}]}),
+        ],
+    );
+    bridge.script("write_clips", vec![json!({"written": []})]);
+    bridge.script("place_clips", vec![json!({"placed": 0})]);
+    bridge.script("get_arrangement_clips", vec![json!({"clips": []})]);
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::BUILD_SONG,
+            five_track_song(),
+            tools::build_song_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    let groups: Vec<Value> = bridge
+        .sent()
+        .into_iter()
+        .filter(|(c, _)| c == "create_tracks")
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(groups.len(), 2, "five tracks should go in two groups");
+    assert_eq!(groups[0]["tracks"].as_array().unwrap().len(), 3);
+    assert_eq!(groups[1]["tracks"].as_array().unwrap().len(), 2);
+    for g in &groups {
+        assert_eq!(g["on_existing"], "converge", "every group converges");
+    }
+    for n in 1..=5 {
+        assert!(t.contains(&format!("'T{n}'")), "track T{n} missing: {t}");
+    }
+}
+
+/// When Live goes away part-way through, the reply is the way back in: the
+/// tracks that exist are named, and the sentence that finishes the build is
+/// there to be followed.
+#[tokio::test]
+async fn a_death_between_groups_costs_one_group_and_names_what_exists() {
+    let bridge = FakeBridge::responding(json!({"tempo": 128.0}));
+    bridge.script(
+        "create_tracks",
+        vec![json!({"created": [
+            {"index": 0, "name": "T1", "device": "Analog"},
+            {"index": 1, "name": "T2", "device": "Analog"},
+            {"index": 2, "name": "T3", "device": "Analog"}]})],
+    );
+    // set_tempo, get_session_info, create_tracks, then the look before the
+    // second group is where Live has gone.
+    bridge.fail_from(
+        3,
+        mcp_ableton_music_maker::connection::LiveError::Lost(
+            "connection closed before any data arrived".into(),
+        ),
+    );
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::BUILD_SONG,
+            five_track_song(),
+            tools::build_song_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(is_error(&r), "{t}");
+    assert!(t.contains("Stopped after 3 of 5 tracks"), "{t}");
+    for n in 1..=3 {
+        assert!(t.contains(&format!("'T{n}'")), "T{n} is in the set: {t}");
+    }
+    for n in 4..=5 {
+        assert!(!t.contains(&format!("'T{n}'")), "T{n} is not: {t}");
+    }
+    assert!(
+        t.contains("run build_song again with it") && t.contains("carries on from there"),
+        "the resume path is untold: {t}"
+    );
+    // The fourth and fifth tracks were never attempted: one group was lost,
+    // not the document.
+    assert_eq!(
+        bridge
+            .commands()
+            .iter()
+            .filter(|c| *c == "create_tracks")
+            .count(),
+        1
+    );
+}
+
+/// #43: adding a track or a device pops, and pretending otherwise is worse
+/// than saying it.
+#[tokio::test]
+async fn building_while_the_transport_runs_says_so() {
+    let bridge = FakeBridge::responding(json!({"tempo": 128.0}));
+    bridge.script("get_session_info", vec![json!({"is_playing": true})]);
+    bridge.script(
+        "create_tracks",
+        vec![json!({"created": [{"index": 0, "name": "Drums"}, {"index": 1, "name": "Pad"}]})],
+    );
+    bridge.script("write_clips", vec![json!({"written": []})]);
+    bridge.script("place_clips", vec![json!({"placed": 0})]);
+    bridge.script("get_arrangement_clips", vec![json!({"clips": []})]);
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(&tools::BUILD_SONG, song(), tools::build_song_body)
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    assert!(
+        t.contains("Built while playing") && t.contains("build before the performance"),
+        "{t}"
+    );
+
+    // Stopped: nothing about popping.
+    let quiet = FakeBridge::responding(json!({"tempo": 128.0}));
+    quiet.script("get_session_info", vec![json!({"is_playing": false})]);
+    quiet.script(
+        "create_tracks",
+        vec![json!({"created": [{"index": 0, "name": "Drums"}, {"index": 1, "name": "Pad"}]})],
+    );
+    quiet.script("write_clips", vec![json!({"written": []})]);
+    quiet.script("place_clips", vec![json!({"placed": 0})]);
+    quiet.script("get_arrangement_clips", vec![json!({"clips": []})]);
+    let t = text_of(
+        &server_with(quiet)
+            .run(&tools::BUILD_SONG, song(), tools::build_song_body)
+            .await,
+    );
+    assert!(!t.contains("Built while playing"), "{t}");
+}
+
+/// Five tracks with no clips, placements or locators: the tracks are the
+/// point.
+fn five_track_song() -> BuildSongParams {
+    let mut p = song();
+    p.clips.clear();
+    p.placements.clear();
+    p.locators.clear();
+    p.tracks = (1..=5)
+        .map(|n| SongTrack {
+            name: format!("T{n}"),
+            kind: "midi".into(),
+            instrument: Some("query:Synths#Analog".into()),
+            instrument_query: None,
+            volume: None,
+            volume_db: None,
+            fader: None,
+            pan: None,
+            color_index: None,
+            sends: BTreeMap::new(),
+        })
+        .collect();
+    p
 }
