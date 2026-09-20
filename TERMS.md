@@ -87,6 +87,17 @@ new server process is ready at once. `ABLETON_MCP_LIBRARY_INDEX=false` keeps it 
 only. "Delete all local data" removes the folder; it is rebuilt in the background when the
 server next talks to Live.
 
+Beside it, under `~/.ableton-music-maker/devices/`, is what the **devices themselves
+answered to**: each device's parameter names as Live reports them, and the values that
+were written with the string Live displayed for each, stamped with the Live version and
+the day they were measured. It is one file per Live version. This is how Claude stops
+paying twice for the same failed call — that a particular rack has no "cutoff", or that a
+macro runs the other way round, is a fact about Ableton's own content, true in every set
+anyone builds, so it is kept against the device and never against your song. It holds no
+note, no audio, no path, and nothing about any piece of music you are making. The same
+`ABLETON_MCP_LIBRARY_INDEX=false` keeps it in memory only; `adv_device_vocabulary` shows
+you all of it in one call and `adv_device_vocabulary(action: "forget")` deletes it.
+
 The same folder holds the **sample index**, built the first time Claude is asked for a
 sample and never before: the name, folder, path, type and length of every audio file in the
 folders Live names — the Core Library, your Packs, your User Library, the open set's own

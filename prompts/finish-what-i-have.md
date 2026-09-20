@@ -15,7 +15,7 @@ Then, in this order, checking with me between stages:
 - Fix the foundation: set_key if the set is still sitting in Live's default C Major, set_tempo if the material disagrees with it.
 - Fill the holes. A section that needs a part gets one — create_clip and add_notes_to_clip, or make_section from what is playing. Reach for feel (swing, humanize, groove) before you add more notes: a stiff part usually needs feel, not more parts.
 - Arrange it: arrange places the Session clips along the timeline in bars, and create_locator marks each part so I can find it in Live.
-- Then mix with measurements, not adjectives: capture_mix over 8 bars of the loudest section, read peak, RMS per bar, crest and the octave bands back to me, fix what it shows with set_track_mixer in dB, set_send and shape_sound, and capture again to prove the fix. clear_captures when we are done.
+- Then mix with measurements, not adjectives: capture_mix over 8 bars of the loudest section, read peak, RMS per bar, crest and the octave bands back to me, fix what it shows with set_track_mixer in dB, set_send and shape_sound, and capture again to prove the fix. If a device in this set does not answer to a word, shape_sound names its real parameters and remembers them — reach for one of those rather than trying the word again. clear_captures when we are done.
 - Finally, tell me what you did not touch, and why.
 
 How I want you to work:

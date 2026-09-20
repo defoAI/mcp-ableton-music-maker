@@ -216,6 +216,22 @@ script is loaded and up to date. Both are for CI and the Mac app.
   time against the device's rack macros by name, then candidate parameter names per Live
   instrument, then aliases and the word itself; `shape_sound` writes several words through one
   `set_device_parameters`, and a cue ramp takes a word the same way.
+- **What that table cannot reach, the server learns** (`src/devices.rs`). `sound::vocabulary`
+  keys on the device *class*, and a preset is not a class: "Vinyl Drawbs" is a rack whose
+  macros were named by whoever made it, and no compiled table can know it has no cutoff. But
+  the failure already produces the answer — `shape_sound` reads the real parameter names off
+  the device to print them — and every write is read back with Live's display string. That is
+  kept, keyed on the **device** (name and class) and the **Live version**, never on a song,
+  under `state_dir()/devices/<live-version>.json` beside the browser index and behind the same
+  `ABLETON_MCP_LIBRARY_INDEX=false`. Nothing extra is asked of Live: these are the reads that
+  already happened. Two rules make it safe to keep. Every row is **stamped** — Live version,
+  device name and class, the day — and a Live whose version is not known yet stays in memory,
+  because an unstamped measurement does not ship. And a stored value is a **hint, never
+  truth**: the names are re-read on every use, and an observed value → display pair is only
+  ever reported. A macro that ran the other way round (`devices::backwards`) is *said*, with
+  both measurements, rather than silently inverted — a server that quietly flips a number is
+  one the producer cannot reconcile with what Live shows them.
+  `adv_device_vocabulary` shows all of it and deletes it, and asks Live nothing.
 - **A write is read back.** The script re-reads the parameter after setting it and sends
   `asked`, `landed`, `is_enabled`, `is_quantized` and `automation_state` beside the value
   (`_landing`). `landing` in `src/tools.rs` turns that into one of three answers: a clean

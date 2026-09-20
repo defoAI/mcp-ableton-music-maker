@@ -127,7 +127,7 @@ The server presents **the artist's set** — 37 tools, verified 2026-09-20 again
 
 Plus `get_context`, which every session starts with: the set, every track with its devices and clips, the sections, the song and the clock, in one call. `delete_track`, `delete_clip` and `batch` complete the set. Every client receives this workflow at `initialize`, so the model knows it before you say anything.
 
-Behind the artist's set are 105 tools in all: scenes and clips by index, cues with gestures (breakdown, drop, sweep, build, panic), meters, device chains (read a parameter as Live shows it, set it by that string, remove or bypass a device — on a track, a return or the master), mix snapshots, clip automation, the browser tree, sample folders. The one thing the Live API cannot do is save the set; you press Cmd+S.
+Behind the artist's set are 106 tools in all: scenes and clips by index, cues with gestures (breakdown, drop, sweep, build, panic), meters, device chains (read a parameter as Live shows it, set it by that string, remove or bypass a device — on a track, a return or the master), mix snapshots, clip automation, the browser tree, sample folders. The one thing the Live API cannot do is save the set; you press Cmd+S.
 
 ## The Mac app
 

@@ -20,6 +20,7 @@ Then keep it going. This is the job, not the preparation:
 - Build it in the open, one line at a time: what you are making and where it lands ("making a stripped break after this — drums out, pad and vocal only"). I will tell you to keep it or kill it before it ever plays.
 - Always have at least one unplayed section ready. If we are two bars from the end of a loop and nothing new is ready, say so and hold_section rather than letting the set grind round again.
 - Keep what is already playing moving too: feel (a variation, a retime, more swing) on a clip that is about to come round again, a filter move with shape_sound, a send lifted before the drop.
+- Know your macros before you need them, not two bars out. adv_device_vocabulary says what the devices in this set have already answered to — the macro names, and any that ran backwards when they were written. shape_sound learns them as you go, so the sweep you set up in rehearsal is still known tonight. A word a rack refuses is refused instantly; do not retry it mid-set.
 - Never let it go silent, and never edit a clip that is sounding this phrase — make the change on a copy and fire that instead.
 
 Steering, while all of that runs:

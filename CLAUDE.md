@@ -14,7 +14,7 @@ Rust MCP server that lets Claude drive Ableton Live. Two processes:
 ## Commands
 
 ```bash
-cargo test                                   # 19 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, prompts, fake-live-wire, stdio
+cargo test                                   # 20 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, prompts, device-vocabulary, fake-live-wire, stdio
 python3 scripts/check-script-helpers.py      # the Remote Script's pure helpers, against a stub Live
 scripts/test-remote-script.sh                # the Remote Script's own suite: tick, duplex, sockets, ops, streams, cues, every command, the fake Live
 scripts/fake-live.py                         # a Live that is not Live: the real script + the model on a real socket, port on stdout
@@ -47,9 +47,9 @@ No Rust toolchain on the machine? Build inside `rust:1-slim-bookworm` with the r
 src/connection.rs      LiveBridge trait, AbletonConnection (TCP), RealBridge (reconnecting), LiveError
 src/handshake.rs       get_script_info handshake, ScriptInfoCache, per-command capability check
 src/lom.rs             the Live Object Model in Rust: Path (typed, validated), Op, Batch, describe cache — how a capability is written without touching the script
-src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 105 tool bodies and their #[tool] bindings, run() wrapper
+src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 106 tool bodies and their #[tool] bindings, run() wrapper
 src/activity.rs        the local activity log: one JSON line per tool call, payloads off by default
-src/state.rs           state_dir / activity_dir / sessions_dir — the only places the server writes
+src/state.rs           state_dir / activity_dir / sessions_dir / devices_dir — the only places the server writes
 src/install.rs         installer logic (Library.cfg discovery, install with .bak)
 src/app.rs             startup handshake, heartbeat, stdio serve, shutdown, --status, --check
 app/                   the Mac companion app (Tauri 2): src-tauri/ links this crate, src/ is the UI; src-tauri/src/listen/ is the process tap of Live (Objective-C + Rust, decision 0008)
@@ -59,6 +59,7 @@ src/audio.rs           WAV/AIFF reader and the capture measurements (peak, RMS p
 src/performance.rs     performance state, bar arithmetic, cue resolution (bars → beats, silence check), readout text
 src/context.rs         get_context readout and the MCP instructions every client receives at initialize
 src/library.rs         the server's copy of Live's browser: paged from the script, on disk under state_dir, searched locally
+src/devices.rs         what a device answered to — parameter names, measured value → display pairs, the words it refused; keyed on the device and the Live version, never on a song
 src/samples.rs         the sample index (Live names the folders, the server walks them), add_sample, adv_sample_folders
 src/variation.rs       clip variations (fill, ghosts, inversions, thinning, half/double time), humanize, swing, and the key of a recording
 src/song.rs            sections (scene names "<name> · <bars>") and songs (the Setlist: scene): parsing, the plan, the cursor — pure
@@ -73,7 +74,7 @@ scripts/live-api-surface.py  every Live API member the script touches, read out 
 scripts/live-differential.py the same commands to a real Live and to the fake, every field compared
 scripts/live-lom-sweep.py    describe + read every member on both, split into what the script uses and what it does not
 tests/fixtures/        a real Live's replies, recorded: live-transcript-<version>.json and live-lom-<version>.json
-tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, samples.rs, local_only.rs, activity.rs, prompts.rs, fake_live_wire.rs, stdio_integration.rs, common/
+tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, samples.rs, local_only.rs, activity.rs, prompts.rs, device_vocabulary.rs, fake_live_wire.rs, stdio_integration.rs, common/
 docker/                verify-image.sh, Claude Desktop example config
 .github/workflows/ci.yml   fmt, clippy, test, docs facts; the Mac app and its .dmg — both jobs on macOS, nothing on Linux
 ```
@@ -91,7 +92,11 @@ docker/                verify-image.sh, Claude Desktop example config
   and results. `tests/activity.rs` pins the defaults. The library index (`src/library.rs`)
   keeps browser names, paths and URIs on disk, and the sample index (`src/samples.rs`) the
   names, folders and paths of audio files in the folders Live names; `ABLETON_MCP_LIBRARY_INDEX=false`
-  keeps both in memory; `tests/library.rs` and `tests/samples.rs` pin that. The list of
+  keeps both in memory, and the **device vocabulary** (`src/devices.rs`) too: what a
+  device's parameters are called and what Live displayed for the values that were
+  written, keyed on the device and the Live version rather than on a song, so what was
+  learned about Ableton's own content is not thrown away with the session
+  (`tests/device_vocabulary.rs`). The list of
   sample folders the producer added is written only by `adv_sample_folders add`. Set exports (`src/sets.rs`) are written only by an
   explicit `export_set` call; `tests/sets.rs` pins that. Anything new the server writes goes
   under `state::state_dir()` and into `TERMS.md`.

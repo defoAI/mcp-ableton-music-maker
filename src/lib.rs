@@ -20,6 +20,8 @@
 //! - [`context`]      get_context's readout and the server instructions clients receive at initialize
 //! - [`lom`]        Live's object model reached generically: built paths, batches of ops, what this Live has (pure + cached)
 //! - [`library`]      the server's copy of Live's browser: paged from the script, on disk, searched locally
+//! - [`devices`]      what a device answered to, keyed on the device and the Live version, not on a song
+//! - [`devices`]      what a device answered to, keyed on the device and the Live version, not on a song
 //! - [`variation`]    clip variations and the key of a recording (pure)
 //! - [`song`]         sections (scene names) and songs (the Setlist: scene): parsing, the plan, the cursor (pure)
 //! - [`sections`]     the section and song tools: make_section, set_song, play_song, the steering verbs
@@ -42,6 +44,7 @@ pub mod arrange;
 pub mod audio;
 pub mod connection;
 pub mod context;
+pub mod devices;
 pub mod handshake;
 pub mod install;
 pub mod library;

@@ -14,7 +14,7 @@ Before you write a note:
 Once I have answered:
 - set_key first. A fresh Live 12 set sits in C Major and will bend every note you write. Then set_tempo.
 - Build the whole thing in one build_song document: the sections as scene rows with their bar lengths (intro, verse, drop, break, outro — whatever the style wants), the tracks with instruments in plain words, and the clips as step strings, notes_csv or patterns. Run it with dry_run: true first and show me the plan in a few lines. Then run it for real.
-- Shape it: shape_sound for the sounds (plain words like "darker" or "more attack", or any parameter by name), feel for swing, humanize and groove, set_track_mixer and set_send in dB for the balance.
+- Shape it: shape_sound for the sounds (plain words like "darker" or "more attack", or any parameter by name), feel for swing, humanize and groove, set_track_mixer and set_send in dB for the balance. When a preset does not answer to a word, shape_sound tells you the parameter names it does have — use one by name in the same tool. It keeps what that device answered to, so never spend a second call learning the same thing twice.
 - Then hear it, do not assume it: capture_mix over the busiest section and read peak, RMS per bar and the octave balance back to me. Fix what it tells you, capture again to prove the fix, then clear_captures.
 - Arrange it: set_song for a setlist I can play, or arrange to lay it along the timeline in bars with create_locator on each part.
 

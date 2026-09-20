@@ -18,7 +18,7 @@ Then:
 - Put the source in first with add_sample: into a section so it plays with the song, or at a bar in the Arrangement. It is warped and looped to whole bars, and the file is only referenced — nothing of mine is copied, moved or uploaded.
 - Read it before you write around it. Tell me the tempo it sits at, the key you hear, and where it loops. Set the set's key with set_key and the tempo with set_tempo to match it, so everything you add after is in the same world.
 - Then build around it with build_song: only the parts that serve the source. Say in one line what each track is for ("sub under the vocal", "hats filling the gaps").
-- Keep checking that the two actually play together: capture_mix over the section holding the source and tell me whether it is buried or fighting the low end, then fix it with set_track_mixer, shape_sound or set_send.
+- Keep checking that the two actually play together: capture_mix over the section holding the source and tell me whether it is buried or fighting the low end, then fix it with set_track_mixer, shape_sound or set_send. A rack whose macros have their own names says so once; use those names and move on.
 
 How I want you to work:
 - The source is the star. Every part you add earns its place beside it or comes out.

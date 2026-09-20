@@ -983,6 +983,13 @@ params!(CaptureMixParams {
     /// A name for the capture, e.g. "drop" — the clip is called "<name> @ <start>"
     name: String = "capture_name",
 });
+params!(DeviceVocabularyParams {
+    /// "show" (default) what this Live's devices have answered to, or
+    /// "forget" to delete the file
+    action: String = "String::new",
+    /// show: one device by name, instead of the summary
+    device: Option<String>,
+});
 params!(MeasureCaptureParams {
     /// Slot index on the Capture track, as list_captures shows
     slot: i64,
@@ -1050,6 +1057,7 @@ pub const GET_CLIP_AUTOMATION: ToolSpec = ToolSpec::new("get_clip_automation");
 pub const BATCH: ToolSpec = ToolSpec::new("batch");
 pub const BUILD_SONG: ToolSpec = ToolSpec::new("build_song");
 pub const GET_LIBRARY_STATUS: ToolSpec = ToolSpec::new("get_library_status");
+pub const DEVICE_VOCABULARY: ToolSpec = ToolSpec::new("device_vocabulary");
 pub const CAPTURE_MIX: ToolSpec = ToolSpec::new("capture_mix");
 pub const LIST_CAPTURES: ToolSpec = ToolSpec::new("list_captures");
 pub const MEASURE_CAPTURE: ToolSpec = ToolSpec::new("measure_capture");
@@ -1639,7 +1647,31 @@ pub fn get_device_parameters_body(live: &LiveState, p: &DeviceParams) -> ToolRes
             Some(json!({"track_index": target.index, "kind": target.kind, "device_index": device_index})),
         )
         .map_err(|e| live_err("get device parameters", e))?;
+    note_device_read(live, &r);
     Ok(render_device(&target, &r))
+}
+
+/// Feed the device vocabulary from a `get_device_parameters` reply (#67).
+/// Nothing extra is asked of Live: this is the read that already happened.
+fn note_device_read(live: &LiveState, r: &Value) {
+    let d = r.get("device").cloned().unwrap_or(Value::Null);
+    let params: Vec<crate::sound::Param> = d
+        .get("parameters")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(crate::sound::Param::from_value)
+                .collect()
+        })
+        .unwrap_or_default();
+    live.devices.note_device(
+        crate::devices::DeviceRef {
+            live_version: &live.live_version(),
+            device: &get_display(&d, "name", ""),
+            class_name: &get_display(&d, "class_name", ""),
+        },
+        &params,
+    );
 }
 
 /// The readout: an aligned table of what Live shows, not the raw JSON. A
@@ -1767,12 +1799,20 @@ fn device_params(
                 .collect()
         })
         .unwrap_or_default();
-    Ok((
-        get_display(&r, "track_name", ""),
-        get_display(&d, "name", "device"),
-        get_display(&d, "class_name", ""),
-        params,
-    ))
+    let name = get_display(&d, "name", "device");
+    let class = get_display(&d, "class_name", "");
+    // #67: the read already happened. What this device is called and what
+    // its parameters are is a fact about Ableton's content, not about this
+    // song, so it is kept keyed on the device and the Live version.
+    live.devices.note_device(
+        crate::devices::DeviceRef {
+            live_version: &live.live_version(),
+            device: &name,
+            class_name: &class,
+        },
+        &params,
+    );
+    Ok((get_display(&r, "track_name", ""), name, class, params))
 }
 
 /// The device `shape_sound` and a sound ramp mean: by name or index, else
@@ -1906,13 +1946,39 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
         }
     }
     let param_names = || -> String { name_list(&params) };
+    // #67: this device has been asked before, possibly in another song and
+    // another session. What it refused then is worth saying before refusing
+    // it again, and what was learned now is worth keeping.
+    let version = live.live_version();
+    let this_device = crate::devices::DeviceRef {
+        live_version: &version,
+        device: &dname,
+        class_name: &class,
+    };
+    let known = live.devices.recall(this_device);
+    let recalled: Vec<String> = known
+        .as_ref()
+        .map(|facts| {
+            unresolved
+                .iter()
+                .filter_map(|w| crate::devices::advice(facts, w))
+                .collect()
+        })
+        .unwrap_or_default();
+    for word in &unresolved {
+        live.devices.note_unknown_word(this_device, word);
+    }
     if resolved.is_empty() {
-        return Err(format!(
+        let mut text = format!(
             "{track_name} ('{dname}', {class}) is not in the vocabulary for {}; its parameters by name are: {}. adv_set_device_parameter takes a name substring: {{\"track\": {}, \"device\": \"{dname}\", \"parameter\": \"<name>\", \"value\": …}}.",
             unresolved.join(", "),
             param_names(),
             target.as_argument(),
-        ));
+        );
+        if !recalled.is_empty() {
+            text.push_str(&format!(" {}", recalled.join(" ")));
+        }
+        return Err(text);
     }
     let r = live
         .send_command(
@@ -1966,6 +2032,40 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
             if rack { "macro" } else { "parameter" }
         ));
     }
+    // The read-back already happened; what came back is what is kept.
+    for (_, param, _, _) in &resolved {
+        if let Some(after) = written
+            .iter()
+            .find(|w| w.get("index").and_then(Value::as_i64) == Some(param.index))
+        {
+            live.devices.note_write(
+                this_device,
+                param.index,
+                &param.name,
+                after
+                    .get("value")
+                    .and_then(Value::as_f64)
+                    .unwrap_or_default(),
+                &crate::sound::Param::from_value(after)
+                    .map(|q| q.display())
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    // A macro that runs the other way is reported, never silently corrected:
+    // a server that quietly inverts a value is one the producer cannot
+    // reconcile with what Live shows them.
+    let mut backwards: Vec<String> = Vec::new();
+    if let Some(facts) = live.devices.recall(this_device) {
+        for (_, param, _, _) in &resolved {
+            if let Some(said) = facts
+                .parameter(&param.name)
+                .and_then(crate::devices::backwards)
+            {
+                backwards.push(said);
+            }
+        }
+    }
     let vocab = crate::sound::vocabulary(&class, &params);
     let mut text = format!(
         "{track_name} ({}'{dname}'{}){}:\n{}",
@@ -1985,6 +2085,12 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
         },
         lines.join("\n")
     );
+    for said in &backwards {
+        text.push_str(&format!("\n{said}"));
+    }
+    for said in &recalled {
+        text.push_str(&format!("\n{said}"));
+    }
     if !unresolved.is_empty() {
         text.push_str(&format!(
             "\nFor {}: {}adv_set_device_parameter takes a name substring; the parameters are: {}.",
@@ -2171,6 +2277,20 @@ pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams)
         short_num(r.get("max"))
     );
     let name = get_display(&r, "name", "parameter");
+    // #67: an inverted or non-monotonic macro is not discoverable from the
+    // parameter list; it is only learnable by writing a value and reading
+    // the display back, which just happened.
+    live.devices.note_write(
+        crate::devices::DeviceRef {
+            live_version: &live.live_version(),
+            device: &get_display(&r, "device", ""),
+            class_name: &get_display(&r, "class_name", ""),
+        },
+        parameter_index,
+        &name,
+        r.get("value").and_then(Value::as_f64).unwrap_or_default(),
+        &after,
+    );
     // A write Live ignored is an error, not a success line with the same
     // number on both sides of the arrow.
     let note = landing(&r, &name, &after)?;
@@ -3922,6 +4042,116 @@ const SUITE_INSTRUMENTS: &[&str] = &[
     "Wavetable",
 ];
 
+/// What this Live's devices have answered to — and what is **not** kept.
+///
+/// A local cache the producer cannot see or delete is not one this server
+/// ships; this is the one call for both. It asks Live nothing.
+pub fn device_vocabulary_body(live: &LiveState, p: &DeviceVocabularyParams) -> ToolResult {
+    let version = live.live_version();
+    let action = p.action.trim().to_lowercase();
+    if action == "forget" {
+        return Ok(format!(
+            "{} Nothing in Live changed — a device's own parameters are Live's, not the server's.",
+            live.devices.forget(&version)
+        ));
+    }
+    if !action.is_empty() && action != "show" {
+        return Err(format!("action must be show or forget, not '{action}'"));
+    }
+    let vocab = live.devices.snapshot(&version);
+    if let Some(want) = p.device.as_deref().filter(|d| !d.trim().is_empty()) {
+        let want = want.trim().to_lowercase();
+        let Some(facts) = vocab
+            .devices
+            .values()
+            .find(|d| d.device.to_lowercase() == want)
+            .or_else(|| {
+                vocab
+                    .devices
+                    .values()
+                    .find(|d| d.device.to_lowercase().contains(&want))
+            })
+        else {
+            return Ok(format!(
+                "Nothing learned about a device called '{want}' on Live {version}. {}",
+                crate::devices::status_line(&vocab)
+            ));
+        };
+        let mut out = format!(
+            "'{}' ({}), Live {}, last read {}.\nParameters: {}\n",
+            facts.device,
+            facts.class_name,
+            facts.live_version,
+            facts.observed_at,
+            facts.names().join(", ")
+        );
+        for fact in &facts.parameters {
+            if fact.seen.is_empty() {
+                continue;
+            }
+            out.push_str(&format!(
+                "  {} — {}\n",
+                fact.name,
+                fact.seen
+                    .iter()
+                    .map(|s| format!("{:.2} → {} ({})", s.value, s.display, s.at))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            if let Some(said) = crate::devices::backwards(fact) {
+                out.push_str(&format!("  {said}\n"));
+            }
+        }
+        if !facts.unknown_words.is_empty() {
+            out.push_str(&format!(
+                "Words it does not answer to: {}\n",
+                facts
+                    .unknown_words
+                    .iter()
+                    .map(|(w, at)| format!("{w} ({at})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        return Ok(out);
+    }
+    let mut out = format!("{}\n", crate::devices::status_line(&vocab));
+    for facts in vocab.devices.values().take(40) {
+        out.push_str(&format!(
+            "  {} ({}) — {} parameters, read {}{}\n",
+            facts.device,
+            facts.class_name,
+            facts.parameters.len(),
+            facts.observed_at,
+            if facts.unknown_words.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; no {}",
+                    facts
+                        .unknown_words
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        ));
+    }
+    if vocab.devices.len() > 40 {
+        out.push_str(&format!("  … and {} more\n", vocab.devices.len() - 40));
+    }
+    out.push_str(&format!(
+        "It holds device and parameter names as Live reports them, and the values that were written with what Live displayed for each — stamped with the Live version and the day. It holds no note, no audio and no path, and nothing about any song: these are facts about Ableton's content, true in every set. {}. ABLETON_MCP_LIBRARY_INDEX=false keeps it in memory only, and action: \"forget\" deletes it.",
+        if crate::devices::disk_enabled() && version != crate::devices::UNKNOWN_VERSION {
+            format!("It is one file, {}", crate::state::devices_dir().join(format!("{version}.json")).display())
+        } else {
+            "It is in memory only".to_string()
+        }
+    ));
+    Ok(out)
+}
+
 pub fn get_library_status_body(live: &LiveState, _p: &Empty) -> ToolResult {
     require(live, "get_library_status")?;
     let r = live
@@ -5207,6 +5437,8 @@ pub fn get_context_body(live: &LiveState, p: &GetContextParams) -> ToolResult {
             Some(json!({"include_library": p.include_library})),
         )
         .map_err(|e| live_err("read the set", e))?;
+    // Every learned device fact is stamped with the Live it was measured on.
+    live.note_live_version(&get_display(&ctx, "live_version", ""));
     if p.json {
         return Ok(pretty(&ctx));
     }
@@ -6969,6 +7201,7 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "set_clip_automation" => (SetClipAutomationParams, set_clip_automation_body),
         "get_clip_automation" => (GetClipAutomationParams, get_clip_automation_body),
         "get_library_status" => (Empty, get_library_status_body),
+        "device_vocabulary" => (DeviceVocabularyParams, device_vocabulary_body),
         "capture_mix" => (CaptureMixParams, capture_mix_body),
         "list_captures" => (Empty, list_captures_body),
         "measure_capture" => (MeasureCaptureParams, measure_capture_body),
@@ -8485,6 +8718,22 @@ impl Server {
             .await
     }
 
+    /// What the devices on this Live have answered to, learned as you work
+    /// and kept between sessions and songs: each device's parameter names,
+    /// the values that were written with what Live displayed for them, and
+    /// the words a device does **not** answer to — so the same failed call
+    /// is not paid for twice. A macro that ran backwards is reported here
+    /// with its measurements, never silently corrected. `action: "forget"`
+    /// deletes the file; nothing in Live changes. Asks Live nothing.
+    #[tool(name = "device_vocabulary")]
+    async fn device_vocabulary(
+        &self,
+        Parameters(p): Parameters<DeviceVocabularyParams>,
+    ) -> CallToolResult {
+        self.run(&DEVICE_VOCABULARY, p, device_vocabulary_body)
+            .await
+    }
+
     /// Hear the result as numbers: record `bars` bars of the arrangement
     /// from `start_bar` through a Capture track (made once, input
     /// Resampling, muted), then report peak dBFS, RMS, crest factor, ten
@@ -9257,7 +9506,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 105);
+        assert_eq!(tools.len(), 106);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().cloned().unwrap_or_default();
@@ -9278,7 +9527,7 @@ mod tests {
         // intent. Keeping a performance is part of playing one.
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 105, "the take must not add a tool");
+        assert_eq!(tools.len(), 106, "the take must not add a tool");
         // start_performance is served as adv_start_performance (decision 0006).
         for name in ["adv_start_performance", "play_song"] {
             let tool = tools.iter().find(|t| t.name == name).unwrap();
