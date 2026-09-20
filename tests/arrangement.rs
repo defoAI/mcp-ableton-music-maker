@@ -683,3 +683,90 @@ async fn a_locator_name_resolves_through_the_real_script() {
         "it lists them: {t}"
     );
 }
+
+/// #71: a bar with nothing before it cannot be marked, and the reply says so
+/// in the producer's terms.
+///
+/// A locator is placed by moving the playhead there and toggling a cue — the
+/// LOM has no "add a cue at time" — and Live refuses to move the playhead
+/// past the end of the Arrangement, raising "Cannot set the Songtime behind
+/// the Songlength" (measured on Live 12.4.6, 2026-09-20: an empty set
+/// reaches beat 232, a clip ending at beat 400 moves that to 432). That
+/// sentence tells a producer nothing, so it is answered with the bar the
+/// arrangement actually reaches and what to do about it.
+#[tokio::test]
+async fn a_locator_past_the_end_of_the_arrangement_says_what_to_do() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    set.build(&[("Sitar", "midi", "")]);
+
+    // Bar 100 is beat 396 — past the 232 an empty arrangement reaches.
+    let r = server
+        .run(
+            &tools::CREATE_LOCATOR,
+            tools::CreateLocatorParams {
+                name: "Drop".into(),
+                bar: Some(100.0),
+                ..Default::default()
+            },
+            tools::create_locator_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(is_error(&r), "{t}");
+    assert!(
+        t.contains("past the end of the arrangement"),
+        "it says what went wrong: {t}"
+    );
+    assert!(
+        t.contains("bar 59") || t.contains("the arrangement ends"),
+        "it names how far the arrangement reaches: {t}"
+    );
+    assert!(
+        t.contains("Put something there first"),
+        "it says what to do about it: {t}"
+    );
+    assert!(
+        !t.contains("Songtime behind the Songlength"),
+        "Live's own words are not the producer's: {t}"
+    );
+
+    // With material out there, the same call lands.
+    let sitar = set.track_index("Sitar").unwrap();
+    set.write_clip(
+        sitar,
+        0,
+        "Lead",
+        json!([{"pitch": 64, "start_time": 0.0, "duration": 1.0, "velocity": 100}]),
+    );
+    let r = server
+        .run(
+            &tools::ARRANGE,
+            mcp_ableton_music_maker::arrange::ArrangeParams {
+                action: "place".into(),
+                track: Some(json!("Sitar")),
+                clip: Some(json!("Lead")),
+                at_bar: Some(json!(100)),
+                ..Default::default()
+            },
+            mcp_ableton_music_maker::arrange::arrange_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let r = server
+        .run(
+            &tools::CREATE_LOCATOR,
+            tools::CreateLocatorParams {
+                name: "Drop".into(),
+                bar: Some(97.0),
+                ..Default::default()
+            },
+            tools::create_locator_body,
+        )
+        .await;
+    assert!(
+        !is_error(&r),
+        "once the arrangement reaches it, the locator takes: {}",
+        text_of(&r)
+    );
+}

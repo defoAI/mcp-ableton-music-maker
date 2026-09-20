@@ -85,6 +85,23 @@ class DrivenClock(object):
 # ── Descriptors ─────────────────────────────────────────────────────────────
 
 
+# How far Live's Arrangement reaches when nothing is in it, and how far past
+# the last event it reaches when something is. Measured on Live 12.4.6,
+# 2026-09-20, through `run get`:
+#
+#   empty set (no clips, no cues): last_event_time 16.0, song_length 232.0
+#   one clip ending at beat 400:   last_event_time 400.0, song_length 432.0
+#   cues up to beat 192:           last_event_time 192.0, song_length 232.0
+#
+# `max(232.0, last_event + 32.0)` is the rule that fits all three. It matters
+# because Live refuses to move the playhead past song_length, and a locator
+# is made by moving the playhead there (#71). Module level, not class
+# attributes: `describe` lists a Song's members, and a member Live does not
+# have is a lie told to whoever reads it.
+_EMPTY_ARRANGEMENT_BEATS = 232.0
+_ARRANGEMENT_PAD_BEATS = 32.0
+
+
 class Vector(object):
     """Live's sequence type.
 
@@ -1974,6 +1991,15 @@ class Song(LiveObject):
         value = float(value)
         if value < 0.0:
             raise RuntimeError("Invalid song time")
+        # Live will not move the playhead past the end of the arrangement:
+        # `song.current_song_time = 400.0` on a set whose song_length is
+        # 232.0 raises "Cannot set the Songtime behind the Songlength"
+        # (measured on Live 12.4.6, 2026-09-20). It is the reason a locator
+        # cannot mark a bar with nothing before it (#71) -- a locator is
+        # placed by moving the playhead there and toggling a cue -- so the
+        # model has to refuse it too, or no suite can ever see that.
+        if value > self.song_length + 1e-6:
+            raise RuntimeError("Cannot set the Songtime behind the Songlength")
         self._current_song_time = value
         # Live relocates: play continues from here, not from wherever the
         # transport had got to. Without this the next `_advance` would add
@@ -1983,16 +2009,22 @@ class Song(LiveObject):
 
     @property
     def song_length(self):
-        """Live: the end of the last Arrangement clip, at least one bar."""
+        """Live: past the last event, and never less than an empty set."""
+        return max(_EMPTY_ARRANGEMENT_BEATS,
+                   self.last_event_time + _ARRANGEMENT_PAD_BEATS)
+
+    @property
+    def last_event_time(self):
+        """The end of the last Arrangement clip or the last cue, whichever
+        is later. A cue counts: Live's last_event_time moved to 384.0 with
+        a locator there and no clip past it (measured 2026-09-20)."""
         end = 0.0
         for t in self._tracks:
             for c in t._arrangement_clips:
                 end = max(end, c.end_time)
-        return max(end, float(self._signature_numerator))
-
-    @property
-    def last_event_time(self):
-        return self.song_length
+        for c in self._cue_points:
+            end = max(end, c._time)
+        return end
 
     # ── transport ──
     def start_playing(self):

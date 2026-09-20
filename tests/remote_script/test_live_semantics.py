@@ -614,5 +614,50 @@ class ALiveVectorRendersAsASequence(unittest.TestCase):
                          "/Users/p/Music/Smoke Project/Smoke.als")
 
 
+class LiveMarksOnlyTimeThatExists(unittest.TestCase):
+    """The playhead cannot go past the end of the Arrangement.
+
+    `song.current_song_time = 400.0` on a set whose `song_length` is 232.0
+    raises "Cannot set the Songtime behind the Songlength" (measured on Live
+    12.4.6, 2026-09-20). A locator is placed by moving the playhead there and
+    toggling a cue -- the LOM has no "add a cue at time" -- so a bar with
+    nothing before it cannot be marked, which is #71. Measured the same day:
+
+      empty set (no clips, no cues): last_event_time 16.0, song_length 232.0
+      one clip ending at beat 400:   last_event_time 400.0, song_length 432.0
+      a locator at beat 384:         last_event_time 384.0
+
+    A locator counts towards last_event_time once it exists, but cannot be
+    made past the end -- which is why placing the clip at bar 100 first let
+    a locator at bar 97 through.
+    """
+
+    def setUp(self):
+        self.song = fake_live.default_set()
+
+    def test_an_empty_arrangement_still_reaches_a_long_way(self):
+        self.assertEqual(self.song.song_length, 232.0)
+
+    def test_the_playhead_cannot_go_past_the_end(self):
+        with self.assertRaises(RuntimeError) as e:
+            self.song.current_song_time = 400.0
+        self.assertIn("Songtime behind the Songlength", str(e.exception))
+
+    def test_content_moves_the_end_and_then_the_playhead_can_follow(self):
+        track = self.song.tracks[0]
+        track._arrangement_clips.append(fake_live.Clip(
+            self.song, track, 4.0, name="C", start_time=396.0,
+            in_arrangement=True))
+        self.assertEqual(self.song.last_event_time, 400.0)
+        self.assertEqual(self.song.song_length, 432.0)
+        self.song.current_song_time = 384.0
+        self.assertEqual(self.song.current_song_time, 384.0)
+
+    def test_a_cue_counts_towards_the_end_once_it_exists(self):
+        self.song.current_song_time = 192.0
+        self.song.set_or_delete_cue()
+        self.assertEqual(self.song.last_event_time, 192.0)
+
+
 if __name__ == "__main__":
     unittest.main()

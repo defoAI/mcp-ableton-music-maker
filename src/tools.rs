@@ -3461,6 +3461,7 @@ pub fn create_locator_body(live: &LiveState, p: &CreateLocatorParams) -> ToolRes
             "create_locator",
             Some(json!({"name": p.name, "time": time})),
         )
+        .map_err(|e| past_the_arrangement(live, &e.to_string(), time, bpb))
         .map_err(|e| live_err("create locator", e))?;
     Ok(format!(
         "Locator '{}' set at bar {}",
@@ -3470,6 +3471,54 @@ pub fn create_locator_body(live: &LiveState, p: &CreateLocatorParams) -> ToolRes
             .map(|v| bar_text(v, bpb))
             .unwrap_or_else(|| bar_text(time, bpb))
     ))
+}
+
+/// Live marks time that exists.
+///
+/// A locator is placed by moving the playhead there and toggling a cue —
+/// the Live API has no "add a cue at time" — and Live refuses to set
+/// `current_song_time` past the end of the arrangement, raising "Cannot set
+/// the Songtime behind the Songlength". That sentence tells a producer
+/// nothing, so it is answered with the bar the arrangement actually reaches
+/// and what to do about it. Measured on Live 12.4.6, 2026-09-20: an empty
+/// set reached bar 29 and a clip placed at bar 100 moved that to bar 109,
+/// after which a locator at bar 97 was accepted (#71).
+fn past_the_arrangement(
+    live: &LiveState,
+    error: &str,
+    wanted: f64,
+    bpb: f64,
+) -> crate::connection::LiveError {
+    use crate::connection::LiveError;
+    if !error.contains("Songtime behind the Songlength") {
+        return LiveError::Ableton(error.to_string());
+    }
+    let reach = arrangement_reach(live);
+    let ends = match reach {
+        Some(len) => format!("the arrangement ends at bar {}", bar_text(len, bpb)),
+        None => "the arrangement ends earlier than that".to_string(),
+    };
+    LiveError::Ableton(format!(
+        "bar {} is past the end of the arrangement — {ends}, and Live can only mark time that \
+         exists. Put something there first (arrange a clip up to that bar, or build the section \
+         it belongs to) and the locator will take. A locator does not extend the arrangement \
+         on its own.",
+        bar_text(wanted, bpb),
+    ))
+}
+
+/// `song.song_length` through the generic ops layer, when this script has it.
+fn arrangement_reach(live: &LiveState) -> Option<f64> {
+    use crate::lom::{Batch, Op, Path};
+    if crate::lom::require(live).is_err() {
+        return None;
+    }
+    Batch::new()
+        .push(Op::get(&Path::song().attr("song_length"), "len"))
+        .run(live)
+        .ok()?
+        .get("len")?
+        .as_f64()
 }
 
 // ── Mixer, colours, drum pads, deletion ─────────────────────────────────────
