@@ -14,7 +14,7 @@ Rust MCP server that lets Claude drive Ableton Live. Two processes:
 ## Commands
 
 ```bash
-cargo test                                   # 17 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, stdio
+cargo test                                   # 18 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, fake-live-wire, stdio
 python3 scripts/check-script-helpers.py      # the Remote Script's pure helpers, against a stub Live
 scripts/test-remote-script.sh                # the Remote Script's own suite: tick, duplex, sockets, ops, streams, cues, every command, the fake Live
 scripts/fake-live.py                         # a Live that is not Live: the real script + the model on a real socket, port on stdout
@@ -22,6 +22,10 @@ scripts/fake-live.py --latency-report        # what a Live call costs, and which
 scripts/live-latency.sh                      # against a running Live: measures the tick, the round trip and every phase
 scripts/live-transcript.sh                   # against a running Live: records tests/fixtures/live-transcript-<version>.json
 python3 scripts/live-transcript.py --diff REAL.json FAKE.json   # the field-by-field differential
+scripts/live-differential.py                 # against a running Live: the same commands both sides, every field compared, report in target/
+scripts/live-differential.py --record-fixture   # …and keep the real Live's replies as the fixture
+scripts/live-lom-sweep.py                    # against a running Live: describe + read every member, in scope against out of scope
+scripts/live-lom-sweep.py --record-fixture   # …and keep it, so the in-scope check runs with no Live
 ABLETON_TARGET=live cargo test -- --test-threads=1   # the whole suite against a real Live (builds in the open set)
 cd app && npm run dev                        # the Mac app against this checkout (Tauri 2)
 cargo clippy --all-targets -- -D warnings    # CI runs this
@@ -42,7 +46,7 @@ No Rust toolchain on the machine? Build inside `rust:1-slim-bookworm` with the r
 src/connection.rs      LiveBridge trait, AbletonConnection (TCP), RealBridge (reconnecting), LiveError
 src/handshake.rs       get_script_info handshake, ScriptInfoCache, per-command capability check
 src/lom.rs             the Live Object Model in Rust: Path (typed, validated), Op, Batch, describe cache — how a capability is written without touching the script
-src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 104 tool bodies and their #[tool] bindings, run() wrapper
+src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 105 tool bodies and their #[tool] bindings, run() wrapper
 src/activity.rs        the local activity log: one JSON line per tool call, payloads off by default
 src/state.rs           state_dir / activity_dir / sessions_dir — the only places the server writes
 src/install.rs         installer logic (Library.cfg discovery, install with .bak)
@@ -63,8 +67,11 @@ src/sets.rs            export_set / import_set: a rebuildable document under sta
 src/arrange.rs         the artist-facing tools: arrange (bars), feel (one tool, one undo), set_key, create_return, clear_captures
 tests/remote_script/   the Remote Script's suite (Python, no Live): fake_live.py is the Live Object Model, harness.py runs the script against it, FakeSurface.tick() drives schedule_message
 scripts/fake-live.py   the model + the real script on the script's own socket, on Live's 100 ms tick — what the Rust suites run against
-scripts/live-api-surface.py  every Live API member the script touches, read out of it by AST
-tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, samples.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
+scripts/live-api-surface.py  every Live API member the script touches, read out of it by AST — the scope the model is held to
+scripts/live-differential.py the same commands to a real Live and to the fake, every field compared
+scripts/live-lom-sweep.py    describe + read every member on both, split into what the script uses and what it does not
+tests/fixtures/        a real Live's replies, recorded: live-transcript-<version>.json and live-lom-<version>.json
+tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, samples.rs, local_only.rs, activity.rs, fake_live_wire.rs, stdio_integration.rs, common/
 docker/                verify-image.sh, Claude Desktop example config
 .github/workflows/ci.yml   fmt, clippy, test, docs facts; the Mac app and its .dmg — both jobs on macOS, nothing on Linux
 ```
@@ -126,6 +133,16 @@ docker/                verify-image.sh, Claude Desktop example config
     AST, and `test_live_api_conformance.py` fails when one is missing from the model or has
     the wrong shape. That check is the floor, not the ceiling: it proves the member exists,
     not that it behaves.
+  - **Only what the script touches has to match.** `scripts/live-lom-sweep.py` asks
+    `describe` of a real Live and of the model for 25 paths and compares attributes, methods,
+    `readonly`, types and every readable value — then splits the answer in two.
+    **In scope** is a member `scripts/live-api-surface.py` finds the script reading, writing
+    or calling, plus anything the model *invents*; that must be zero, and
+    `test_lom_conformance.py` fails the build on it. **Out of scope** is the rest of Live's
+    object model — Live's Track has about 150 methods and the script calls 22 — and is
+    counted, never chased: completing Live would be work with no reader. A member the script
+    starts using moves into scope on the next run, with no list to maintain. Do not "fix"
+    an out-of-scope difference, and do not silence one by widening the inventory.
   - **Numbers are measured, never invented.** `fake_live.LATENCY_12_4_6` carries what a Live
     call costs, and every row is stamped with the run it came from. A call nobody has timed
     goes in `LATENCY_UNMEASURED` and charges nothing, so the gap is visible

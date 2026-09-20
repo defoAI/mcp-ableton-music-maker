@@ -137,7 +137,7 @@ class TheWire(unittest.TestCase):
             info = r["result"]
             self.assertEqual(info["protocol_version"], 2)
             self.assertEqual(info["socket_reader"], "main_thread_tick")
-            self.assertEqual(len(info["capabilities"]), 97)
+            self.assertEqual(len(info["capabilities"]), 98)
             self.assertEqual(info["live"]["version"], "12.4.6")
             self.assertTrue(info["bind_is_loopback"])
             c.close()

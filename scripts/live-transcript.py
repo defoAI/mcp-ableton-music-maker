@@ -57,6 +57,76 @@ ALLOWED_TO_VARY = [
     "result.color_index",
     "*.color",
     "*.color_index",
+    "result.song_length",      # read-only, and Live keeps the high-water mark
+
+    # ── The library is the machine's, not the model's ──────────────────────
+    # The fake's browser is a miniature: a handful of instruments, effects
+    # and kits, enough to load one of each. A real Live has whatever that
+    # producer installed — 23 instruments, 47 audio effects, seven Packs,
+    # 240 drum kits on the machine this was recorded against. Comparing the
+    # *contents* would be comparing two people's hard disks. What is
+    # compared is the shape of the reply and the behaviour around it: that a
+    # search returns hits, that a load puts a device on the track, that a
+    # tree comes back with categories at all.
+    "result.categories.*",         # get_browser_tree: what is installed
+    "result.available_categories", # dir(browser); see the bug filed on this
+    "result.available_categories.*",
+    "result.results.*",            # search_browser: what matched
+    "result.parameters.*",         # get_device_parameters: a real Analog has ~100
+    "result.device.parameters.*",
+    "result.devices.*.parameters.*",
+    "result.tracks.*.devices.*",   # get_session_snapshot: what is loaded
+    "result.items.*",              # search_browser: what matched
+    "result.returned",
+    "result.total_matches",
+    "result.grooves.*",            # the Groove Pool is the producer's
+    "result.pool_functions.*",
+    "result.groove_amount",
+    # describe's attrs and methods are compared properly — as sets, with
+    # readonly and type — by scripts/live-lom-sweep.py. Comparing them here
+    # would be positional, where one extra member shifts every index.
+    "result.attrs.*",
+    "result.methods.*",
+    # Live's own counters and choices, which say nothing about behaviour.
+    "*.color_index",               # Live picks a colour per track and clip
+    "*.clip.color",
+    # The fader bisection: Live's taper is a table with float error, the
+    # model's is the analytic curve, so -6 dB lands on 0.6999869 there and
+    # 0.70 here. Both read back as -6 dB to a decimal.
+    "result.volume_db",
+    "*.volume_db",
+    "result.clips.*.color",        # Live picks a colour per track and clip
+    "result.tracks.*.color",
+    "result.tracks.*.arrangement_clips.*.color",
+    "result.tracks.*.clips.*.color",
+    "result.session.current_song_time",   # the transport moved during the run
+    "result.session.song_length",
+    "result.bar",
+    "result.beat",
+    "*.bar",                       # the transport moved during the run
+    "*.beat",
+    "result.device.*",             # which device the fake's browser loaded
+    "result.name",
+    "result.display",
+    "result.old_display",
+    "result.value",
+    "result.old_value",
+    "result.value_string",
+    "result.is_quantized",
+    "result.landed",
+    "result.max",
+    "result.items.*",
+    "result.instruments.*",        # get_library_status: what Live ships with
+    "result.audio_effects.*",
+    "result.midi_effects.*",
+    "result.packs.*",
+    "result.drums_folders.*",
+    "result.sounds_folders.*",
+    "result.child_count",
+    "*.child_count",
+    "*.is_folder",
+    "*.is_device",
+    "*.is_loadable",
     "*.file_path",             # absolute paths
     "*.path",
 ]
@@ -102,6 +172,10 @@ def the_script(names):
     kick, bass, vox = names
     return [
         ("the handshake", "get_script_info", {}),
+        # Both sides start from the same set, or the rest is a diff of
+        # leftovers. reset_set empties the open set back to a new one; it is
+        # the reason a transcript can be compared at all.
+        ("back to a new set", "reset_set", {}),
         ("the set as found", "get_session_info", {}),
         ("the returns", "get_returns", {}),
         ("the meter curve", "get_meter_scale", {}),
@@ -235,6 +309,17 @@ def matches(pattern, path):
     p, q = pattern.split("."), path.split(".")
     if "*" not in pattern:
         return p == q or (len(q) > len(p) and q[:len(p)] == p)
+    # A pattern that opens with `*.` names a member at any depth:
+    # `*.color_index` covers `result.tracks.3.color_index`. Without this it
+    # would only ever match a path exactly two deep.
+    if p[0] == "*" and len(p) > 1:
+        tail = p[1:]
+        if len(q) >= len(tail):
+            for i, part in enumerate(tail):
+                if part != "*" and q[len(q) - len(tail) + i] != part:
+                    break
+            else:
+                return True
     if len(p) > len(q):
         return False
     for i, part in enumerate(p):

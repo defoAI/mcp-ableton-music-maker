@@ -360,11 +360,26 @@ built, not that the right commands were sent to nobody.
 **The model.** `tests/remote_script/fake_live.py` is Song, Track, ClipSlot, Clip, Device,
 RackDevice/Chain/DrumPad, DeviceParameter, MixerDevice, Scene, CuePoint, AutomationEnvelope,
 MidiNote, Groove/GroovePool, both Views, Browser/BrowserItem and Application, with Live's
-semantics where the script depends on them: sequences are tuples, `set_notes` adds,
+semantics where the script depends on them: sequences are `Vector` (not a list and not a
+tuple, which is why `describe` types them `Vector` and `run … get` hands back a repr),
+`set_notes` adds,
 `get_notes` and `get_notes_extended` take their arguments in different orders, every track
 has one clip slot per scene, a return gives every track a send, a parameter outside its
-range raises, `set_or_delete_cue` toggles at the play position. `default_set()` is what a new
-Live set is: two MIDI tracks, two audio, two returns, eight scenes, 120 BPM.
+range raises, `set_or_delete_cue` toggles at the play position. An unnamed track's name is
+**derived from its position** — delete the first of four and the rest renumber — and the
+volume fader shows Live's measured taper: a straight 40 dB per unit above 0.4 and a quadratic
+below (−18 dB at 0.4, 0 dB at 0.85, +6 at 1.0), printed to three decimals trimmed.
+`default_set()` is what a new Live set is: `1-MIDI`, `2-MIDI`, `3-Audio`, `4-Audio`, the
+returns `A-Reverb` and `B-Delay`, eight scenes, 120 BPM.
+
+**Starting from the same place.** `reset_set` (Remote Script 1.34.1, served as
+`adv_reset_set`) empties the open set back to that: every clip, locator and scene name gone,
+the tracks and scenes and tempo back to a new set's. It is a generator, because deleting
+tracks holds Live's main thread. The Live API has no File > New — nothing here opens a
+document — so it clears the set that is open, and the tool says so rather than implying
+otherwise. `song_length` is the one thing it cannot move: Live keeps it at the furthest the
+set has ever reached. Both differentials below open with it, which is what makes two runs
+comparable at all.
 
 **The script, not a copy of it.** `harness.py` puts the model behind the real script —
 `song()` and `application()` are the model, `sys.modules["Live"]` is `live_module()` — and
@@ -418,13 +433,39 @@ go away mid-session, which is #45 as it actually happened, so the resume path is
 exit it prints a readout — commands, worst `main_ms`, slices, errors, what each Live call was
 charged — to put beside `scripts/live-latency.sh` against a real Live.
 
-**Keeping it honest.** The fake is checked against the real Live three ways: the conformance
-test (`scripts/live-api-surface.py` reads every member the script touches out of it by AST,
-and the model must have each with the right shape), the transcript differential
-(`scripts/live-transcript.sh` records a fixed script against a real Live and a test replays
-it against the fake, diffing field by field), and the suite itself —
-`ABLETON_TARGET=live cargo test -- --test-threads=1` runs every converted suite against Live
-instead of the fake. The rules for keeping the two in step are in `CLAUDE.md`.
+**Keeping it honest.** The fake is checked against the real Live four ways.
+
+1. **The conformance test.** `scripts/live-api-surface.py` reads every Live member the script
+   touches out of it by AST — 157 members over 15 classes — and the model must have each with
+   the right shape. That is the floor: it proves the member exists, not that it behaves.
+2. **The transcript differential.** `scripts/live-differential.py` sends one fixed script of
+   commands to a real Live and to the fake and compares every field of every reply, with an
+   allow-list for what legitimately varies (`main_ms`, ids, Live's colour choice) and for
+   library content — the fake's browser is a miniature and a real Live has whatever that
+   producer installed, so comparing the contents would be comparing two hard disks.
+   `scripts/live-transcript.sh` records the real half into `tests/fixtures/`, and
+   `test_transcript_differential.py` replays it with no Live open. **0 differences over 34
+   steps** as of 2026-09-20 against Live 12.4.6.
+3. **The object-model sweep.** `scripts/live-lom-sweep.py` asks `describe` of both for 25
+   paths and compares attributes, methods, `readonly`, types and the value of every readable
+   attribute — as **sets**, because `describe` returns sorted lists and comparing them by
+   index turns one missing member into a hundred false differences. It splits the answer:
+   **in scope** is what the script actually uses plus anything the model invents, and must be
+   zero; **out of scope** is the rest of Live's model, counted and left alone. Live's Track
+   carries about 150 methods and the script calls 22 — completing the other 128 would be work
+   with no reader, and a member that comes into use moves into scope by itself.
+   `test_lom_conformance.py` runs it against `tests/fixtures/live-lom-<version>.json` with no
+   Live open. **In scope: nothing differs.** Out of scope: 1115.
+4. **The suite itself.** `ABLETON_TARGET=live cargo test -- --test-threads=1` runs every
+   converted suite against a real Live instead of the fake.
+
+What the differentials found is the argument for having them: the fader taper was wrong
+(−30 dB at 0.4 where Live has −18), track names are derived and not stored, a send is named
+after the return it feeds, loading an instrument arms the track and `exclusive_arm` disarms
+the rest, note ids run from 1 within a clip, `gain` and `pitch_coarse` are audio-clip
+members, and Live's master track has no `arm`, `mute` or `solo` at all. None of that was
+guessed; each was measured against a running Live and is stamped where it is encoded. The
+rules for keeping the two in step are in `CLAUDE.md`.
 
 ## CI (`.github/workflows/ci.yml`)
 

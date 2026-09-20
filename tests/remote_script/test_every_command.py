@@ -239,11 +239,21 @@ case("play_from", {"time": 4.0},
      lambda t, r, s: t.assertTrue(s.is_playing))
 case("delete_track", {"track_index": 3},
      lambda t, r, s: t.assertEqual(len(s.tracks), 3))
+case("reset_set", {},
+     lambda t, r, s: (t.assertEqual([x.name for x in s.tracks],
+                                    ["1-MIDI", "2-MIDI", "3-Audio", "4-Audio"]),
+                      t.assertEqual(len(s.scenes), 8),
+                      t.assertEqual(s.tempo, 120.0),
+                      t.assertEqual(s.loop_start, 0.0),
+                      t.assertFalse(any(sl.has_clip for tr in s.tracks for sl in tr.clip_slots)),
+                      t.assertFalse(any(tr.arrangement_clips for tr in s.tracks)),
+                      t.assertEqual(len(s.cue_points), 0),
+                      t.assertEqual(len(s.return_tracks), 2)))
 case("back_to_arrangement", {}, lambda t, r, s: t.assertFalse(s.back_to_arranger))
 case("set_arrangement_loop", {"start": 0.0, "length": 16.0, "enabled": True},
      lambda t, r, s: t.assertTrue(s.loop) or t.assertAlmostEqual(s.loop_length, 16.0))
 case("set_launch_quantization", {"name": "1_bar"},
-     lambda t, r, s: t.assertEqual(s.clip_trigger_quantization, fake_live.Song.Q_BAR))
+     lambda t, r, s: t.assertEqual(s.clip_trigger_quantization, fake_live.Q_BAR))
 case("create_scene", {"index": -1, "name": "Outro", "phrase_bars": 8},
      lambda t, r, s: t.assertEqual(len(s.scenes), 9))
 case("set_scene", {"index": 0, "name": "Verse", "phrase_bars": 16},
