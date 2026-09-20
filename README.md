@@ -2,215 +2,196 @@
 
 # MCP Ableton Music Maker
 
-**Talk to your Live set.**
-
-Claude builds the track, shapes the sound, arranges the song, performs it on the bar and hears the result — inside the Ableton Live set you already have open. Nothing leaves your machine.
+### Your Live set, in conversation.
 
 [![CI](https://github.com/defoAI/mcp-ableton-music-maker/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/defoAI/mcp-ableton-music-maker/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/JK4hNKGprW)
 
-[**Setup video**](https://youtu.be/iJWJqyVuPS8) · [**Demo: an 80s synthwave track**](https://youtu.be/VH9g66e42XA) · [**Discord**](https://discord.gg/JK4hNKGprW) · [**Issues**](https://github.com/defoAI/mcp-ableton-music-maker/issues)
+Claude Desktop, Claude Code or Cursor, working inside the Ableton Live set you have open.<br>
+Build, shape, arrange, perform, and hear the result. Nothing leaves your machine.
 
-*Third-party integration, not made by Ableton.*
+[Install](#install) · [What you can say](#what-you-can-say) · [The Mac app](#the-mac-app) · [Your data](#your-data) · [How it is built](#how-it-is-built) · [Discord](https://discord.gg/JK4hNKGprW)
+
+<sub>A third-party integration, not made by Ableton.</sub>
 
 </div>
 
 ---
 
-## What it feels like
+## A session
 
-> **You:** build me a techno set in F minor at 126 with an intro, a groove, a groove with pad, a break and a drop. 8-bar phrases, the break 16.
+These are lines producers actually typed while this was being built, and the shape of what came back.
+
+> **eight bars of that off-beat bass on F, with a turnaround in the last bar.**
 >
-> **Claude** builds five sections as scene rows, a kick, a bass that follows the key, a pad, the clips filled with notes — one validated call, one undo step in Live.
+> A clip on Bass, notes written from a step string per pitch, one undo step in Live.
+
+> **find me a drum break around 90 bpm — the vinyl one, in the Verse, on its own track.**
 >
-> **You:** the low end is muddy. Tighten the bass, more attack, and capture the drop so I can hear it.
+> The server searches your sample folders and Live's browser, makes an audio track named after the file, and places the break in the Verse row: warping on, the loop snapped to whole bars, ready to play with the section.
+
+> **the snare on the 4 is too loud, take it down 20, and push the off-beat hats.**
 >
-> **Claude** turns the words into the bass instrument's own parameters, records eight bars of the master through Live's Resampling, and tells you the peak, the RMS per bar and where the energy sits.
+> Velocities, not faders: the notes on the beat come down, the off-beats come up, and the reply shows before and after.
+
+> **how loud is it?**
 >
-> **You:** play the song. Jump to the break on the next phrase, with a crossfade.
+> Eight bars of the master recorded through Live's own Resampling, then: peak −3.8 dBFS, RMS per bar, no clipping, bars 5–8 are 5.3 dB louder than 1–4.
+
+> **play the song. go to the drop.**
 >
-> **Claude** hands the jump to the Remote Script's clock, and every reply carries the bar you are on and the level under it.
+> ```
+> ⏱ bar 33.1 · next bar in 1.9 s
+> 🔊 master −4.0 dB peak this bar · Kick −6 · Bass −7
+> ```
+> Every reply while performing carries the clock and the level. The jump lands at the end of the playing phrase, and the Remote Script's own clock makes it land there even if the server is busy.
 
-The producer talks in bars, dB and the words a producer uses. Claude talks to Live.
+Bars, dB, semitones, section names. The producer never sees a clip index.
 
-## How it works
+## What makes it different
 
-```
-Claude Desktop / Claude Code / Cursor
-        │  MCP over stdio
-        ▼
-ableton-music-maker            one Rust binary, 101 tools
-        │  TCP 9877, this machine only by default
-        ▼
-Ableton Live  ◀── AbletonMusicMaker Remote Script (a control surface inside Live)
-```
-
-Two pieces, and both are in this repository.
-
-- **`ableton-music-maker`** speaks the [Model Context Protocol](https://modelcontextprotocol.io) to your client and drives Live over a local socket. It checks every call against the loaded Remote Script's version and capabilities before it runs, validates a whole song before the first command reaches Live, and turns Live's raw numbers into the producer's units on the way back.
-- **The AbletonMusicMaker Remote Script** runs inside Live, because Live loads control surfaces only through its own Python. It executes each command on Live's main thread in bounded slices, so Live keeps playing while Claude works, and it keeps the performance clock so a cue lands on the bar even if the server is busy. The binary embeds the script and installs it for you.
-
-**Nothing is uploaded.** There is no telemetry, no analytics, no dataset and no HTTP client in the dependency tree — CI fails if one appears, and `docker/verify-image.sh` checks the image carries none. What is kept on your machine, and how to delete it, is in [Your data](#your-data).
+- **The set is the memory.** A section is a scene row named `Groove · 8`; the song is a `Setlist:` scene. Live's own Save keeps them, so nothing about your song lives in a sidecar file, and every set you already have can become one.
+- **The producer's units, both ways.** Faders and meters in dB, Arrangement positions in Live's 1-based bars, note times in beats. Live's raw 0–1 fader curve and its beat times are the server's problem.
+- **Validated before Live sees it.** A whole set from one document is checked end to end before the first command reaches Live, and `dry_run` shows the plan. Whatever changes, Live undoes in one step.
+- **It hears what it made.** `capture_mix` records the master inside Live and reports what a mastering engineer would: peak, RMS per bar, silence, clipping, stereo correlation. A performance is kept as a take in the Arrangement, after what is already there, never over it unless you say so.
+- **It performs on Live's clock.** A cue is handed to the Remote Script, which runs it on Live's own tick. A jump into a section that last ran hotter warns before it fires.
+- **It stays on your machine.** One socket, to Live, on this machine only by default. No telemetry, no analytics, no dataset, no HTTP client in the dependency tree, and CI fails if one appears.
 
 Works with **Live 11 and 12**; Live 10 without the Arrangement tools. Placing samples needs Live 12.
 
-## Get started on a Mac
+## Install
 
-**The app** installs the Remote Script into Live, connects your client to the bundled server, shows at a glance whether Claude, the server and Live are talking, and lists every call with its timing and an estimated token cost.
+Two pieces ship together: the server, `ableton-music-maker`, a single Rust binary that speaks the [Model Context Protocol](https://modelcontextprotocol.io) to your client; and the **AbletonMusicMaker** Remote Script, a control surface that runs inside Live because Live loads control surfaces only through its own Python. The binary carries the script and installs it.
+
+```
+Claude client ──stdio──▶ ableton-music-maker ──TCP 9877, loopback──▶ Live + AbletonMusicMaker
+```
+
+### The Mac app
+
+Installs the script, connects your client, and shows you whether the three are talking.
 
 ```bash
 git clone https://github.com/defoAI/mcp-ableton-music-maker.git
-cd mcp-ableton-music-maker/app
-npm install && npm run dev          # Rust 1.85+, Xcode command line tools
+cd mcp-ableton-music-maker/app && npm install && npm run dev      # Rust 1.85+, Xcode command line tools
 ```
 
-Then in the app: **Setup → Install into Live**, restart Live, pick **AbletonMusicMaker** in a **Control Surface** slot under **Settings → Link, Tempo & MIDI** (Input and Output **None**), and **Add to Claude Desktop**. Claude Code and Cursor get the command to paste. Four steps, each checked against what is really there.
+**Setup** walks four steps and checks each against what is really there: install into Live's User Library; restart Live and pick **AbletonMusicMaker** in a **Control Surface** slot under **Settings → Link, Tempo & MIDI**, Input and Output **None**; add the server to Claude Desktop (the app edits the config with a backup beside it) or copy the command for Claude Code and Cursor; run a test call.
 
-Every push to `main` builds and verifies an Apple Silicon disk image, kept as the `mac-app` artifact of the [CI run](https://github.com/defoAI/mcp-ableton-music-maker/actions/workflows/ci.yml). It is ad-hoc signed, so a Mac that downloads it refuses it until you clear the quarantine flag:
+Every push to `main` builds and verifies an Apple Silicon disk image, kept as the `mac-app` artifact of the [CI run](https://github.com/defoAI/mcp-ableton-music-maker/actions/workflows/ci.yml). It is ad-hoc signed: a Mac that downloads it refuses it until `xattr -dr com.apple.quarantine "/Applications/Ableton Music Maker.app"`. A signed, notarised download follows once the Developer ID certificate is in the release pipeline.
 
-```bash
-xattr -dr com.apple.quarantine "/Applications/Ableton Music Maker.app"
-```
-
-A signed, notarised download follows once the Developer ID certificate is in the release pipeline.
-
-### Or just the binary
+### The binary alone
 
 ```bash
 cargo install --path . --locked
-ableton-music-maker-install-script                 # copies the Remote Script into Live's User Library
-ableton-music-maker-install-script --list-targets  # shows the folders it would use
-```
-
-Restart Live and select the control surface as above, then register the server with your client:
-
-```bash
+ableton-music-maker-install-script          # the Remote Script into Live's User Library, with a .bak of what was there
 claude mcp add AbletonMusicMaker ableton-music-maker
 ```
 
-For Claude Desktop, add `{"command": "ableton-music-maker"}` under `mcpServers.AbletonMusicMaker` in **Settings → Developer → Edit Config**; for Cursor, paste the command under **Settings → MCP**. The server reads Live's address from `ABLETON_HOST` (default `localhost`) and `ABLETON_PORT` (default `9877`). Run one instance of the server at a time across all clients.
-
-### Or Docker
-
-The image is built where it is used — it is not published — and is hardened by contract: distroless, non-root, read-only root filesystem, `/state` the only writable path, no upload code in the binary, and under 50 MB. `docker/verify-image.sh` checks all of that against an image you built.
-
-```bash
-docker compose build
-docker/verify-image.sh mcp-ableton-music-maker:local
-docker compose --profile install run --rm install-script     # the Remote Script into Live's User Library
-```
+Restart Live and select the control surface as above. Claude Desktop takes `{"command": "ableton-music-maker"}` under `mcpServers.AbletonMusicMaker`; Cursor takes the same command under **Settings → MCP**. `ABLETON_HOST` and `ABLETON_PORT` override where Live is. Run one server at a time across all clients.
 
 <details>
-<summary>Client configuration for the container</summary>
+<summary><b>Docker</b> — built where it is used, not published</summary>
 
-Claude Desktop:
-
-```json
-{
-  "mcpServers": {
-    "AbletonMusicMaker": {
-      "command": "docker",
-      "args": ["run", "--rm", "-i", "--read-only", "--security-opt", "no-new-privileges:true",
-               "--cap-drop", "ALL", "-v", "ableton-music-maker-state:/state",
-               "mcp-ableton-music-maker:local"]
-    }
-  }
-}
-```
-
-Claude Code:
+The image is hardened by contract and `docker/verify-image.sh` proves it against an image you built: distroless, non-root, read-only root filesystem, `/state` the only writable path, no upload code in the binary, under 50 MB.
 
 ```bash
+docker compose build && docker/verify-image.sh mcp-ableton-music-maker:local
+docker compose --profile install run --rm install-script
 claude mcp add AbletonMusicMaker -- docker run --rm -i --read-only --security-opt no-new-privileges:true --cap-drop ALL -v ableton-music-maker-state:/state mcp-ableton-music-maker:local
 ```
 
-Do not add `-t` (it breaks the stdio transport) or `-p` (the container listens on nothing). Docker Desktop must be running whenever the client starts the server. Opening this repository in Claude Code offers the container through [`.mcp.json`](.mcp.json).
+For Claude Desktop, the same `docker run …` line becomes `command` and `args`. Never add `-t` (it breaks stdio) or `-p` (the container listens on nothing). Docker Desktop must be running whenever the client starts the server; opening this repository in Claude Code offers the container through [`.mcp.json`](.mcp.json).
 </details>
 
-## What Claude can do
+## What you can say
 
-The server presents **the artist's set** — 37 tools, verified 2026-09-20 against `src/tools.rs` — and serves the raw layer underneath it as `adv_…`, never hidden. Faders and levels are in dB, Arrangement positions in Live's 1-based bars, note times inside a clip in beats. Tracks and sections are addressed by name.
+The server presents **the artist's set** — 37 tools, verified 2026-09-20 against `src/tools.rs` — and serves the raw layer under it as `adv_…`, never hidden. Tracks and sections are addressed by name.
 
-| | Tools | What the producer gets |
+| You say | What happens | Tool |
 |---|---|---|
-| **Look** | `get_context` | The whole set in one call: every track with its mixer, devices and clips, the returns, the sections, the clock, and the workflow reminder. Start here. |
-| **Build** | `build_song` `make_section` `create_clip` `add_notes_to_clip` `load_instrument_or_effect` `search_browser` `add_sample` `set_key` `set_tempo` | A whole set from one document — key, tempo, sections as scene rows, tracks with instruments found by words, clips with notes — validated before the first command reaches Live, `dry_run` to preview. Notes in compact forms: a step string per pitch (`{"36": "x...x...x...x..."}`), patterns, `notes_csv`, a bar tiled across a clip. Instruments and effects by plain words or a browser URI, onto a track, a return or the master. Audio you already own placed into a section's row or at a bar, warped and fitted, one undo step. |
-| **Shape** | `shape_sound` `feel` `set_track_mixer` `set_send` `create_return` | Cutoff, resonance, attack, drive, reverb … as words, resolved against a rack's macros first, then the instrument's own parameters, then any parameter by name. Swing, humanize, a Groove Pool groove, retime, a variation — one call, one undo. Faders in dB. |
-| **Arrange** | `set_song` `add_to_song` `remove_from_song` `arrange` `create_locator` | A song is a setlist of sections, kept in the set itself as scene names, so Live's own Save keeps it. Place, repeat, move, delete and shorten in the Arrangement in bars, one round trip per track however many clips. |
-| **Play** | `play_song` `go` `jump_to` `back` `hold_section` `next_section` `previous_section` `record_clip` `capture_mix` `clear_captures` `end_performance` | Every jump lands at the end of the playing section's phrase unless told otherwise; a transition can be a tempo ramp, a retime, a crossfade, a fill, a drop or a sweep. Every reply carries the bar you are on and the master level under it. Record the producer playing; capture the master through Resampling and get it measured. |
-| **And** | `delete_track` `delete_clip` `export_set` `import_set` `batch` | Set memory as a rebuildable document, written only when asked. Several calls in one round trip. |
+| *build me a techno set in F minor at 126 with an intro, a groove, a break and a drop, 8-bar phrases* | One document becomes the set: key, tempo, sections as scene rows, tracks with instruments found by words, clips with notes. Validated first. | `build_song` |
+| *give me a piano break, Fm9 Dbmaj7 Bbm7 Ab6, two bars each* | A clip named and filled in one call. Notes as step strings, patterns, `notes_csv`, or a bar tiled across the clip. | `create_clip` `add_notes_to_clip` |
+| *same break in the Intro, up three, call it "chop up 3"* | A section copied from another with per-track changes: a transposition, a variation, empty, or new notes. | `make_section` |
+| *the vinyl one, on its own track; put a crash at bar 5* | Audio from your folders or Live's browser into a section's row, or at a bar. Warped, looped to whole bars, one undo. | `add_sample` |
+| *put an Echo on the pad; find me an analog bass* | Instruments and effects by plain words, onto a track, a return or the master. Answered from the server's own index of your library once it has walked it. | `load_instrument_or_effect` `search_browser` |
+| *warmer. more attack on the bass. less reverb.* | Words resolved against the rack's macros first, then the instrument's own parameters, then any parameter by name; before and after in Live's display units. | `shape_sound` |
+| *put an MPC swing on the hats, and quantize the keys to 16ths but only 80%* | Swing, humanize, a Groove Pool groove, retime, a variation, in one call. `undo: true` puts the clip back. | `feel` |
+| *drop Ghosts at bar 9 and make it 4 bars* | The Arrangement in bars: place, repeat, move, delete, shorten, list. One round trip per track however many clips. | `arrange` `create_locator` |
+| *intro twice, then groove, groove with pad, break, drop, and groove to end* | The setlist, written into the set. An entry without a count loops until you say go. | `set_song` `add_to_song` `remove_from_song` |
+| *play the song. go. bring it down. again from the drop.* | Fires the first section and cues the counted jumps; then steer. A transition can ramp the tempo, retime, crossfade, fill, drop or sweep. | `play_song` `go` `jump_to` `back` `hold_section` `next_section` `previous_section` |
+| *click on, count-in, record 8 bars of keys from bar 17* | The producer playing, into a Session clip on the next bar; the script names it and disarms the track. | `record_clip` |
+| *how loud is it? is the drop too busy?* | Eight bars of the master measured. The Capture track stays until you clear it. | `capture_mix` `clear_captures` `end_performance` |
+| *keep a copy of this set* | The whole set as a rebuildable document, written only when asked. | `export_set` `import_set` |
 
-The raw layer — scenes, clips, cues with gestures (breakdown, drop, sweep, build, panic), meters, snapshots, automation, the browser tree, sample folders — is there for the moment the artist's set has no word for what you want, served as `adv_<name>` with "(advanced)" in front of its description.
+Plus `get_context`, which every session starts with: the set, every track with its devices and clips, the sections, the song and the clock, in one call. `delete_track`, `delete_clip` and `batch` complete the set. Every client receives this workflow at `initialize`, so the model knows it before you say anything.
 
-Every client receives a short workflow at `initialize`: `get_context`, then `build_song`, hear it with `capture_mix`, perform it with `play_song` and the steering verbs. A missing or outdated Remote Script produces a plain "run the installer, then restart Live" instead of a half-working session.
+Behind the artist's set are 101 tools in all: scenes and clips by index, cues with gestures (breakdown, drop, sweep, build, panic), meters, mix snapshots, clip automation, the browser tree, sample folders. The one thing the Live API cannot do is save the set; you press Cmd+S.
 
-### Prompts that work
+## The Mac app
 
-- *"Create an 80s synthwave track"* — [watch it happen](https://youtu.be/VH9g66e42XA)
-- *"Create a Metro Boomin style hip-hop beat"*
-- *"Build a full arrangement with an intro, buildup, drop, breakdown and outro"*
-- *"Add a jazz chord progression to the clip in track 1"*
-- *"Put the kick from my samples folder on a new track, one hit per bar"*
-- *"Capture the drop and tell me if it clips"*
-- *"Play the song — I'll say go each time"*
+A menu bar app, Tauri 2, linked against the server's own crate.
 
-## Hear it, see it
-
-**Claude hears the set.** `capture_mix` records bars of the master inside Live, exactly as if you had pressed record, and reads the file once: peak, RMS per bar, silent bars, clipping, stereo correlation. The audio stays in your project; nothing is copied.
-
-**You see it.** The Mac app's **Listen** screen taps the audio Live sends to your speakers through a macOS process tap of Live's process alone — no virtual audio driver, no routing change, Live keeps playing through its own output — and draws a spectrum from 20 Hz to 20 kHz in dBFS, the master meters with peak hold and a clip light, and the six ranges of a mix as their share of the whole. A small always-on-top window keeps it beside Live. **Visual** opens a full-screen feedback visual in the MilkDrop tradition, drawn from the same audio: eight presets that never repeat, because every visit re-rolls the palette, the warp, the shape and the fold, and never cut, because one becomes the next over several seconds on the same trails. Space wanders, F is full screen.
-
-The audio is analysed in memory about thirty times a second and thrown away; it is never written and never sent. The Listen screen needs macOS 14.4 or later; the rest of the app runs on macOS 12.
+- **The chain.** Client, server, Live: one state each, one fix each. The app never runs the server your client talks to; it makes that invisible process visible, and warns when two are talking to Live.
+- **Activity.** Every tool call with its Live round-trip, the commands it sent, the result, and an estimated token cost, from the server's local log. Payloads (your MIDI and names) are shown only if you turned them on.
+- **Listen.** What Live is putting out right now, through a macOS process tap of Live's process alone: no virtual audio driver, no routing change, Live keeps playing through its own output. A spectrum from 20 Hz to 20 kHz in dBFS with peak hold, master meters with a clip light, correlation, and the six ranges of a mix as their share of the whole. A small always-on-top window keeps it beside Live. The audio is analysed in memory about thirty times a second and thrown away. macOS 14.4 or later for this screen; the rest of the app runs on macOS 12.
+- **Visual.** A full-screen feedback visual in the MilkDrop tradition, drawn from the same audio. Eight presets that never show you the same thing twice, because every visit re-rolls the palette, the warp, the shape and the fold, and never cut, because one becomes the next over several seconds on the same trails. Space wanders, 1–8 picks one, F is full screen.
 
 ## Your data
 
-Nothing is uploaded, by the server or by the app; there is no code that could. What is kept on your machine:
+Nothing is uploaded, by the server or the app; there is no code that could. What is kept, all under `~/.ableton-music-maker/`:
 
-| What | Default | Where |
+| | Default | Off switch |
 |---|---|---|
-| Activity log — tool names, the Live commands sent, timings, sizes, results | on | `~/.ableton-music-maker/activity/` |
-| The parameters and results themselves, which contain your MIDI and names | **off** — `ABLETON_MCP_ACTIVITY_PAYLOADS=true` turns it on | same files |
-| The server's copy of Live's browser: names, paths, URIs | on — `ABLETON_MCP_LIBRARY_INDEX=false` keeps it in memory | `~/.ableton-music-maker/library/` |
-| A set exported as a document | **only on `export_set`** | `~/.ableton-music-maker/sets/` |
+| Activity log: tool names, the Live commands sent, timings, sizes, results | on | `ABLETON_MCP_ACTIVITY=false`, or the app |
+| Parameters and results, which contain your MIDI and names | **off** | `ABLETON_MCP_ACTIVITY_PAYLOADS=true` turns it on |
+| The server's copy of Live's browser: names, paths, URIs | on | `ABLETON_MCP_LIBRARY_INDEX=false` keeps it in memory |
+| A set exported as a document | **only on `export_set`** | delete the file |
+| Listening in the app | off until you start it | stops the moment no window shows it; never written |
 
-Captures are your project's own recordings and are never copied. The Remote Script accepts connections from this machine only by default. The app's **Delete all local data** removes everything in the table; so does deleting the folder. The whole story: [TERMS.md](TERMS.md).
+Captures and takes are your project's own recordings and are never copied. **Delete all local data** in the app removes everything above. The whole story, in plain words: [TERMS.md](TERMS.md).
 
-## Troubleshooting
+## When it goes wrong
 
-| Problem | Fix |
+| | |
 |---|---|
-| Tools say the Remote Script cannot run a command | Run the installer again (or **Update Remote Script** in the app), restart Live, re-select AbletonMusicMaker as a control surface. `ableton-music-maker --check` prints the loaded and expected versions. |
-| "could not connect to Ableton" | Live is not running, or the control surface is not selected. From Docker, Live must be reachable at `host.docker.internal:9877`. |
-| The server runs on another machine, or a container cannot reach the host's loopback | The script binds `127.0.0.1` by default. Put the address to bind — `0.0.0.0` for any interface — on the first line of `bind_host.txt` beside the script's `__init__.py` and restart Live. `--check` prints what the loaded script bound. |
-| Timeouts | Break the request into smaller steps. Creating many tracks is given 190 s, importing audio 65 s, a browser search 25 s, other changes 15 s, reads 10 s. |
-| Two servers are talking to Live | Only one should. The app warns when it sees two; remove the extra client entry. Upgrading from the original AbletonMCP? Remove its entry — the app offers to. |
-| Nothing arrives on the Listen screen while Live plays | macOS delivers silence when the audio-capture permission is off. Allow **Ableton Music Maker** under **System Settings → Privacy & Security → Screen & System Audio Recording**. |
+| **"the Remote Script cannot run this command"** | The script in Live is older than the server expects. Install again (the app's Setup offers **Update Remote Script**), restart Live, re-select the control surface. `ableton-music-maker --check` prints the loaded and expected versions. |
+| **"could not connect to Ableton"** | Live is not running, or AbletonMusicMaker is not selected as a control surface. |
+| **The server is on another machine, or a container cannot reach the host** | The script binds `127.0.0.1` by default. Put the address to bind on the first line of `bind_host.txt` beside the script's `__init__.py` and restart Live. `--check` prints what it bound. |
+| **Two servers** | Only one should talk to Live. Remove the extra client entry; if it is the original AbletonMCP, the app offers to. |
+| **A timeout** | Ask for less at once. Making many tracks is allowed 190 s, importing audio 65 s, a browser search 25 s, other changes 15 s, reads 10 s. |
+| **Listen shows nothing while Live plays** | macOS hands over silence when the audio-capture permission is off. Allow the app under **System Settings → Privacy & Security → Screen & System Audio Recording**. |
 
-Diagnostics go to stderr; `RUST_LOG=debug` gives the full command trace. `ableton-music-maker --status` prints versions and paths.
+Diagnostics go to stderr; `RUST_LOG=debug` traces every command. `ableton-music-maker --status` prints versions and paths.
 
-## Development
+## How it is built
+
+- **`src/`** is the server: tool bodies are plain functions, `fn(&LiveState, &Params) -> Result<String, String>`, so the whole suite runs against a fake Live. Compact note forms, the sound vocabulary, sections and songs, transitions, capture measurement and the library index are each a module of pure functions with their own tests.
+- **The Remote Script** is one Python file, compatible with the Python Live bundles, embedded into the binary. It touches Live only from Live's main thread, in bounded slices, and reports what each command cost. Every command it supports is listed in `SCRIPT_CAPABILITIES`; the server checks that list before every call, and a test cross-checks it against the server's own.
+- **`app/`** is the Mac app. Its Rust core links the crate by path; the tap of Live's audio is one Objective-C file compiled by `cc`, with everything newer than macOS 12 weak-imported behind `@available`.
+- **Decisions that cost real work to reverse are written down**, numbered, never renumbered: [docs/decisions](docs/decisions/). Nine so far, all decided, from "the server is Rust and the script stays Python" to "CI builds the Mac app only".
+- **Every number in the documentation is a copy** of one in the code, and `scripts/check-docs-facts.sh` fails CI when a copy drifts. The originals are listed in [docs/facts/source-of-truth.md](docs/facts/source-of-truth.md). Features start as questions and a prototype transcript, not a tool signature: [docs/](docs/README.md).
 
 ```bash
-cargo test                                   # the server's suites, FakeBridge in place of Live
-cargo clippy --all-targets -- -D warnings    # CI runs this
-scripts/check-docs-facts.sh                  # every number in the docs against the code
-docker build --target test .                 # the same suite inside the image
-cd app/src-tauri && cargo test               # the app; --ignored adds two that need Live open
+cargo test                                          # the server, against a fake Live
+cargo clippy --all-targets -- -D warnings
+scripts/check-docs-facts.sh
+cd app/src-tauri && cargo test                      # add -- --ignored with Live open: two tests drive a real tap
 cd app/src && node --test listen.test.mjs visual.test.mjs
-cd app/src-tauri && cargo run --example listen_probe   # taps Live for a few seconds and prints what arrived
+cd app/src-tauri && cargo run --example listen_probe  # taps Live for a few seconds and prints what arrived
+docker build --target test .                        # the same suite inside the image
 ```
 
-The Remote Script is `AbletonMusicMaker_Remote_Script/__init__.py`, embedded into the binary at build time; its `SCRIPT_VERSION` is what the server expects, and it stays compatible with the Python Live bundles. Adding a command means a handler there, its name in `SCRIPT_CAPABILITIES`, a version bump, and a test cross-checks the list against the server.
+CI is two jobs, both on macOS: the Rust gate, and the app with its verified disk image. A `v*` tag builds the signed, notarised one.
 
-CI runs two jobs, both on macOS: the Rust gate, and the app with its verified disk image. A `v*` tag builds the signed, notarised image.
+---
 
-The product layer — what this is, what it does today, the decisions behind it, and how a feature is designed before it is built — lives in [docs/](docs/README.md). Every number in prose is a copy; the originals are in [docs/facts/source-of-truth.md](docs/facts/source-of-truth.md).
+<div align="center">
 
-## Community
+[**Discord**](https://discord.gg/JK4hNKGprW) · [Issues](https://github.com/defoAI/mcp-ableton-music-maker/issues) · [Docs](docs/README.md)
 
-Feedback, ideas, and what people are building with it: [**Discord**](https://discord.gg/JK4hNKGprW) · [Issues](https://github.com/defoAI/mcp-ableton-music-maker/issues)
+MIT licensed. Derived from AbletonMCP by [Siddharth Ahuja](https://x.com/sidahuj) (MIT); this fork is maintained by DefoAI UG.<br>
+This is a third-party integration and not made by Ableton.
 
-## Disclaimer
-
-This is a third-party integration and not made by Ableton. Derived from AbletonMCP by [Siddharth Ahuja](https://x.com/sidahuj) (MIT); this fork is maintained by DefoAI UG. Licensed under [MIT](LICENSE).
+</div>
