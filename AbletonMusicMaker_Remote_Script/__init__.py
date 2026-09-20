@@ -63,7 +63,7 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.34.1"
+SCRIPT_VERSION = "1.34.2"
 PROTOCOL_VERSION = 2
 # Where client sockets are read. "main_thread_tick": sockets are non-blocking
 # and drained from the same tick the clock runs on, so a message waits one
@@ -7104,6 +7104,65 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error moving device: " + str(e))
             raise
 
+    # ── What counts as a browser category ──────────────────────────────────
+
+    # `dir(browser)` is not a list of categories. Live's Browser also carries
+    # `load_item`, `preview_item`, `relation_to_hotswap_target`, the
+    # `add_*_listener` / `*_has_listener` boilerplate, `filter_type` (an
+    # enum) and `colors` (swatches for filtering, not a place to browse).
+    # Reporting all of it as "available_categories" tells a client it may ask
+    # for `load_item`, which can only fail. A category is a browser item — it
+    # has a name and children — or a vector of them, which is what
+    # `user_folders` is.
+    _NOT_A_CATEGORY = ("hotswap_target", "filter_type", "colors")
+
+    # What Live calls each root on screen. `attr.capitalize()` gives
+    # "Max_for_live" and "Current_project", which is not a name anybody
+    # would recognise.
+    _CATEGORY_NAMES = {
+        "audio_effects": "Audio Effects", "midi_effects": "MIDI Effects",
+        "max_for_live": "Max for Live", "user_library": "User Library",
+        "user_folders": "Places", "current_project": "Current Project",
+        "legacy_libraries": "Legacy Libraries", "plugins": "Plug-Ins",
+    }
+
+    def _category_name(self, attr):
+        return self._CATEGORY_NAMES.get(attr, attr.replace("_", " ").title())
+
+    def _is_browser_item(self, value):
+        if value is None or callable(value):
+            return False
+        try:
+            return hasattr(value, "name") and (
+                hasattr(value, "children") or hasattr(value, "is_loadable"))
+        except Exception:
+            return False
+
+    def _browser_roots(self, browser):
+        """The categories this Live really offers, in name order."""
+        roots = []
+        for attr in dir(browser):
+            if attr.startswith("_") or attr in self._NOT_A_CATEGORY:
+                continue
+            if attr.endswith("_listener"):
+                continue
+            try:
+                value = getattr(browser, attr)
+            except Exception:
+                continue
+            if callable(value):
+                continue
+            if self._is_browser_item(value):
+                roots.append(attr)
+                continue
+            try:
+                members = list(value)
+            except Exception:
+                continue
+            if members and all(self._is_browser_item(m) for m in members):
+                roots.append(attr)
+        return sorted(roots)
+
     def get_browser_tree(self, category_type="all"):
         """
         Get a simplified tree of browser categories.
@@ -7125,8 +7184,8 @@ class AbletonMCP(ControlSurface):
                 raise RuntimeError("Browser is not available in the Live application")
             
             # Log available browser attributes to help diagnose issues
-            browser_attrs = [attr for attr in dir(app.browser) if not attr.startswith('_')]
-            self.log_message("Available browser attributes: {0}".format(browser_attrs))
+            browser_attrs = self._browser_roots(app.browser)
+            self.log_message("Browser categories: {0}".format(browser_attrs))
             
             result = {
                 "type": category_type,
@@ -7218,7 +7277,7 @@ class AbletonMCP(ControlSurface):
                         if hasattr(item, 'children') or hasattr(item, 'name'):
                             category = process_item(item)
                             if category:
-                                category["name"] = attr.capitalize()
+                                category["name"] = self._category_name(attr)
                                 result["categories"].append(category)
                     except Exception as e:
                         self.log_message("Error processing {0}: {1}".format(attr, str(e)))
@@ -7255,8 +7314,8 @@ class AbletonMCP(ControlSurface):
                 raise RuntimeError("Browser is not available in the Live application")
             
             # Log available browser attributes to help diagnose issues
-            browser_attrs = [attr for attr in dir(app.browser) if not attr.startswith('_')]
-            self.log_message("Available browser attributes: {0}".format(browser_attrs))
+            browser_attrs = self._browser_roots(app.browser)
+            self.log_message("Browser categories: {0}".format(browser_attrs))
                 
             # Parse the path
             path_parts = path.split("/")

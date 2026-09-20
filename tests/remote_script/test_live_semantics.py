@@ -421,6 +421,45 @@ class Browser(unittest.TestCase):
                          ["Arpeggiator", "Analog"])
 
 
+class BrowserCategories(unittest.TestCase):
+    """#58: a category is a place to browse, not any member of Browser.
+
+    Live's Browser carries `load_item`, `preview_item`,
+    `relation_to_hotswap_target`, `filter_type`, `colors` and three listener
+    methods per observable property. `dir(browser)` returns all of it, and
+    `available_categories` used to be exactly that — so a client was told it
+    could ask for `load_item`."""
+
+    def setUp(self):
+        self.ns = harness.load()
+        self.script = harness.instance(self.ns)
+        self.browser = self.script.application().browser
+
+    def test_only_browsable_roots_are_offered(self):
+        roots = self.script._browser_roots(self.browser)
+        self.assertIn("instruments", roots)
+        self.assertIn("drums", roots)
+        self.assertIn("user_folders", roots, "a vector of places is a category too")
+        for name in roots:
+            self.assertFalse(name.endswith("_listener"))
+            value = getattr(self.browser, name)
+            self.assertFalse(callable(value), "%s is a method" % name)
+
+    def test_the_methods_and_the_enums_are_left_out(self):
+        roots = self.script._browser_roots(self.browser)
+        for name in ("load_item", "stop_preview", "relation_to_hotswap_target",
+                     "hotswap_target", "filter_type", "colors"):
+            self.assertNotIn(name, roots)
+
+    def test_every_root_offered_can_actually_be_walked(self):
+        """The promise the field makes: ask for one of these and get items."""
+        for name in self.script._browser_roots(self.browser):
+            value = getattr(self.browser, name)
+            items = [value] if hasattr(value, "name") else list(value)
+            for item in items:
+                self.assertTrue(hasattr(item, "name"))
+
+
 class Undo(unittest.TestCase):
     """One undo step per mutating command (decision 0007): the executor
     opens one before the first slice and closes it after the last."""

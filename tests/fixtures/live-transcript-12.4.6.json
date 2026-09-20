@@ -1,8 +1,8 @@
 {
   "live_version": "12.4.6",
   "protocol_version": 2,
-  "recorded_at": "2026-09-20T12:25:46Z",
-  "script_version": "1.34.1",
+  "recorded_at": "2026-09-20T13:11:07Z",
+  "script_version": "1.34.2",
   "socket_reader": "main_thread_tick",
   "steps": [
     {
@@ -123,20 +123,20 @@
           "performance_mode": false,
           "port": 9877,
           "protocol_version": 2,
-          "script_version": "1.34.1",
+          "script_version": "1.34.2",
           "snapshot_schema": "ableton_mcp_snapshot_v2",
           "socket_reader": "main_thread_tick",
           "tick": {
-            "jitter_ms": 9.15,
-            "max_ms": 455170.95,
-            "period_ms": 100.01,
+            "jitter_ms": 0.7,
+            "max_ms": 111.16,
+            "period_ms": 100.0,
             "playing": false,
             "samples": 600
           }
         },
         "status": "success"
       },
-      "round_trip_ms": 196.54
+      "round_trip_ms": 196.56
     },
     {
       "command": "reset_set",
@@ -144,7 +144,7 @@
       "params": {},
       "reply": {
         "id": 2,
-        "main_ms": 362.31,
+        "main_ms": 370.82,
         "result": {
           "note": "The Live API has no File > New: this emptied the open set, it did not open one. Nothing is saved until you save it in Live (Cmd+S).",
           "removed": {
@@ -170,7 +170,7 @@
         "slices": 6,
         "status": "success"
       },
-      "round_trip_ms": 662.5
+      "round_trip_ms": 653.43
     },
     {
       "command": "get_session_info",
@@ -178,7 +178,7 @@
       "params": {},
       "reply": {
         "id": 3,
-        "main_ms": 0.14,
+        "main_ms": 0.11,
         "result": {
           "back_to_arranger": false,
           "current_song_time": 0.0,
@@ -201,7 +201,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 47.44
+      "round_trip_ms": 46.29
     },
     {
       "command": "get_returns",
@@ -209,7 +209,7 @@
       "params": {},
       "reply": {
         "id": 4,
-        "main_ms": 0.42,
+        "main_ms": 0.26,
         "result": {
           "count": 2,
           "returns": [
@@ -240,7 +240,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 100.21
+      "round_trip_ms": 100.12
     },
     {
       "command": "get_meter_scale",
@@ -248,7 +248,7 @@
       "params": {},
       "reply": {
         "id": 5,
-        "main_ms": 0.12,
+        "main_ms": 0.07,
         "result": {
           "floor_db": -70.0,
           "points": [
@@ -269,7 +269,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 100.46
+      "round_trip_ms": 99.69
     },
     {
       "command": "get_grooves",
@@ -277,7 +277,7 @@
       "params": {},
       "reply": {
         "id": 6,
-        "main_ms": 0.64,
+        "main_ms": 0.48,
         "result": {
           "can_add": false,
           "groove_amount": 0.0,
@@ -301,7 +301,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 99.94
+      "round_trip_ms": 100.83
     },
     {
       "command": "arrangement_summary",
@@ -309,7 +309,7 @@
       "params": {},
       "reply": {
         "id": 7,
-        "main_ms": 0.59,
+        "main_ms": 0.27,
         "result": {
           "bars": 0,
           "beats_per_bar": 4,
@@ -321,7 +321,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 100.05
+      "round_trip_ms": 99.33
     },
     {
       "command": "get_performance_state",
@@ -329,7 +329,7 @@
       "params": {},
       "reply": {
         "id": 8,
-        "main_ms": 0.91,
+        "main_ms": 0.75,
         "result": {
           "bar": 1,
           "beat": 0.0,
@@ -503,7 +503,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 100.52
+      "round_trip_ms": 100.53
     },
     {
       "command": "get_browser_tree",
@@ -513,38 +513,20 @@
       },
       "reply": {
         "id": 9,
-        "main_ms": 848.44,
+        "main_ms": 873.79,
         "result": {
           "available_categories": [
-            "add_filter_type_listener",
-            "add_full_refresh_listener",
-            "add_hotswap_target_listener",
             "audio_effects",
             "clips",
-            "colors",
             "current_project",
             "drums",
-            "filter_type",
-            "filter_type_has_listener",
-            "full_refresh_has_listener",
-            "hotswap_target",
-            "hotswap_target_has_listener",
             "instruments",
-            "legacy_libraries",
-            "load_item",
             "max_for_live",
             "midi_effects",
             "packs",
             "plugins",
-            "preview_item",
-            "relation_to_hotswap_target",
-            "remove_filter_type_listener",
-            "remove_full_refresh_listener",
-            "remove_hotswap_target_listener",
             "samples",
             "sounds",
-            "stop_preview",
-            "user_folders",
             "user_library"
           ],
           "categories": [
@@ -33182,7 +33164,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 960.85
+      "round_trip_ms": 987.12
     },
     {
       "command": "search_browser",
@@ -33193,7 +33175,7 @@
       },
       "reply": {
         "id": 10,
-        "main_ms": 771.47,
+        "main_ms": 771.44,
         "result": {
           "category": "all",
           "index_complete": true,
@@ -33237,14 +33219,14 @@
           ],
           "query": "analog",
           "returned": 5,
-          "seconds": 1.89,
+          "seconds": 1.82,
           "total_matches": 474,
           "truncated_walk": false
         },
         "slices": 19,
         "status": "success"
       },
-      "round_trip_ms": 1990.78
+      "round_trip_ms": 1826.24
     },
     {
       "command": "set_tempo",
@@ -33254,14 +33236,14 @@
       },
       "reply": {
         "id": 11,
-        "main_ms": 0.27,
+        "main_ms": 0.21,
         "result": {
           "tempo": 124.0
         },
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 76.79
+      "round_trip_ms": 76.27
     },
     {
       "command": "set_scale",
@@ -33272,7 +33254,7 @@
       },
       "reply": {
         "id": 12,
-        "main_ms": 0.19,
+        "main_ms": 0.26,
         "result": {
           "root_note": 2,
           "root_note_name": "D",
@@ -33282,7 +33264,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 99.77
+      "round_trip_ms": 100.08
     },
     {
       "command": "create_tracks",
@@ -33308,7 +33290,7 @@
       },
       "reply": {
         "id": 13,
-        "main_ms": 536.68,
+        "main_ms": 537.39,
         "result": {
           "created": [
             {
@@ -33330,7 +33312,7 @@
         "slices": 3,
         "status": "success"
       },
-      "round_trip_ms": 667.64
+      "round_trip_ms": 679.91
     },
     {
       "command": "get_session_info",
@@ -33338,7 +33320,7 @@
       "params": {},
       "reply": {
         "id": 14,
-        "main_ms": 0.08,
+        "main_ms": 0.06,
         "result": {
           "back_to_arranger": false,
           "current_song_time": 0.0,
@@ -33361,7 +33343,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 52.42
+      "round_trip_ms": 59.08
     },
     {
       "command": "write_clips",
@@ -33418,7 +33400,7 @@
       },
       "reply": {
         "id": 15,
-        "main_ms": 30.57,
+        "main_ms": 35.34,
         "result": {
           "written": [
             {
@@ -33442,7 +33424,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 130.07
+      "round_trip_ms": 135.93
     },
     {
       "command": "get_clip_notes",
@@ -33453,7 +33435,7 @@
       },
       "reply": {
         "id": 16,
-        "main_ms": 0.4,
+        "main_ms": 0.23,
         "result": {
           "clip_index": 0,
           "clip_name": "Kick 1",
@@ -33510,7 +33492,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 70.08
+      "round_trip_ms": 64.71
     },
     {
       "command": "get_clip_info",
@@ -33521,7 +33503,7 @@
       },
       "reply": {
         "id": 17,
-        "main_ms": 1.4,
+        "main_ms": 0.85,
         "result": {
           "arrangement": false,
           "clip_index": 0,
@@ -33545,7 +33527,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 101.52
+      "round_trip_ms": 100.9
     },
     {
       "command": "set_track_mixer",
@@ -33556,10 +33538,10 @@
       },
       "reply": {
         "id": 18,
-        "main_ms": 0.65,
+        "main_ms": 0.78,
         "result": {
           "arm": true,
-          "color_index": 12,
+          "color_index": 15,
           "mute": false,
           "name": "Diff Bass",
           "panning": 0.0,
@@ -33582,7 +33564,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 99.0
+      "round_trip_ms": 100.02
     },
     {
       "command": "set_send",
@@ -33594,7 +33576,7 @@
       },
       "reply": {
         "id": 19,
-        "main_ms": 0.41,
+        "main_ms": 0.3,
         "result": {
           "return_name": "A-Reverb",
           "send_index": 0,
@@ -33604,7 +33586,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 99.83
+      "round_trip_ms": 99.23
     },
     {
       "command": "get_track_info",
@@ -33614,7 +33596,7 @@
       },
       "reply": {
         "id": 20,
-        "main_ms": 0.51,
+        "main_ms": 0.35,
         "result": {
           "arm": true,
           "clip_slots": [
@@ -33686,7 +33668,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 100.13
+      "round_trip_ms": 100.0
     },
     {
       "command": "set_device_parameter",
@@ -33699,7 +33681,7 @@
       },
       "reply": {
         "id": 21,
-        "main_ms": 0.94,
+        "main_ms": 1.1,
         "result": {
           "asked": 0.25,
           "automation_state": 0,
@@ -33736,7 +33718,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 100.01
+      "round_trip_ms": 101.02
     },
     {
       "command": "get_device_parameters",
@@ -33747,7 +33729,7 @@
       },
       "reply": {
         "id": 22,
-        "main_ms": 3.06,
+        "main_ms": 3.36,
         "result": {
           "device": {
             "automation_enabled": false,
@@ -36515,7 +36497,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 103.23
+      "round_trip_ms": 113.32
     },
     {
       "command": "place_clips",
@@ -36532,7 +36514,7 @@
       },
       "reply": {
         "id": 23,
-        "main_ms": 80.19,
+        "main_ms": 79.98,
         "result": {
           "arrangement_clips": 4,
           "clip": "Kick 1",
@@ -36549,7 +36531,7 @@
         "slices": 2,
         "status": "success"
       },
-      "round_trip_ms": 243.16
+      "round_trip_ms": 214.25
     },
     {
       "command": "place_clips",
@@ -36564,7 +36546,7 @@
       },
       "reply": {
         "id": 24,
-        "main_ms": 41.99,
+        "main_ms": 46.84,
         "result": {
           "arrangement_clips": 2,
           "clip": "Bass 1",
@@ -36579,7 +36561,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 104.36
+      "round_trip_ms": 127.57
     },
     {
       "command": "get_arrangement_clips",
@@ -36589,12 +36571,12 @@
       },
       "reply": {
         "id": 25,
-        "main_ms": 0.18,
+        "main_ms": 0.17,
         "result": {
           "clip_count": 4,
           "clips": [
             {
-              "color": 8940772,
+              "color": 13408551,
               "end_time": 4.0,
               "is_audio_clip": false,
               "is_midi_clip": true,
@@ -36604,7 +36586,7 @@
               "start_time": 0.0
             },
             {
-              "color": 8940772,
+              "color": 13408551,
               "end_time": 8.0,
               "is_audio_clip": false,
               "is_midi_clip": true,
@@ -36614,7 +36596,7 @@
               "start_time": 4.0
             },
             {
-              "color": 8940772,
+              "color": 13408551,
               "end_time": 12.0,
               "is_audio_clip": false,
               "is_midi_clip": true,
@@ -36624,7 +36606,7 @@
               "start_time": 8.0
             },
             {
-              "color": 8940772,
+              "color": 13408551,
               "end_time": 16.0,
               "is_audio_clip": false,
               "is_midi_clip": true,
@@ -36640,7 +36622,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 67.61
+      "round_trip_ms": 53.28
     },
     {
       "command": "arrangement_summary",
@@ -36648,7 +36630,7 @@
       "params": {},
       "reply": {
         "id": 26,
-        "main_ms": 0.41,
+        "main_ms": 0.33,
         "result": {
           "bars": 4,
           "beats_per_bar": 4,
@@ -36660,7 +36642,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 101.14
+      "round_trip_ms": 99.96
     },
     {
       "command": "create_scene",
@@ -36672,7 +36654,7 @@
       },
       "reply": {
         "id": 27,
-        "main_ms": 47.89,
+        "main_ms": 52.82,
         "result": {
           "index": 8,
           "name": "Drop \u00b7 8",
@@ -36685,7 +36667,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 147.67
+      "round_trip_ms": 152.62
     },
     {
       "command": "get_performance_state",
@@ -36693,7 +36675,7 @@
       "params": {},
       "reply": {
         "id": 28,
-        "main_ms": 0.79,
+        "main_ms": 0.61,
         "result": {
           "bar": 4,
           "beat": 12.0,
@@ -36922,7 +36904,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 62.43
+      "round_trip_ms": 47.92
     },
     {
       "command": "get_session_snapshot",
@@ -36933,7 +36915,7 @@
       },
       "reply": {
         "id": 29,
-        "main_ms": 8.96,
+        "main_ms": 7.43,
         "result": {
           "cue_points": [],
           "include_notes": true,
@@ -37348,7 +37330,7 @@
               "arm": false,
               "arrangement_clips": [
                 {
-                  "color": 8940772,
+                  "color": 13408551,
                   "end_time": 4.0,
                   "is_audio_clip": false,
                   "is_midi_clip": true,
@@ -37410,7 +37392,7 @@
                   "warping": false
                 },
                 {
-                  "color": 8940772,
+                  "color": 13408551,
                   "end_time": 8.0,
                   "is_audio_clip": false,
                   "is_midi_clip": true,
@@ -37472,7 +37454,7 @@
                   "warping": false
                 },
                 {
-                  "color": 8940772,
+                  "color": 13408551,
                   "end_time": 12.0,
                   "is_audio_clip": false,
                   "is_midi_clip": true,
@@ -37534,7 +37516,7 @@
                   "warping": false
                 },
                 {
-                  "color": 8940772,
+                  "color": 13408551,
                   "end_time": 16.0,
                   "is_audio_clip": false,
                   "is_midi_clip": true,
@@ -37599,7 +37581,7 @@
               "clip_slots": [
                 {
                   "clip": {
-                    "color": 8940772,
+                    "color": 13408551,
                     "is_audio_clip": false,
                     "is_midi_clip": true,
                     "is_playing": false,
@@ -37738,7 +37720,7 @@
               "arm": true,
               "arrangement_clips": [
                 {
-                  "color": 15029152,
+                  "color": 16149507,
                   "end_time": 12.0,
                   "is_audio_clip": false,
                   "is_midi_clip": true,
@@ -37767,7 +37749,7 @@
                   "warping": false
                 },
                 {
-                  "color": 15029152,
+                  "color": 16149507,
                   "end_time": 16.0,
                   "is_audio_clip": false,
                   "is_midi_clip": true,
@@ -37799,7 +37781,7 @@
               "clip_slots": [
                 {
                   "clip": {
-                    "color": 15029152,
+                    "color": 16149507,
                     "is_audio_clip": false,
                     "is_midi_clip": true,
                     "is_playing": false,
@@ -37977,7 +37959,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 108.53
+      "round_trip_ms": 107.63
     },
     {
       "command": "get_context",
@@ -37985,7 +37967,7 @@
       "params": {},
       "reply": {
         "id": 30,
-        "main_ms": 2.1,
+        "main_ms": 3.62,
         "result": {
           "cues": [],
           "events": [],
@@ -38135,7 +38117,7 @@
               "tempo": -1.0
             }
           ],
-          "script_version": "1.34.1",
+          "script_version": "1.34.2",
           "session": {
             "bar": 4,
             "beat": 12.0,
@@ -38161,7 +38143,7 @@
               "arm": false,
               "arrangement_clips": 0,
               "clips": [],
-              "color_index": 7,
+              "color_index": 17,
               "devices": [],
               "fired_slot_index": -1,
               "index": 0,
@@ -38181,7 +38163,7 @@
               "arm": false,
               "arrangement_clips": 0,
               "clips": [],
-              "color_index": 8,
+              "color_index": 16,
               "devices": [],
               "fired_slot_index": -1,
               "index": 1,
@@ -38201,7 +38183,7 @@
               "arm": false,
               "arrangement_clips": 0,
               "clips": [],
-              "color_index": 10,
+              "color_index": 3,
               "devices": [],
               "fired_slot_index": -1,
               "index": 2,
@@ -38221,7 +38203,7 @@
               "arm": false,
               "arrangement_clips": 0,
               "clips": [],
-              "color_index": 22,
+              "color_index": 1,
               "devices": [],
               "fired_slot_index": -1,
               "index": 3,
@@ -38249,7 +38231,7 @@
                   "slot": 0
                 }
               ],
-              "color_index": 24,
+              "color_index": 2,
               "devices": [
                 {
                   "name": "Drum Rack",
@@ -38282,7 +38264,7 @@
                   "slot": 0
                 }
               ],
-              "color_index": 12,
+              "color_index": 15,
               "devices": [
                 {
                   "name": "Analog",
@@ -38307,7 +38289,7 @@
               "arm": false,
               "arrangement_clips": 0,
               "clips": [],
-              "color_index": 25,
+              "color_index": 0,
               "devices": [],
               "fired_slot_index": -1,
               "index": 6,
@@ -38328,7 +38310,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 93.38
+      "round_trip_ms": 95.98
     },
     {
       "command": "get_track_info",
@@ -38338,12 +38320,12 @@
       },
       "reply": {
         "id": 31,
-        "main_ms": 0.53,
+        "main_ms": 0.49,
         "message": "track index 999 out of range (0-6)",
         "slices": 1,
         "status": "error"
       },
-      "round_trip_ms": 115.69
+      "round_trip_ms": 102.42
     },
     {
       "command": "get_clip_notes",
@@ -38354,12 +38336,12 @@
       },
       "reply": {
         "id": 32,
-        "main_ms": 0.6,
+        "main_ms": 0.48,
         "message": "No clip in slot",
         "slices": 1,
         "status": "error"
       },
-      "round_trip_ms": 94.0
+      "round_trip_ms": 96.21
     },
     {
       "command": "describe",
@@ -38369,7 +38351,7 @@
       },
       "reply": {
         "id": 33,
-        "main_ms": 2.87,
+        "main_ms": 2.54,
         "result": {
           "attrs": {
             "arm": {
@@ -38744,7 +38726,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 100.36
+      "round_trip_ms": 100.09
     },
     {
       "command": "run",
@@ -38770,7 +38752,7 @@
       },
       "reply": {
         "id": 34,
-        "main_ms": 0.31,
+        "main_ms": 0.34,
         "result": {
           "fader": 0.8500000238418579,
           "first_track": "1-MIDI",
@@ -38780,7 +38762,7 @@
         "slices": 1,
         "status": "success"
       },
-      "round_trip_ms": 106.04
+      "round_trip_ms": 96.86
     }
   ],
   "track_prefix": "Diff"
