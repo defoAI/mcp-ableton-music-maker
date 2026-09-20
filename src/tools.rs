@@ -786,6 +786,10 @@ params!(BatchParams {
     steps: Vec<BatchStep>,
     /// Stop at the first failing step (default true); with false, later steps still run
     stop_on_error: bool = "yes",
+    /// Print every successful step's own text. Off by default: the reply is a
+    /// grouped summary, plus every failure and everything a step skipped.
+    /// A batch of ten steps or fewer prints in full either way.
+    verbose: bool = "bool::default",
 });
 
 /// A track in a build_song document.
@@ -913,6 +917,10 @@ params!(BuildSongParams {
     on_existing: String = "String::new",
     /// Validate and describe the plan without touching Live (default false)
     dry_run: bool = "bool::default",
+    /// Write a rebuildable copy of the finished set under the server's state
+    /// folder, the way export_set does (default false). The Live set itself
+    /// is still only saved by you, in Live.
+    snapshot: bool = "bool::default",
 });
 params!(SetArrangementLoopParams {
     /// The bar the loop starts on (Live's 1-based bars)
@@ -1663,6 +1671,7 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
     // reads as success while a word was dropped is how a partial change is
     // reported as a whole one.
     let mut lines: Vec<String> = Vec::new();
+    let mut applied = 0usize;
     for (word, param, via, _) in &resolved {
         let after = written
             .iter()
@@ -1671,15 +1680,27 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
             .and_then(crate::sound::Param::from_value)
             .map(|q| q.display())
             .unwrap_or_else(|| "?".into());
-        lines.push(format!(
-            "  applied  {}'{}' {} → {new_display}  ({word})",
-            match via {
-                crate::sound::Via::Macro => "macro ",
-                _ => "",
-            },
-            param.name,
-            param.display()
-        ));
+        // A word Live ignored is skipped, not applied: the same rule as
+        // adv_set_device_parameter, one layer up.
+        match after.map(|a| landing(a, &param.name, &new_display)) {
+            Some(Err(reason)) => lines.push(format!("  skipped  {word} — {reason}")),
+            landed => {
+                applied += 1;
+                lines.push(format!(
+                    "  applied  {}'{}' {} → {new_display}  ({word}){}",
+                    match via {
+                        crate::sound::Via::Macro => "macro ",
+                        _ => "",
+                    },
+                    param.name,
+                    param.display(),
+                    match landed {
+                        Some(Ok(Some(note))) => note,
+                        _ => String::new(),
+                    }
+                ));
+            }
+        }
     }
     for word in &unresolved {
         lines.push(format!(
@@ -1696,12 +1717,11 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
         } else {
             format!(", {class}")
         },
-        if unresolved.is_empty() {
+        if applied == resolved.len() + unresolved.len() {
             String::new()
         } else {
             format!(
-                " — {} of {} applied",
-                resolved.len(),
+                " — {applied} of {} applied",
                 resolved.len() + unresolved.len()
             )
         },
@@ -1782,6 +1802,54 @@ fn resolve_sound_ramps(
     Ok(out)
 }
 
+/// What Live did with a parameter write, read off the reply the script sends
+/// back: `asked`, `landed`, `is_enabled`, `is_quantized`, `automation_state`.
+///
+/// `Err` is a write that did nothing — the step counted as done and was not.
+/// `Ok(Some(note))` is a write that moved but not to the number asked for:
+/// a quantized parameter snapping to its nearest step, which is a success
+/// the producer should see rather than discover by ear. `Ok(None)` is a
+/// clean landing, and also what an older script gets, since it sends no
+/// `landed` and nothing may be assumed about what it did.
+fn landing(r: &Value, name: &str, shown_after: &str) -> Result<Option<String>, String> {
+    if r.get("landed").and_then(Value::as_bool) != Some(false) {
+        return Ok(None);
+    }
+    let asked = short_num(r.get("asked"));
+    let now = if shown_after.is_empty() {
+        short_num(r.get("value"))
+    } else {
+        shown_after.to_string()
+    };
+    if r.get("is_quantized").and_then(Value::as_bool) == Some(true) {
+        let moved =
+            r.get("old_value").and_then(Value::as_f64) != r.get("value").and_then(Value::as_f64);
+        return Ok(Some(format!(
+            " {name} takes steps: {asked} is nearest {now}{}.",
+            if moved {
+                ""
+            } else {
+                ", the step it was already on"
+            }
+        )));
+    }
+    if r.get("is_enabled").and_then(Value::as_bool) == Some(false) {
+        return Err(format!(
+            "'{name}' did not move; it is still {now}. Live has it switched off (is_enabled false): a rack macro owns it, or its device has that parameter disabled. Move the macro that maps to it, or enable it in Live."
+        ));
+    }
+    if let Some(state) = r.get("automation_state").and_then(Value::as_i64) {
+        if state != 0 {
+            return Err(format!(
+                "'{name}' did not move; it is still {now}. It is automated (automation_state {state}), and the envelope overwrites a manual write on the next playback tick. Clear or bypass the envelope in Live, or write the envelope itself with adv_set_clip_automation."
+            ));
+        }
+    }
+    Err(format!(
+        "'{name}' did not move; Live left it at {now} after being asked for {asked}. Nothing in the reply says why: check in Live whether the parameter is mapped, frozen or owned by a chain."
+    ))
+}
+
 pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams) -> ToolResult {
     require(live, "set_device_parameter")?;
     let (target, device_index) = resolve_device(
@@ -1844,11 +1912,15 @@ pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams)
         short_num(r.get("min")),
         short_num(r.get("max"))
     );
+    let name = get_display(&r, "name", "parameter");
+    // A write Live ignored is an error, not a success line with the same
+    // number on both sides of the arrow.
+    let note = landing(&r, &name, &after)?;
     Ok(format!(
-        "{} · {} · {}: {} → {} ({raw}).",
+        "{} · {} · {}: {} → {} ({raw}).{}",
         target.label(&get_display(&r, "track_name", "")),
         get_display(&r, "device", "device"),
-        get_display(&r, "name", "parameter"),
+        name,
         if before.is_empty() {
             short_num(r.get("old_value"))
         } else {
@@ -1858,7 +1930,8 @@ pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams)
             short_num(r.get("value"))
         } else {
             after
-        }
+        },
+        note.unwrap_or_default()
     ))
 }
 
@@ -6647,6 +6720,160 @@ fn substitute(
     Ok(())
 }
 
+/// What one batch step did, kept so the summary can be written before the
+/// detail is rendered.
+struct StepOutcome {
+    number: usize,
+    tool: String,
+    ok: bool,
+    /// The tool's own text, or the failure message.
+    text: String,
+    /// The lines in that text saying a part of the step did not land.
+    skipped: Vec<String>,
+}
+
+/// The lines a tool writes to say part of what was asked did not happen —
+/// `shape_sound` writes one per word no parameter answered to. A step that
+/// half-applied is the case the summary exists for, so those lines are
+/// lifted out of the step's text and listed under it.
+fn skipped_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| l.trim_start().starts_with("skipped "))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+/// "Removed 71 clips …" → ("removed", 71). Tools say in their first line how
+/// much they did; the summary adds that up per tool, so a group line carries
+/// the work and not only the number of steps.
+fn reported_count(text: &str) -> Option<(String, i64)> {
+    const VERBS: [&str; 8] = [
+        "removed", "deleted", "added", "placed", "created", "wrote", "moved", "cleared",
+    ];
+    let first = text.lines().next()?.trim();
+    let (verb, rest) = first.split_once(' ')?;
+    let verb = verb
+        .trim_matches(|c: char| !c.is_alphabetic())
+        .to_lowercase();
+    if !VERBS.contains(&verb.as_str()) {
+        return None;
+    }
+    let digits: String = rest
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    Some((verb, digits.parse().ok()?))
+}
+
+/// One tool, one outcome, however many steps.
+struct StepGroup {
+    tool: String,
+    ok: bool,
+    steps: usize,
+    partial: usize,
+    counts: Vec<(String, i64)>,
+}
+
+/// The summary, then everything that did not go as asked, then the detail.
+/// Successful steps print in full only when the caller asked for it or the
+/// batch is short enough to be the debugging case.
+fn render_batch(outcomes: &[StepOutcome], not_run: usize, verbose: bool) -> String {
+    let total = outcomes.len();
+    let ok = outcomes.iter().filter(|o| o.ok).count();
+    let failed = total - ok;
+    let partial = outcomes.iter().filter(|o| !o.skipped.is_empty()).count();
+
+    let mut out = format!("{total} step{}, {ok} ok", if total == 1 { "" } else { "s" });
+    if failed > 0 {
+        out.push_str(&format!(", {failed} failed"));
+    }
+    if partial > 0 {
+        out.push_str(&format!(" — {partial} with something skipped"));
+    }
+    out.push('\n');
+
+    let mut groups: Vec<StepGroup> = Vec::new();
+    for o in outcomes {
+        let g = match groups
+            .iter_mut()
+            .position(|g| g.tool == o.tool && g.ok == o.ok)
+        {
+            Some(i) => &mut groups[i],
+            None => {
+                groups.push(StepGroup {
+                    tool: o.tool.clone(),
+                    ok: o.ok,
+                    steps: 0,
+                    partial: 0,
+                    counts: Vec::new(),
+                });
+                groups.last_mut().expect("just pushed")
+            }
+        };
+        g.steps += 1;
+        if !o.skipped.is_empty() {
+            g.partial += 1;
+        }
+        if let Some((verb, n)) = reported_count(&o.text) {
+            match g.counts.iter_mut().find(|(v, _)| *v == verb) {
+                Some((_, total)) => *total += n,
+                None => g.counts.push((verb, n)),
+            }
+        }
+    }
+    for g in &groups {
+        out.push_str(&format!("  {}", g.tool));
+        if g.steps > 1 {
+            out.push_str(&format!(" ×{}", g.steps));
+        }
+        out.push_str(if g.ok { " ✓" } else { " ✗" });
+        if !g.counts.is_empty() {
+            out.push_str(&format!(
+                " — {}",
+                g.counts
+                    .iter()
+                    .map(|(v, n)| format!("{v} {n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if g.partial > 0 {
+            out.push_str(&format!(" ({} with something skipped)", g.partial));
+        }
+        out.push('\n');
+    }
+
+    if partial > 0 {
+        out.push_str("Skipped:\n");
+        for o in outcomes.iter().filter(|o| !o.skipped.is_empty()) {
+            for line in &o.skipped {
+                out.push_str(&format!("  {}. {}: {}\n", o.number, o.tool, line));
+            }
+        }
+    }
+    if failed > 0 {
+        out.push_str("Failed:\n");
+        for o in outcomes.iter().filter(|o| !o.ok) {
+            out.push_str(&format!("  {}. {} ✗ {}\n", o.number, o.tool, o.text));
+        }
+    }
+    if not_run > 0 {
+        out.push_str(&format!("Stopped; {not_run} step(s) not run.\n"));
+    }
+    if verbose || total <= 10 {
+        for o in outcomes.iter().filter(|o| o.ok) {
+            let body = if o.text.contains('\n') {
+                format!("\n   {}", o.text.replace('\n', "\n   "))
+            } else {
+                o.text.clone()
+            };
+            out.push_str(&format!("{}. {} ✓ {}\n", o.number, o.tool, body));
+        }
+    }
+    out
+}
+
 pub fn batch_body(live: &LiveState, p: &BatchParams) -> ToolResult {
     if p.steps.is_empty() {
         return Err("Give at least one step {tool, args}.".into());
@@ -6664,10 +6891,10 @@ pub fn batch_body(live: &LiveState, p: &BatchParams) -> ToolResult {
     {
         return Err(format!("`{}` cannot run inside a batch", bad.tool));
     }
-    let mut out = String::new();
+    let mut outcomes: Vec<StepOutcome> = Vec::new();
     let mut last_track: Option<i64> = None;
     let mut last_clip: Option<(i64, i64)> = None;
-    let mut failed = 0;
+    let mut not_run = 0;
     for (i, step) in p.steps.iter().enumerate() {
         let mut args = step.args.clone();
         let outcome = substitute(&mut args, last_track, last_clip)
@@ -6680,31 +6907,35 @@ pub fn batch_body(live: &LiveState, p: &BatchParams) -> ToolResult {
                 if let Some(c) = clip_from_text(&text) {
                     last_clip = Some(c);
                 }
-                let body = if text.contains('\n') {
-                    format!("\n   {}", text.replace('\n', "\n   "))
-                } else {
-                    text.clone()
-                };
-                out.push_str(&format!("{}. {} ✓ {}\n", i + 1, step.tool, body));
+                outcomes.push(StepOutcome {
+                    number: i + 1,
+                    tool: step.tool.clone(),
+                    ok: true,
+                    skipped: skipped_lines(&text),
+                    text,
+                });
             }
             Err(e) => {
-                failed += 1;
-                out.push_str(&format!("{}. {} ✗ {}\n", i + 1, step.tool, e));
+                outcomes.push(StepOutcome {
+                    number: i + 1,
+                    tool: step.tool.clone(),
+                    ok: false,
+                    text: e,
+                    skipped: Vec::new(),
+                });
                 if p.stop_on_error {
-                    let left = p.steps.len() - i - 1;
-                    if left > 0 {
-                        out.push_str(&format!("Stopped; {left} step(s) not run.\n"));
-                    }
-                    return Err(out);
+                    not_run = p.steps.len() - i - 1;
+                    break;
                 }
             }
         }
     }
+    let failed = outcomes.iter().filter(|o| !o.ok).count();
+    let text = render_batch(&outcomes, not_run, p.verbose);
     if failed > 0 {
-        out.push_str(&format!("{failed} step(s) failed."));
-        return Err(out);
+        return Err(text);
     }
-    Ok(out)
+    Ok(text)
 }
 
 /// Resolve a build_song track reference: a name defined in the document,
@@ -6725,6 +6956,13 @@ fn song_track_index(name: &str, created: &BTreeMap<String, i64>) -> Result<i64, 
 /// Three keeps each command short enough to answer and costs one group, not
 /// the document, when Live does go away.
 const TRACKS_PER_GROUP: usize = 3;
+
+/// What `build_song` ends on once it has changed the set. A crash costs
+/// whatever exists only in Live's memory, and the Live API has no save to
+/// call — that is Cmd+S, the producer's. The one thing this server can do is
+/// write the document back out, and the moment nobody reaches for it is the
+/// moment it is worth saying (#46).
+const SNAPSHOT_OFFER: &str = "\nWhat is in the set exists only in Live's memory until you save it there (Cmd+S — the Live API has no save of its own). export_set {\"name\": \"…\"} writes a rebuildable copy under the server's state folder; build_song takes snapshot: true to write one as part of the build.";
 
 pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     // ── validate everything before the first command ──
@@ -6828,7 +7066,7 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     let mut done = plan;
     let fail = |done: &str, what: String| -> String {
         format!(
-            "{done}Stopped: {what}\nWhat is above is in the set; the rest is not. Re-run the same document — build_song converges: a track whose name already exists is reused, and a slot that already holds the named clip is left alone."
+            "{done}Stopped: {what}\nWhat is above is in the set; the rest is not. Re-run the same document — build_song converges: a track whose name already exists is reused, and a slot that already holds the named clip is left alone.{SNAPSHOT_OFFER}"
         )
     };
     if let Some(k) = p.key.as_ref().filter(|k| !k.trim().is_empty()) {
@@ -6932,6 +7170,7 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
             out.push_str("The document is unchanged, so run build_song again with it: ");
             out.push_str("on_existing \"converge\" (the default) reuses the tracks that ");
             out.push_str("exist and carries on from there.");
+            out.push_str(SNAPSHOT_OFFER);
             out
         };
 
@@ -7182,9 +7421,24 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
             skipped_places
         ));
     }
+    if p.snapshot {
+        // The flag is the consent: a set export is written only when it was
+        // asked for (CLAUDE.md, tests/sets.rs), so this cannot become a
+        // default without the story and the TERMS.md change that go with it.
+        let name = format!("build-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+        match crate::sets::export_set_body(live, &crate::sets::ExportSetParams { name }) {
+            Ok(text) => done.push_str(&format!("Snapshot: {text}\n")),
+            Err(e) => done.push_str(&format!(
+                "Snapshot asked for but not written: {e}\nThe set itself is untouched; export_set can be run again.\n"
+            )),
+        }
+    }
     done.push_str(
         "Done. switch_to_arrangement_view to see it; play_and_measure to hear the balance.",
     );
+    if !p.snapshot {
+        done.push_str(SNAPSHOT_OFFER);
+    }
     Ok(done)
 }
 
@@ -8150,9 +8404,12 @@ impl Server {
 
     /// Run several tool calls in one round-trip: an ordered list of
     /// {tool, args}. Stops at the first failure (unless stop_on_error is
-    /// false) and reports each step. Inside args, "$last_track" stands for
-    /// the index of the most recently created track, so "create a track,
-    /// name it, load a sound, fill a clip" is one call.
+    /// false). Answers with a grouped summary, every failure in full and
+    /// every line a step skipped; pass verbose: true for each successful
+    /// step's own text (a batch of ten or fewer prints in full anyway).
+    /// Inside args, "$last_track" stands for the index of the most recently
+    /// created track, so "create a track, name it, load a sound, fill a
+    /// clip" is one call.
     #[tool(name = "batch")]
     async fn batch(&self, Parameters(p): Parameters<BatchParams>) -> CallToolResult {
         self.run(&BATCH, p, batch_body).await
@@ -8166,7 +8423,10 @@ impl Server {
     /// Stops at the first failure and says what was built — re-run the same
     /// document and it converges: a track whose name already exists is reused
     /// and a slot that already holds the named clip is left alone, so nothing
-    /// is duplicated (on_existing: "add" or "fail" changes that).
+    /// is duplicated (on_existing: "add" or "fail" changes that). What it
+    /// builds lives only in Live's memory until you save the set in Live —
+    /// the Live API has no save — so snapshot: true writes a rebuildable copy
+    /// under the server's state folder, the way export_set does.
     #[tool(name = "build_song")]
     async fn build_song(&self, Parameters(p): Parameters<BuildSongParams>) -> CallToolResult {
         self.run(&BUILD_SONG, p, build_song_body).await

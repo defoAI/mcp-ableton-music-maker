@@ -28,7 +28,7 @@ another address in a `bind_host.txt` file beside it.
 | **Payloads** — the parameters and results themselves, which contain your MIDI notes and the names you give tracks and clips | same files | **Off** | `ABLETON_MCP_ACTIVITY_PAYLOADS=true` turns it on; leave it unset to keep it off |
 | **Heartbeat** — that a server is running, which client started it, and the versions involved | `~/.ableton-music-maker/sessions/<pid>.json` | On | Removed automatically when the server exits |
 | **Sample folders** — the paths you told Claude to look in for samples (not Live's own folders, which need no telling) | `~/.ableton-music-maker/sample_folders.json` | **Only when you ask** (`adv_sample_folders add`) | Delete the file, or "Delete all local data" |
-| **Set exports** — a whole set as a document: your track and clip names, every MIDI note, mixer values, sections and setlist | `~/.ableton-music-maker/sets/<name>.json` | **Only when you ask** (`export_set`) | Delete the file or the folder, or "Delete all local data" |
+| **Set exports** — a whole set as a document: your track and clip names, every MIDI note, mixer values, sections and setlist | `~/.ableton-music-maker/sets/<name>.json` | **Only when you ask** (`export_set`, or `build_song` with `snapshot: true`) | Delete the file or the folder, or "Delete all local data" |
 
 Error text can contain a name you typed (a track called "Nick's bass", say). That is why the
 log is yours to delete.
@@ -102,8 +102,8 @@ When Claude is asked to export a set, the server writes one JSON file under
 `~/.ableton-music-maker/sets/`: the tracks with their device names and instrument URIs,
 every Session clip with its notes, the mixer and sends, the sections and the setlist, tempo,
 signature and key. That is your music, not metadata, which is why it is written only on an
-explicit `export_set` call and never on its own; nothing else the server does creates the
-folder. `import_set` reads it back into an empty set. The Live set itself is the memory
+explicit `export_set` call, or a `build_song` you gave `snapshot: true`, and never on its own;
+nothing else the server does creates the folder. `import_set` reads it back into an empty set. The Live set itself is the memory
 (sections and the setlist are scene names, kept by Live's own Save); an export is a backup
 you asked for. Delete the file, the folder, or use "Delete all local data" in the Mac app,
 which removes the exports along with the library index.

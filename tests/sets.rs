@@ -8,7 +8,7 @@ mod common;
 
 use common::{is_error, server_with, text_of, FakeBridge};
 use mcp_ableton_music_maker::sets::{ExportSetParams, ImportSetParams};
-use mcp_ableton_music_maker::tools::{self, SetTempoParams};
+use mcp_ableton_music_maker::tools::{self, BuildSongParams, SetTempoParams};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -130,6 +130,61 @@ async fn export_set_writes_one_file_under_the_sets_folder_and_only_when_called()
         "{t}"
     );
     std::env::remove_var("ABLETON_MCP_STATE_DIR");
+}
+
+#[tokio::test]
+async fn build_song_writes_a_snapshot_only_when_it_is_asked_for() {
+    // A crash costs whatever exists only in Live's memory, and the Live API
+    // has no save. build_song can write the rebuildable copy itself — but the
+    // flag is the consent, because a set export is written only when asked.
+    let _guard = LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("ABLETON_MCP_STATE_DIR", dir.path());
+    let server = server_with(bridge());
+    let doc = BuildSongParams {
+        tempo: Some(126.0),
+        ..Default::default()
+    };
+    let r = server
+        .run(&tools::BUILD_SONG, doc.clone(), tools::build_song_body)
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    assert!(
+        !dir.path().join("sets").exists(),
+        "a build does not export on its own"
+    );
+    assert!(
+        t.contains("export_set") && t.contains("Cmd+S"),
+        "but it says, at the moment of risk, what the copy would be: {t}"
+    );
+
+    let r = server
+        .run(
+            &tools::BUILD_SONG,
+            BuildSongParams {
+                snapshot: true,
+                ..doc
+            },
+            tools::build_song_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    let files: Vec<_> = std::fs::read_dir(dir.path().join("sets"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert_eq!(files.len(), 1, "one snapshot per asked-for build: {t}");
+    let name = files[0].file_name().to_string_lossy().to_string();
+    assert!(
+        name.starts_with("build-") && name.ends_with(".json"),
+        "{name}"
+    );
+    assert!(
+        t.contains("Snapshot: Exported to") && t.contains(&name),
+        "the reply names the file, or nobody can import it: {t}"
+    );
 }
 
 #[tokio::test]

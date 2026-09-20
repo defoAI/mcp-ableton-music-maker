@@ -142,11 +142,16 @@ left to be inferred from an unticked box.
 
 **What remains.**
 
-- **AC8, AC19 — the rates were measured with the transport stopped.** The clock goes quiet
-  when Live is not playing, which is the designed behaviour, so the run reported 0.5 events
-  a second against 20 requested and no cue lateness at all. Both numbers need one run with
-  the transport rolling before they mean anything. The behaviour itself is covered by
-  `tests/remote_script/test_streams.py` and `test_cue_ops.py`.
+- **AC8, AC19 — neither rate is measured against a rolling transport.** The clock goes quiet
+  when Live is not playing, which is the designed behaviour, so a run with the transport
+  stopped says nothing: 0.5 events a second against 20 requested, and no cue lateness at all.
+  The one run made while playing is what found #51 — 199 ms delivered against 100 ms asked
+  for, because the interval was measured from the last send and an early tick cost a whole
+  tick. Script 1.32.1 advances a schedule with half a tick of slack instead, pinned by
+  `tests/remote_script/test_streams.py`; the achieved rate needs one `live-latency.sh` run
+  against that script with the transport rolling. AC19's cue lateness has never been
+  measured while playing at all. The behaviour itself is covered by `test_streams.py` and
+  `test_cue_ops.py`.
 - **AC11, AC12 — nothing consumes the events yet.** The script publishes on four channels
   and `AbletonConnection` collects them, both under test, but no caller in `src/` or in the
   Mac app calls `subscribe` or `take_events`. The readouts still perform their own reads and

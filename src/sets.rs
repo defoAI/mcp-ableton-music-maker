@@ -347,6 +347,7 @@ pub fn build_params(doc: &SetDocument) -> BuildSongParams {
         placements: Vec::new(),
         locators: Vec::new(),
         dry_run: false,
+        snapshot: false,
     }
 }
 

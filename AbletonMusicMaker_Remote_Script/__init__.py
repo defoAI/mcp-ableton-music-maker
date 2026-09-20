@@ -63,7 +63,7 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.32.0"
+SCRIPT_VERSION = "1.33.0"
 PROTOCOL_VERSION = 2
 # Where client sockets are read. "main_thread_tick": sockets are non-blocking
 # and drained from the same tick the clock runs on, so a message waits one
@@ -380,7 +380,10 @@ class AbletonMCP(ControlSurface):
         self._clock_tick_armed = False
         self._live_version = None
         self._started_at = time.time()
-        self._last_clock_event = 0.0
+        # The clock channel runs off a schedule, not off the last send: see
+        # _clock_event_tick. 0.0 means "not scheduled yet".
+        self._next_clock_event = 0.0
+        self._clock_event_every = None
         self._clock_event_sent_stopped = False
         self._levels_event_bar = None
         self._watch_prev = None
@@ -5144,6 +5147,8 @@ class AbletonMCP(ControlSurface):
 
     EVENT_CHANNELS = ("clock", "levels", "changes", "cue")
     CLOCK_EVERY_MS_DEFAULT = 100.0
+    # What Live's tick is worth in seconds, for the clock channel's slack.
+    CLOCK_TICK_S = 0.1
     CHANGES_EVERY_TICKS = 3
 
     def _event_tick(self):
@@ -5548,13 +5553,33 @@ class AbletonMCP(ControlSurface):
                 # is there, never whether the number is truthy.
                 if opts is not None and opts.get("clock_every_ms") is not None:
                     every = min(every, float(opts["clock_every_ms"]))
-        if (now_s - self._last_clock_event) * 1000.0 < every:
+        every_s = max(0.0, every / 1000.0)
+        if self._clock_event_every != every_s:
+            # A subscriber changed the rate: begin the schedule again.
+            self._clock_event_every = every_s
+            self._next_clock_event = 0.0
+        # A tick that lands fractionally early still counts as this
+        # interval's tick. Live's tick is ~100 ms with about 10 ms of
+        # jitter, so a hard floor at the interval fails on roughly half the
+        # ticks when the interval is at or just above the tick period -- and
+        # every skip costs a whole tick, so 100 ms asked for arrives at 200.
+        slack = min(self.CLOCK_TICK_S / 2.0, every_s / 2.0)
+        due = self._next_clock_event
+        if due and now_s + slack < due:
             return
         song = self._song
         playing = bool(song.is_playing)
         if not playing and self._clock_event_sent_stopped:
             return
-        self._last_clock_event = now_s
+        # Advance the schedule rather than restart it from now, so an early
+        # tick does not push the next one out and early and late average to
+        # the rate asked for. More than one interval behind -- the transport
+        # was stopped, or Live stalled -- and the schedule is clamped
+        # forward instead of firing a burst to catch up.
+        if not due or now_s - due > every_s:
+            self._next_clock_event = now_s + every_s
+        else:
+            self._next_clock_event = due + every_s
         self._clock_event_sent_stopped = not playing
         bar, bib, beat = self._bar_position()
         bpb = self._beats_per_bar()
@@ -6751,6 +6776,30 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting session snapshot: " + str(e))
             raise
 
+    def _landing(self, param, asked, clamped):
+        """What Live did with a write, read back off the parameter itself.
+
+        Live has three reasons to ignore or move a write, and a caller that
+        is never told which one counts a step that did not happen as a step
+        that did: the parameter is switched off right now (a rack macro owns
+        it, or its device disabled it), an envelope automates it and will
+        overwrite a manual write on the next playback tick, or it is
+        quantized and snaps to its nearest step.
+        """
+        lo, hi = float(param.min), float(param.max)
+        tol = max(1e-6, abs(hi - lo) * 1e-6)
+        entry = {
+            "asked": float(asked),
+            "landed": bool(abs(float(param.value) - float(clamped)) <= tol),
+            "is_enabled": bool(getattr(param, "is_enabled", True)),
+            "is_quantized": bool(getattr(param, "is_quantized", False)),
+        }
+        try:
+            entry["automation_state"] = int(param.automation_state)
+        except Exception:
+            pass
+        return entry
+
     def _set_device_parameter(self, track_index, device_index, parameter_index,
                               value=None, kind="track", value_display=None):
         """One parameter, on a track, a return or the master. `value_display`
@@ -6784,7 +6833,8 @@ class AbletonMCP(ControlSurface):
                 raise ValueError("'%s' takes %s to %s (%s to %s); %s is outside that" % (
                     param.name, lo, hi, self._param_display(param, lo),
                     self._param_display(param, hi), target))
-            param.value = max(lo, min(hi, target))
+            clamped = max(lo, min(hi, target))
+            param.value = clamped
             out = {
                 "track_index": track_index if kind != "master" else 0,
                 "kind": kind,
@@ -6807,6 +6857,7 @@ class AbletonMCP(ControlSurface):
             items = self._param_items(param)
             if items:
                 out["items"] = items
+            out.update(self._landing(param, target, clamped))
             return out
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
@@ -6839,6 +6890,7 @@ class AbletonMCP(ControlSurface):
                     new = self._value_from_display(param, display_wanted)
                 else:
                     new = float(item.get("value", old))
+                asked = new
                 new = max(float(param.min), min(float(param.max), new))
                 param.value = new
                 entry = {"index": pi, "name": "%s" % param.name, "old_value": old,
@@ -6852,6 +6904,7 @@ class AbletonMCP(ControlSurface):
                 items = self._param_items(param)
                 if items:
                     entry["items"] = items
+                entry.update(self._landing(param, asked, new))
                 out.append(entry)
             return {"track_index": track_index if kind != "master" else 0, "kind": kind,
                     "track_name": "%s" % track.name,
