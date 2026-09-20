@@ -208,10 +208,50 @@ pub fn server_with(bridge: Arc<FakeBridge>) -> Server {
 // ── The fake Live, one per test binary ──────────────────────────────────────
 
 /// A `scripts/fake-live.py` owned by this test binary.
-struct FakeLive {
-    port: u16,
-    #[allow(dead_code)]
+pub struct FakeLive {
+    pub port: u16,
     child: Option<Child>,
+}
+
+impl Drop for FakeLive {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Start a fake Live of this test's own, with whatever flags it needs
+/// (`--shared-set`, `--die-on`, `--record`, ...). Killed when the returned
+/// value is dropped. For the ordinary case use [`server_on_fake_live`],
+/// which shares one per test binary.
+pub fn spawn_fake_live(args: &[&str]) -> FakeLive {
+    let root = repo_root();
+    let mut command = Command::new("python3");
+    command
+        .arg(root.join("scripts/fake-live.py"))
+        .arg("--exit-with-pid")
+        .arg(std::process::id().to_string())
+        .args(args)
+        .current_dir(&root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    let mut child = command
+        .spawn()
+        .expect("could not start scripts/fake-live.py — is python3 on PATH?");
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().expect("fake-live stdout"))
+        .read_line(&mut line)
+        .expect("fake-live printed no port");
+    let port: u16 = line
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("fake-live printed {line:?} where a port should be"));
+    FakeLive {
+        port,
+        child: Some(child),
+    }
 }
 
 static FAKE_LIVE: OnceLock<FakeLive> = OnceLock::new();
@@ -219,7 +259,9 @@ static FAKE_LIVE: OnceLock<FakeLive> = OnceLock::new();
 /// True when the suites should talk to a real Ableton Live instead of
 /// spawning the fake: `ABLETON_TARGET=live`, or an explicit `ABLETON_PORT`.
 pub fn targets_a_real_live() -> bool {
-    std::env::var("ABLETON_TARGET").map(|v| v == "live").unwrap_or(false)
+    std::env::var("ABLETON_TARGET")
+        .map(|v| v == "live")
+        .unwrap_or(false)
 }
 
 fn repo_root() -> std::path::PathBuf {
@@ -239,28 +281,7 @@ fn fake_live() -> &'static FakeLive {
             eprintln!("tests: ABLETON_TARGET=live — talking to a real Live on port {port}");
             return FakeLive { port, child: None };
         }
-        let root = repo_root();
-        let mut child = Command::new("python3")
-            .arg(root.join("scripts/fake-live.py"))
-            .arg("--exit-with-pid")
-            .arg(std::process::id().to_string())
-            .current_dir(&root)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("could not start scripts/fake-live.py — is python3 on PATH?");
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().expect("fake-live stdout"))
-            .read_line(&mut line)
-            .expect("fake-live printed no port");
-        let port: u16 = line
-            .trim()
-            .parse()
-            .unwrap_or_else(|_| panic!("fake-live printed {line:?} where a port should be"));
-        FakeLive {
-            port,
-            child: Some(child),
-        }
+        spawn_fake_live(&[])
     })
 }
 

@@ -43,7 +43,11 @@ async fn the_server_reaches_the_script_and_the_script_reaches_the_set() {
     assert!(!is_error(&result), "{}", text_of(&result));
 
     // Not the tool's own words: Live's, asked afterwards.
-    assert_eq!(set.tempo(), 126.5, "the tempo was {before} and did not move");
+    assert_eq!(
+        set.tempo(),
+        126.5,
+        "the tempo was {before} and did not move"
+    );
     assert!(
         bridge.commands().contains(&"set_tempo".to_string()),
         "the wire did not carry set_tempo: {:?}",
