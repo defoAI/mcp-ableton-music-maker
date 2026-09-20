@@ -141,6 +141,37 @@ async fn shape_sound_asks_the_rack_macros_first_and_writes_them_in_one_round_tri
 }
 
 #[tokio::test]
+async fn a_batch_summary_counts_the_steps_that_only_half_applied() {
+    // A word no parameter answers to is a line in shape_sound's own reply.
+    // Inside a long batch that line used to be as invisible as it was before
+    // the per-word lines existed: the summary is where it has to show.
+    let b = bridge();
+    let server = server_with(b.clone());
+    let steps: Vec<Value> = (0..11)
+        .map(|_| {
+            json!({"tool": "shape_sound",
+                        "args": {"track": "Pad", "cutoff": "-25%", "attack": 0.5}})
+        })
+        .collect();
+    let p: tools::BatchParams = serde_json::from_value(json!({"steps": steps})).unwrap();
+    let r = server.run(&tools::BATCH, p, tools::batch_body).await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let t = text_of(&r);
+    assert!(
+        t.starts_with("11 steps, 11 ok — 11 with something skipped\n"),
+        "{t}"
+    );
+    assert!(
+        t.contains("  shape_sound ×11 ✓ (11 with something skipped)\n"),
+        "{t}"
+    );
+    assert!(
+        t.contains("Skipped:\n  1. shape_sound: skipped  attack — no macro on this device says it"),
+        "the skipped lines are pulled up under the summary: {t}"
+    );
+}
+
+#[tokio::test]
 async fn an_unknown_device_lists_its_parameters_and_set_device_parameter_takes_a_name() {
     let b = bridge();
     b.script(

@@ -314,6 +314,7 @@ async fn batch_runs_in_order_substitutes_the_new_track_and_stops_on_error() {
             },
         ],
         stop_on_error: true,
+        verbose: false,
     };
     let r = server.run(&tools::BATCH, p, tools::batch_body).await;
     assert!(is_error(&r), "the unknown tool fails the batch");
@@ -342,6 +343,7 @@ async fn batch_runs_in_order_substitutes_the_new_track_and_stops_on_error() {
             args: json!({}),
         }],
         stop_on_error: true,
+        verbose: false,
     };
     let r = server.run(&tools::BATCH, nested, tools::batch_body).await;
     assert!(is_error(&r) && text_of(&r).contains("cannot run inside a batch"));
@@ -537,6 +539,74 @@ async fn library_status_names_what_is_missing() {
 }
 
 #[tokio::test]
+async fn a_long_batch_answers_with_a_grouped_summary_and_verbose_prints_every_step() {
+    let bridge = FakeBridge::responding(json!({}));
+    bridge.script(
+        "delete_arrangement_clips",
+        vec![json!({"track": "Drums", "remaining": 0, "removed": [
+            {"index": 0, "name": "a", "start_time": 0.0, "end_time": 4.0},
+            {"index": 1, "name": "b", "start_time": 4.0, "end_time": 8.0},
+            {"index": 2, "name": "c", "start_time": 8.0, "end_time": 12.0}]})],
+    );
+    let server = server_with(bridge.clone());
+    let steps: Vec<BatchStep> = (0..20)
+        .map(|_| BatchStep {
+            tool: "delete_arrangement_clip".into(),
+            args: json!({"track_index": 2, "all": true}),
+        })
+        .collect();
+    let r = server
+        .run(
+            &tools::BATCH,
+            BatchParams {
+                steps: steps.clone(),
+                stop_on_error: true,
+                verbose: false,
+            },
+            tools::batch_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let t = text_of(&r);
+    assert!(t.starts_with("20 steps, 20 ok\n"), "{t}");
+    assert!(
+        t.contains("  delete_arrangement_clip ×20 ✓ — removed 60\n"),
+        "the group line carries the work, not only the step count: {t}"
+    );
+    assert!(
+        !t.contains("1. delete_arrangement_clip"),
+        "twenty identical confirmations are not the reply: {t}"
+    );
+    assert!(
+        t.len() < 200,
+        "{} characters for twenty steps: {t}",
+        t.len()
+    );
+
+    let r = server
+        .run(
+            &tools::BATCH,
+            BatchParams {
+                steps,
+                stop_on_error: true,
+                verbose: true,
+            },
+            tools::batch_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(
+        t.starts_with("20 steps, 20 ok\n"),
+        "the summary comes first: {t}"
+    );
+    assert!(
+        t.contains("1. delete_arrangement_clip ✓ Removed 3 ")
+            && t.contains("20. delete_arrangement_clip ✓"),
+        "verbose keeps every step: {t}"
+    );
+}
+
+#[tokio::test]
 async fn batch_returns_whole_multi_line_results() {
     let bridge = FakeBridge::responding(
         json!({"count": 1, "returns": [{"index": 0, "letter": "A", "name": "Reverb", "volume": 0.85, "mute": false, "devices": ["Reverb"]}]}),
@@ -548,6 +618,7 @@ async fn batch_returns_whole_multi_line_results() {
             args: json!({}),
         }],
         stop_on_error: true,
+        verbose: true,
     };
     let r = server.run(&tools::BATCH, p, tools::batch_body).await;
     assert!(!is_error(&r));

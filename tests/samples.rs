@@ -899,6 +899,7 @@ async fn batch_can_add_a_sample() {
                     args: json!({"sample": "/x/a.wav", "track": "FX", "slot": 1}),
                 }],
                 stop_on_error: true,
+                verbose: false,
             },
             tools::batch_body,
         )

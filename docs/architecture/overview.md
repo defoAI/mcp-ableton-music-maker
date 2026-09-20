@@ -97,6 +97,10 @@ script is loaded and up to date. Both are for CI and the Mac app.
 - **Orchestration bodies** (`batch`, `build_song`, `play_and_measure`) call other bodies
   through `run_named` (a name → params → body table) or directly; they never bypass
   `require`, and the activity line for the one tool call lists every command that went out.
+  `batch` answers with a summary — steps grouped by tool and outcome, with the counts each
+  group reported added up — then every failure and every line a step skipped, then each
+  successful step's own text only when `verbose: true` or the batch is ten steps or fewer.
+  A step that half-applied is counted in the header, so it cannot hide in a wall of ✓.
 - **Capture** (`capture_mix`) is the only path out of Live: the script records the master
   through a Resampling track as a fixed-length Session clip, the server polls until the clip
   has a file, stops the transport (a `Drop` guard stops it on any early exit), and
