@@ -222,9 +222,29 @@ impl<B: LiveBridge> LiveBridge for RecordingBridge<B> {
     }
 }
 
+/// A state directory of this test binary's own.
+///
+/// The song memory (#63) is read on every `get_context`, so a suite that
+/// left `ABLETON_MCP_STATE_DIR` unset read whatever the developer's own
+/// `~/.ableton-music-maker` happened to hold — a real session's overview and
+/// notes turned up in the middle of an assertion about a context header, and
+/// the suite passed or failed by what the machine had been used for. Tests
+/// are hermetic: a binary with no state dir of its own gets a temporary one.
+/// A suite that sets its own (song_memory, samples, library, sets, activity,
+/// device_vocabulary, stdio_integration) still wins — this only fills a gap.
+static SCRATCH_STATE: std::sync::LazyLock<tempfile::TempDir> =
+    std::sync::LazyLock::new(|| tempfile::tempdir().expect("a temp state dir"));
+
+pub fn isolate_state_dir() {
+    if std::env::var_os("ABLETON_MCP_STATE_DIR").is_none() {
+        std::env::set_var("ABLETON_MCP_STATE_DIR", SCRATCH_STATE.path());
+    }
+}
+
 /// A server wired to the fake bridge, with every capability advertised and
 /// the activity log off, so tests never write into the developer's home.
 pub fn server_with(bridge: Arc<FakeBridge>) -> Server {
+    isolate_state_dir();
     let live = Arc::new(LiveState::with_activity(
         bridge,
         mcp_ableton_music_maker::activity::Activity::disabled(),
@@ -319,6 +339,7 @@ pub fn server_on_fake_live() -> (Server, Arc<RecordingBridge<AbletonConnection>>
 pub fn server_on_fake_live_with(
     args: &[&str],
 ) -> (Server, Arc<RecordingBridge<AbletonConnection>>) {
+    isolate_state_dir();
     let (host, port, process) = if targets_a_real_live() {
         let (host, port) = mcp_ableton_music_maker::connection::live_address();
         (host, port, None)
@@ -340,7 +361,48 @@ pub fn server_on_fake_live_with(
         mcp_ableton_music_maker::activity::Activity::disabled(),
     ));
     live.script.assume_all_capabilities();
+    // A fake Live is a process of this test's own, so it starts empty. A
+    // real one is the set the producer has open, and it is shared by every
+    // test in the run: without this, test three built on what test two left
+    // behind — "slot 0 on 'Drums' already holds a clip", a tempo from the
+    // test before, a stash row from the one before that. The failures were
+    // the harness's, not the code's, which is worse than a red suite
+    // because it hides the ones that are real. Each test starts from the
+    // set Live starts with.
+    if targets_a_real_live() {
+        reset_the_open_set(bridge.as_ref());
+    }
     (Server::new(live), bridge)
+}
+
+/// The tool's own reply, without the live readout appended to it.
+///
+/// A real Live attaches a clock to every reply, so `run` ends the text with
+/// "⏱ …" and, once anything has played, "🔊 …". The fake attaches one only
+/// when a test asks for it. An assertion about how a tool *finishes* its
+/// sentence is about the tool, not about the transport, so it reads the
+/// text with those lines taken off and holds on both targets.
+pub fn without_readout(text: &str) -> String {
+    text.lines()
+        .rev()
+        .skip_while(|l| l.starts_with('⏱') || l.starts_with('🔊') || l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Back to what Live starts with: 2 MIDI + 2 audio tracks, 8 scenes, 120
+/// BPM, the returns kept. Only ever called against a real Live.
+fn reset_the_open_set(bridge: &dyn LiveBridge) {
+    if let Err(e) = bridge.send_command("reset_set", Some(json!({}))) {
+        panic!(
+            "could not reset the open Live set between tests: {e}. \
+             ABLETON_TARGET=live needs a scratch set and a Remote Script \
+             that serves reset_set."
+        );
+    }
 }
 
 /// What the set became, read back through the same wire.

@@ -210,6 +210,29 @@ def same_repr(a, b):
     return ma.group(1).rsplit(".", 1)[-1] == mb.group(1).rsplit(".", 1)[-1]
 
 
+def same_collection(a, b):
+    """Both sides read as a collection.
+
+    Script 1.35.0 renders a Live `Base.Vector` as a list instead of its
+    repr, so a whole-collection read now comes back as contents rather than
+    an address (#66). What is *in* a collection is the open set's, not the
+    model's: the real Live swept here has the producer's tracks, a Suite
+    browser of thousands of items and a Reverb with 33 parameters, while the
+    model has a default set, a browser of a couple of dozen items and a
+    simplified Reverb — all of that is written down in
+    `docs/architecture/overview.md` as what the fake deliberately is not.
+
+    Comparing contents would therefore report the fixture's set, not a model
+    defect. Before 1.35.0 this comparison degenerated to "both are a Vector"
+    (two reprs of the same class, see `same_repr`); this keeps exactly that
+    meaning now that the wire carries more. What each member of a collection
+    looks like is still checked — by the indexed paths in `PATHS`
+    (`song.tracks[0]`, `song.tracks[0].devices[0]` and the rest), which
+    compare attributes, methods, readonly and types the usual way.
+    """
+    return isinstance(a, list) and isinstance(b, list)
+
+
 def compare(real, fake, used=None):
     """Differences, as (category, path, line, in_scope).
 
@@ -284,7 +307,7 @@ def compare(real, fake, used=None):
                 continue
             if isinstance(a, float) and isinstance(b, float) and abs(a - b) < 1e-6:
                 continue
-            if same_repr(a, b):
+            if same_repr(a, b) or same_collection(a, b):
                 continue
             rows.append(("read", path, "%s.%s: Live %r, the model %r" % (path, name, a, b),
                          scoped(path, name)))

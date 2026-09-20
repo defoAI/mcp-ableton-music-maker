@@ -224,6 +224,104 @@ async fn search_falls_back_to_live_while_the_index_walks() {
     std::env::remove_var("ABLETON_MCP_LIBRARY_INDEX");
 }
 
+/// #68: `index_complete` means the browser *walk* finished, not that this
+/// page is all of it.
+///
+/// The script walks the whole library, then answers with
+/// `items[offset:offset + limit]` and reports the real count in
+/// `total_walked`. Reading the flag as "done" stopped the paging after one
+/// page: on a real Live 12.4.6 Suite that left exactly 1000 items on disk
+/// marked complete, so `build_song {"instrument": "Boom Bap Kit"}` and
+/// `load_instrument_or_effect {"uri": "reverb"}` both answered "nothing in
+/// the browser matches" against a library that had them (measured
+/// 2026-09-20).
+#[tokio::test]
+async fn a_finished_walk_is_still_paged_to_the_end() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("ABLETON_MCP_STATE_DIR", dir.path());
+    std::env::remove_var("ABLETON_MCP_LIBRARY_INDEX");
+
+    // The walk is finished from the very first reply — and there are three
+    // items behind it, of which each page carries one.
+    let walked = 3;
+    let full = |offset: usize, items: Vec<(&str, &str, &str)>| {
+        json!({
+            "category": "all", "offset": offset, "returned": items.len(),
+            "total_walked": walked, "index_complete": true,
+            "library_key": "live-12.4.6-packs-7-xyz",
+            "items": items.iter().map(|(n, p, u)| json!({
+                "name": n, "path": p, "uri": u, "category": "drums", "is_device": false
+            })).collect::<Vec<_>>()
+        })
+    };
+    let b = FakeBridge::responding(json!({}));
+    b.script(
+        "get_browser_index",
+        vec![
+            full(0, vec![("Boom Bap Kit", "Drums/Boom Bap Kit.adg", "u1")]),
+            full(1, vec![("Reverb", "Audio Effects/Reverb", "u2")]),
+            full(2, vec![("EQ Eight", "Audio Effects/EQ Eight", "u3")]),
+        ],
+    );
+    let server = server_with(b.clone());
+    let live = server.live();
+
+    assert!(
+        !library::warm_up_step(live, 1.0).unwrap(),
+        "the walk is finished but only 1 of 3 items is here: not complete"
+    );
+    assert!(!library::warm_up_step(live, 1.0).unwrap(), "2 of 3");
+    assert!(
+        library::warm_up_step(live, 1.0).unwrap(),
+        "all three fetched: now it is complete"
+    );
+
+    assert_eq!(b.sent()[1].1["offset"], 1, "it asked for the next page");
+    assert_eq!(b.sent()[2].1["offset"], 2);
+    let ix = live.library.snapshot().unwrap();
+    assert_eq!(ix.items.len(), 3, "nothing past the first page was dropped");
+    assert!(ix.complete);
+    assert!(
+        ix.items.iter().any(|i| i.name == "Reverb"),
+        "the item the producer asked for is in the index"
+    );
+    std::env::remove_var("ABLETON_MCP_STATE_DIR");
+}
+
+/// A truncated index written by an older build is re-walked, not trusted.
+///
+/// The 1000-item file it left behind says `complete`, so without this every
+/// later session would keep answering from a library that is mostly missing.
+#[tokio::test]
+async fn an_index_from_an_older_build_is_not_believed() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("ABLETON_MCP_STATE_DIR", dir.path());
+    std::env::remove_var("ABLETON_MCP_LIBRARY_INDEX");
+
+    let key = "live-12.4.6-packs-7-old";
+    let stale = json!({
+        "key": key, "complete": true, "walked_at": "17:26",
+        "items": [{"name": "Analog", "path": "Instruments/Analog", "uri": "u0",
+                   "category": "sounds", "is_device": true}]
+        // no "format": written before the field existed
+    });
+    let libdir = dir.path().join("library");
+    std::fs::create_dir_all(&libdir).unwrap();
+    std::fs::write(
+        libdir.join(format!("{key}.json")),
+        serde_json::to_vec(&stale).unwrap(),
+    )
+    .unwrap();
+
+    assert!(
+        library::load_from_disk(key).is_none(),
+        "a format-less file is not loaded"
+    );
+    std::env::remove_var("ABLETON_MCP_STATE_DIR");
+}
+
 #[test]
 fn index_matching_agrees_with_the_remote_scripts_rule() {
     // The script matches every query word against the lower-cased path
@@ -237,6 +335,7 @@ fn index_matching_agrees_with_the_remote_scripts_rule() {
         key: "k".into(),
         complete: true,
         walked_at: "now".into(),
+        format: library::INDEX_FORMAT,
         items: items
             .iter()
             .map(|(n, p, u)| library::Item {

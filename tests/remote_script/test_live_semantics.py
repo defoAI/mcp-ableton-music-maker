@@ -566,5 +566,53 @@ class SongFilePath(unittest.TestCase):
         self.assertEqual(read(), "/Users/p/Music/Smoke Project/Smoke.als")
 
 
+class ALiveVectorRendersAsASequence(unittest.TestCase):
+    """Live's collections are `Base.Vector`, not lists.
+
+    Cycling '74's LOM reference calls `Song.cue_points` a list of CuePoint;
+    Live's own type is `Base.Vector`, which is neither `list` nor `tuple`
+    (measured 2026-09-20 on Live 12.4.6 with `describe song.cue_points`:
+    class Vector, methods append/extend). Until script 1.35.0 `_jsonable`
+    tested only for list/tuple, so `run ... get song.cue_points` answered
+    with the object's repr -- "<Base.Vector object at 0x15daeaa40>" -- and
+    the server could read a locator by index but never count them, so every
+    locator name was rejected as "the set has none" (#66, measured against
+    Live 12.4.6 on 2026-09-20).
+    """
+
+    def setUp(self):
+        self.song = fake_live.default_set()
+        self.ns = harness.load(song=self.song)
+        self.script = harness.instance(self.ns)
+
+    def _get(self, path):
+        done = self.ns["Done"]
+        gen = self.script._run_ops(
+            {"ops": [{"op": "get", "path": path, "as": "v"}]})
+        while True:
+            item = next(gen)
+            if isinstance(item, done):
+                return item.result["v"]
+
+    def test_an_empty_collection_reads_as_an_empty_list_not_a_repr(self):
+        self.assertEqual(self._get("song.cue_points"), [])
+
+    def test_a_collection_can_be_counted_which_is_what_locators_need(self):
+        self.song.set_or_delete_cue()
+        self.assertEqual(len(self._get("song.cue_points")), 1)
+
+    def test_tracks_render_as_a_sequence_too(self):
+        value = self._get("song.tracks")
+        self.assertIsInstance(value, list)
+        self.assertEqual(len(value), len(list(self.song.tracks)))
+
+    def test_a_string_is_not_split_into_characters(self):
+        """A string is a sequence as well; rendering one element-wise would
+        be worse than rendering it whole."""
+        self.song._file_path = "/Users/p/Music/Smoke Project/Smoke.als"
+        self.assertEqual(self._get("song.file_path"),
+                         "/Users/p/Music/Smoke Project/Smoke.als")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1484,18 +1484,34 @@ fn resolve_clip_name(live: &LiveState, target: &TrackTarget, given: &str) -> Res
 
 /// Live's locators, as `(name, beat)`, read through the generic ops layer:
 /// one batch for the count, one for the names and times. No new command.
-pub(crate) fn locators(live: &LiveState) -> Result<Vec<(String, f64)>, String> {
+pub fn locators(live: &LiveState) -> Result<Vec<(String, f64)>, String> {
     use crate::lom::{Batch, Op, Path};
     crate::lom::require(live).map_err(|e| live_err("read the locators", e))?;
     let cues = Path::song().attr("cue_points");
-    // The script renders a Live vector as a list of strings, so the first
-    // batch is only ever asked for how many there are.
-    let count = Batch::new()
-        .push(Op::get(&cues, "cues"))
-        .run(live)?
-        .get("cues")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
+    // Script 1.35.0 renders a Live `Base.Vector` as a list, so the first
+    // batch is only ever asked for how many there are. An older script
+    // answers with the vector's repr ("<Base.Vector object at 0x…>"): that
+    // is a failed read, not an empty set, and saying "the set has none"
+    // there sent the producer to create_locator for a locator they already
+    // had (#66).
+    let answer = Batch::new().push(Op::get(&cues, "cues")).run(live)?;
+    let count = match answer.get("cues") {
+        Some(Value::Array(a)) => a.len(),
+        Some(Value::Null) | None => 0,
+        Some(_) => {
+            return Err(format!(
+                "could not read this set's locators: the Remote Script in Live ({}) answers \
+                 song.cue_points with the collection's address instead of its contents. \
+                 Locator names need script {} — install it and restart Live; a bar number \
+                 works meanwhile.",
+                live.script
+                    .get()
+                    .and_then(|i| i.script_version)
+                    .unwrap_or_else(|| "not reachable".to_string()),
+                crate::handshake::expected_remote_script_version(),
+            ))
+        }
+    };
     if count == 0 {
         return Ok(Vec::new());
     }

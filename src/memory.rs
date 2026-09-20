@@ -620,6 +620,13 @@ pub fn load(key: &str) -> Option<SongMemory> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// Whether this song already has a memory of its own on disk. A set that
+/// has one is not waiting to be told what it is, so the provisional file is
+/// left alone rather than merged into it.
+pub fn exists(key: &str) -> bool {
+    file_for(key).is_file()
+}
+
 /// Write it, unless the memory is switched off. Every write goes through
 /// here, so one check is the whole off switch.
 pub fn save(memory: &SongMemory) {
@@ -694,6 +701,14 @@ impl Songs {
         });
         *guard = Some(memory.clone());
         memory
+    }
+
+    /// Make this memory the open one, so `rename_to` can carry it to the
+    /// song's own key. Used when the provisional file was written by an
+    /// earlier session and this process has nothing open yet.
+    pub fn adopt(&self, memory: SongMemory) {
+        *self.shown.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Some(memory);
     }
 
     /// Change it and write it. The closure gets the open memory; a `false`
@@ -1193,10 +1208,26 @@ pub struct SongMemoryParams {
 pub fn open_for_set(live: &LiveState) -> SongMemory {
     let path = set_path_of(live);
     let key = key_for(&path);
-    let open = live.songs.snapshot();
     // The provisional file becomes the song's own on the first save.
+    //
+    // It is looked for on disk, not only in this process. The session that
+    // wrote the notes is usually not the session that is running when Live
+    // finally reports a path: the producer builds, closes the client, saves,
+    // and comes back tomorrow. Reading only the open memory meant that the
+    // common case — save at the end of the night — silently orphaned the
+    // provisional file and started an empty one under the saved key, losing
+    // the overview at the exact moment the set was committed (#63).
+    let open = live
+        .songs
+        .snapshot()
+        .filter(|m| m.provisional)
+        .or_else(|| load(PROVISIONAL_KEY));
     if let Some(m) = open.as_ref() {
-        if m.provisional && !path.is_empty() && m.key != key {
+        if m.provisional && !path.is_empty() && m.key != key && !exists(&key) {
+            // Adopt only into a song that has nothing of its own yet. A set
+            // that already has a memory is not waiting to be told what it is,
+            // and merging two would be a guess.
+            live.songs.adopt(m.clone());
             if let Some(said) = live.songs.rename_to(&key, &path) {
                 *live.songs.renamed.lock().unwrap_or_else(|e| e.into_inner()) = Some(said);
             }
@@ -1204,6 +1235,12 @@ pub fn open_for_set(live: &LiveState) -> SongMemory {
         }
     }
     live.songs.open(&key, &path)
+}
+
+/// The open set's path, for tests that must tell "the set's own path" from
+/// any other. Not part of the tool surface.
+pub fn set_path_of_for_test(live: &LiveState) -> String {
+    set_path_of(live)
 }
 
 /// `song.file_path` — empty when the set has never been saved, and empty
@@ -1699,6 +1736,22 @@ fn free_stash_row(live: &LiveState, track: i64) -> Result<(i64, bool), String> {
     Ok((index, true))
 }
 
+/// A track's name as Live has it now, through the generic ops layer — one
+/// op, no command, and `None` when this script is too old for it.
+fn read_track_name(live: &LiveState, track: i64) -> Option<String> {
+    use crate::lom::{Batch, Op, Path};
+    if crate::lom::require(live).is_err() {
+        return None;
+    }
+    Batch::new()
+        .push(Op::get(&Path::track(track).attr("name"), "name"))
+        .run(live)
+        .ok()?
+        .get("name")?
+        .as_str()
+        .map(str::to_string)
+}
+
 pub fn stash_body(live: &LiveState, p: &StashParams) -> ToolResult {
     match p.action.trim().to_lowercase().as_str() {
         "save" | "" if p.sample.is_some() || p.clip.is_some() => stash_save(live, p),
@@ -1719,9 +1772,19 @@ fn stash_save(live: &LiveState, p: &StashParams) -> ToolResult {
     // listing is choosing blind; this way they can be heard against each
     // other before one is committed to the song.
     if let Some(sample) = p.sample.as_deref().filter(|s| !s.trim().is_empty()) {
-        let track = match p.track.as_ref() {
-            Some(t) => state.track_by(t)?.index,
-            None => -1,
+        // The name the producer's track had before the idea was parked.
+        // Putting a sample in a slot can rename the track it lands on, and
+        // parking is the one action that is explicitly *not* a commitment —
+        // it is also where roles live (`Sitar [lead]`), so a stash save was
+        // able to eat a role suffix (#69). A track the producer named keeps
+        // its name; a track `add_sample` creates for the occasion does not
+        // have one to keep.
+        let (track, was_named) = match p.track.as_ref() {
+            Some(t) => {
+                let t = state.track_by(t)?;
+                (t.index, Some(t.name.clone()))
+            }
+            None => (-1, None),
         };
         let (scene, made_row) = if track >= 0 {
             free_stash_row(live, track)?
@@ -1761,6 +1824,17 @@ fn stash_save(live: &LiveState, p: &StashParams) -> ToolResult {
                 ..Default::default()
             },
         )?;
+        if let Some(name) = was_named.filter(|_| track >= 0) {
+            let now = read_track_name(live, track);
+            if now.is_some_and(|n| n != name) {
+                require(live, "set_track_name")?;
+                live.send_command(
+                    "set_track_name",
+                    serde_json::json!({"track_index": track, "name": name}).into(),
+                )
+                .map_err(|e| live_err("put the track's name back", e))?;
+            }
+        }
         return Ok(format!(
             "Parked in the Stash: row{}. {placed}\nIt is an audio clip in your set, so you can \
              fire it and hear it against the song before committing it; stash(action: \"place\") \
@@ -2032,11 +2106,15 @@ fn stash_place(live: &LiveState, p: &StashParams) -> ToolResult {
     if !notes.is_empty() {
         crate::tools::write_notes(live, idea.track, slot, &notes)?;
     }
+    // An unnamed scene parses to an empty section name, and "into  " told
+    // the producer nothing about where the idea went (#69). A row the
+    // producer has not named is a slot, and saying so is the honest answer.
     let where_ = state
         .scenes
         .iter()
         .find(|s| s.index == slot)
         .map(|s| crate::song::parse_section_name(&s.name).0)
+        .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| format!("slot {slot}"));
     live.songs.note_section(&where_);
     Ok(format!(

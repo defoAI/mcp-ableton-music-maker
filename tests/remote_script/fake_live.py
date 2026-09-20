@@ -89,11 +89,16 @@ class Vector(object):
     """Live's sequence type.
 
     `song.tracks` is not a list and not a tuple in Live — `describe` reports
-    its class as `Vector`, and `_jsonable` (which tests `isinstance(value,
-    (list, tuple))`) therefore hands a `run … get` its repr rather than its
-    contents. A model that used a tuple here told both of those a different
-    story, so this is a sequence that is neither. Verified against Live
-    12.4.6 on 2026-09-20 with `describe song.tracks`.
+    its class as `Vector`. A model that used a tuple here would tell
+    `describe` a different story, so this is a sequence that is neither.
+    Verified against Live 12.4.6 on 2026-09-20 with `describe song.tracks`.
+
+    Until script 1.35.0 `_jsonable` tested `isinstance(value, (list, tuple))`
+    and so handed a `run … get` of one of these its repr — the address of the
+    object rather than its contents — which is why a locator could be read by
+    index but never counted (#66). It now renders any non-string sequence as
+    a list, so this class must stay sequence-shaped (`__len__` and
+    `__getitem__`) without becoming a list.
     """
 
     __slots__ = ("_items",)

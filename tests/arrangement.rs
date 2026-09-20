@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{is_error, server_with, text_of, FakeBridge};
+use common::{is_error, server_on_fake_live, server_with, text_of, FakeBridge, LiveSet};
 use mcp_ableton_music_maker::notes::NotesInput;
 use mcp_ableton_music_maker::tools::{
     self, AddNotesParams, CreateClipParams, CreateTrackParams, DuplicateToArrangementParams,
@@ -584,4 +584,102 @@ async fn arrange_moves_an_arrangement_clip_by_name() {
     let sent = b.last("delete_arrangement_clips").unwrap();
     assert_eq!(sent["indices"], json!([1]), "'Break' is position 1");
     assert!(text_of(&r).contains("Moved 'Break'"), "{}", text_of(&r));
+}
+
+/// #66, through the real Remote Script rather than a scripted reply.
+///
+/// `with_locators` above hands the tool a `run` answer of its own invention
+/// — `{"cues": ["Drop", "Outro"]}`, a JSON array. The script never sent
+/// that: until 1.35.0 `_jsonable` tested only for `list`/`tuple`, and Live's
+/// `cue_points` is a `Base.Vector`, so the real answer was the string
+/// "<Base.Vector object at 0x…>". The count came out 0 and every locator
+/// name was refused with "the set has none" while Live held four of them
+/// (measured on Live 12.4.6, 2026-09-20). A bridge that invents a wire
+/// format cannot prove a wire format, so this one goes over the socket to
+/// the real script.
+#[tokio::test]
+async fn a_locator_name_resolves_through_the_real_script() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    set.build(&[("Sitar", "midi", "")]);
+    let sitar = set.track_index("Sitar").unwrap();
+    set.write_clip(
+        sitar,
+        0,
+        "Lead",
+        json!([{"pitch": 64, "start_time": 0.0, "duration": 1.0, "velocity": 100}]),
+    );
+
+    for (name, bar) in [("Drop", 17.0), ("Outro", 33.0)] {
+        let r = server
+            .run(
+                &tools::CREATE_LOCATOR,
+                tools::CreateLocatorParams {
+                    name: name.into(),
+                    bar: Some(bar),
+                    ..Default::default()
+                },
+                tools::create_locator_body,
+            )
+            .await;
+        assert!(!is_error(&r), "{}", text_of(&r));
+    }
+
+    // The count must come back as a count, not as an address. A real set
+    // may hold locators this test did not make — `reset_set` reports "0
+    // locator(s)" cleared even when Live has some, because Live only
+    // toggles a cue at the play position — so what is asserted is that the
+    // two made here were counted and read, not that they are all there is.
+    let marks = tools::locators(server.live()).expect("the locators read back");
+    assert!(
+        marks.iter().any(|(n, t)| n == "Drop" && *t == 64.0),
+        "Drop was counted and read: {marks:?}"
+    );
+    assert!(
+        marks.iter().any(|(n, t)| n == "Outro" && *t == 128.0),
+        "Outro was counted and read: {marks:?}"
+    );
+
+    // Bar 17 in 4/4 is beat 64 — the locator's own time.
+    let r = server
+        .run(
+            &tools::ARRANGE,
+            mcp_ableton_music_maker::arrange::ArrangeParams {
+                action: "place".into(),
+                track: Some(json!("Sitar")),
+                clip: Some(json!("Lead")),
+                at_bar: Some(json!("Drop")),
+                ..Default::default()
+            },
+            mcp_ableton_music_maker::arrange::arrange_body,
+        )
+        .await;
+    assert!(
+        !is_error(&r),
+        "a locator name places a clip: {}",
+        text_of(&r)
+    );
+    assert!(text_of(&r).contains("bar 17"), "{}", text_of(&r));
+
+    // An unknown one still says what the set does have.
+    let r = server
+        .run(
+            &tools::ARRANGE,
+            mcp_ableton_music_maker::arrange::ArrangeParams {
+                action: "place".into(),
+                track: Some(json!("Sitar")),
+                clip: Some(json!("Lead")),
+                at_bar: Some(json!("Chorus")),
+                ..Default::default()
+            },
+            mcp_ableton_music_maker::arrange::arrange_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(is_error(&r), "{t}");
+    assert!(t.contains("no locator named 'Chorus'"), "{t}");
+    assert!(
+        t.contains("Drop") && t.contains("Outro"),
+        "it lists them: {t}"
+    );
 }

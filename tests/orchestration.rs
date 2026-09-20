@@ -10,7 +10,9 @@
 
 mod common;
 
-use common::{is_error, server_on_fake_live, server_with, text_of, FakeBridge, LiveSet};
+use common::{
+    is_error, server_on_fake_live, server_with, targets_a_real_live, text_of, FakeBridge, LiveSet,
+};
 use mcp_ableton_music_maker::notes::NotesInput;
 use mcp_ableton_music_maker::tools::{
     self, AutomationTarget, BatchParams, BatchStep, BuildSongParams, LoadInstrumentParams,
@@ -586,7 +588,8 @@ async fn build_song_executes_in_order() {
     // A build that changed the set ends on the snapshot offer: a crash costs
     // whatever is only in Live's memory and nobody reaches for export_set.
     assert!(
-        t.ends_with("build_song takes snapshot: true to write one as part of the build.")
+        common::without_readout(&t)
+            .ends_with("build_song takes snapshot: true to write one as part of the build.")
             && t.contains("Cmd+S — the Live API has no save of its own"),
         "{t}"
     );
@@ -597,7 +600,10 @@ async fn build_song_executes_in_order() {
 async fn library_status_names_what_is_missing() {
     // The fake's browser is a couple of dozen items, not Live's library —
     // so this reads as a Live with a partial instrument set, which is
-    // exactly the case the readout exists for.
+    // exactly the case the readout exists for. A real Live with Suite
+    // installed is the other case, and the readout has to be right about
+    // both: what matters is that it *answers the question* rather than
+    // listing what is there and going quiet about what is not.
     let (server, _bridge) = server_on_fake_live();
     let r = server
         .run(
@@ -614,13 +620,20 @@ async fn library_status_names_what_is_missing() {
         "the instruments that are there are named: {t}"
     );
     assert!(
-        t.contains("Not available here"),
-        "what Live does not have is named too: {t}"
+        t.contains("Not available here") || t.contains("instrument is present"),
+        "what Live does not have is named too, or it is said that nothing is: {t}"
     );
     assert!(
-        t.contains("Packs installed (1): Core Library") && t.contains("Packs tab"),
+        t.contains("Packs installed (") && t.contains("Packs tab"),
         "{t}"
     );
+    if !targets_a_real_live() {
+        assert!(
+            t.contains("Not available here"),
+            "the fake's library is partial: {t}"
+        );
+        assert!(t.contains("Packs installed (1): Core Library"), "{t}");
+    }
 }
 
 #[tokio::test]
@@ -995,7 +1008,10 @@ async fn get_context_is_one_round_trip_with_the_workflow_footer() {
     );
     assert!(t.contains("Scenes: 0 empty\n"), "{t}");
     assert!(t.contains("Performance: not running"), "{t}");
-    assert!(t.ends_with(mcp_ableton_music_maker::context::FOOTER), "{t}");
+    assert!(
+        common::without_readout(&t).ends_with(mcp_ableton_music_maker::context::FOOTER),
+        "{t}"
+    );
     let r = server
         .run(
             &tools::GET_CONTEXT,

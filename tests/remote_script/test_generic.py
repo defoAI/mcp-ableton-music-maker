@@ -140,18 +140,32 @@ class Run(unittest.TestCase):
         next(gen)                      # the get
         self.assertEqual(next(gen).result["t"], 120.0)
 
-    def test_getting_a_whole_sequence_gives_lives_repr_not_its_contents(self):
-        """What Live really does, so nobody builds on the other answer.
+    def test_getting_a_whole_sequence_gives_its_contents(self):
+        """A Live collection reads as a sequence, so it can be counted.
 
-        `song.tracks` is a `Vector`, and `_jsonable` serialises only what is
-        `isinstance(..., (list, tuple))` — a Vector is neither, so the value
-        that comes back is the object's repr. Verified against Live 12.4.6
-        on 2026-09-20: `run get song.tracks` returned
-        `"<Base.Vector object at 0x1656f6fc0>"`. Read the members by index,
-        or ask for the attribute you want (`song.tracks[0].name`)."""
+        `song.tracks` is a `Base.Vector` — neither a `list` nor a `tuple`.
+        Until script 1.35.0 `_jsonable` tested only for those two, so a
+        whole-collection read came back as the object's repr: verified
+        against Live 12.4.6 on 2026-09-20, `run get song.tracks` returned
+        `"<Base.Vector object at 0x1656f6fc0>"`. The caller could read a
+        member by index but never learn how many there were, which is what
+        made every locator name unresolvable (#66). A Vector is a sequence
+        and is now rendered as one, capped like any other at 256."""
         out = self.run_ops([{"op": "get", "path": "song.tracks", "as": "tracks"}])
-        self.assertIsInstance(out["tracks"], str)
-        self.assertIn("Vector", out["tracks"])
+        self.assertIsInstance(out["tracks"], list)
+        self.assertEqual(len(out["tracks"]), len(list(self.song.tracks)))
+
+    def test_an_empty_collection_is_an_empty_list_not_a_repr(self):
+        """The distinction the locator lookup turns on: a set with no
+        locators and a read that failed must not look the same."""
+        out = self.run_ops([{"op": "get", "path": "song.cue_points", "as": "cues"}])
+        self.assertEqual(out["cues"], [])
+
+    def test_a_string_is_not_split_into_characters(self):
+        """A string is a sequence too, and must stay whole."""
+        self.song._file_path = "/Users/p/Music/Smoke Project/Smoke.als"
+        out = self.run_ops([{"op": "get", "path": "song.file_path", "as": "set"}])
+        self.assertEqual(out["set"], "/Users/p/Music/Smoke Project/Smoke.als")
 
     def test_a_member_of_a_sequence_comes_back_as_a_value(self):
         out = self.run_ops([{"op": "get", "path": "song.tracks[0].name", "as": "first"},
