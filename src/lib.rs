@@ -18,6 +18,7 @@
 //! - [`audio`]        reads the WAV/AIFF Live recorded for a capture and measures it
 //! - [`performance`]  live performance: state, bar arithmetic, cue resolution, the readout text
 //! - [`context`]      get_context's readout and the server instructions clients receive at initialize
+//! - [`lom`]        Live's object model reached generically: built paths, batches of ops, what this Live has (pure + cached)
 //! - [`library`]      the server's copy of Live's browser: paged from the script, on disk, searched locally
 //! - [`variation`]    clip variations and the key of a recording (pure)
 //! - [`song`]         sections (scene names) and songs (the Setlist: scene): parsing, the plan, the cursor (pure)
@@ -44,6 +45,7 @@ pub mod context;
 pub mod handshake;
 pub mod install;
 pub mod library;
+pub mod lom;
 pub mod notes;
 pub mod performance;
 pub mod samples;

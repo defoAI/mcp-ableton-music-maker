@@ -10,7 +10,7 @@
 use mcp_ableton_music_maker::connection::{live_address, AbletonConnection};
 use mcp_ableton_music_maker::handshake::ScriptInfoCache;
 use serde_json::{json, Value};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn pct(sorted_ms: &[f64], p: f64) -> f64 {
     if sorted_ms.is_empty() {
@@ -138,23 +138,104 @@ fn main() {
     }
 
     // Phase 2 and 4 report only once their commands exist.
-    line(
-        "clock events / s",
-        if has("subscribe") {
-            "TODO once phase 2 lands".into()
+    if has("subscribe") {
+        let _ = conn.subscribe(&["clock", "levels"], Some(50.0));
+        let t = Instant::now();
+        let (mut clocks, mut levels) = (0usize, 0usize);
+        // Events share the socket with replies, so a cheap read pulls them.
+        while t.elapsed() < Duration::from_secs(2) {
+            let _ = conn.send_command("get_script_info", None);
+            for e in conn.take_events() {
+                match e.get("event").and_then(Value::as_str) {
+                    Some("clock") => clocks += 1,
+                    Some("levels") => levels += 1,
+                    _ => {}
+                }
+            }
+        }
+        let secs = t.elapsed().as_secs_f64();
+        line(
+            "clock events / s",
+            format!(
+                "{:.1} (asked 20/s) · levels {:.1}/s",
+                clocks as f64 / secs,
+                levels as f64 / secs
+            ),
+            "phase 2",
+        );
+        let _ = conn.send_command("unsubscribe", Some(json!({})));
+    } else {
+        line("clock events / s", "not on this script".into(), "phase 2");
+    }
+
+    // Phase 4: how late a cue step fires, over harmless steps that only read.
+    let playing = conn
+        .send_command("get_session_info", None)
+        .ok()
+        .and_then(|v| v.get("is_playing").and_then(Value::as_bool))
+        .unwrap_or(false);
+    if has("run") && playing {
+        let _ = conn.subscribe(&["cue"], None);
+        let tempo = conn
+            .send_command("get_session_info", None)
+            .ok()
+            .and_then(|v| v.get("tempo").and_then(Value::as_f64))
+            .unwrap_or(120.0);
+        let mut late: Vec<f64> = Vec::new();
+        for _ in 0..12 {
+            let now = conn
+                .send_command("get_performance_state", None)
+                .ok()
+                .and_then(|v| v.get("beat").and_then(Value::as_f64))
+                .unwrap_or(0.0);
+            let at = (now + 2.0).ceil();
+            let cue = json!({"cue": {"name": "latency", "steps": [
+                {"beat": at, "ops": [{"op": "get", "path": "song.tempo", "as": "t"}]}]}});
+            if conn.send_command("schedule_cue", Some(cue)).is_err() {
+                break;
+            }
+            let wait = Duration::from_secs_f64((at - now + 1.0) * 60.0 / tempo);
+            let deadline = Instant::now() + wait;
+            let before = late.len();
+            while Instant::now() < deadline && late.len() == before {
+                let _ = conn.send_command("get_script_info", None);
+                for e in conn.take_events() {
+                    if e.get("event").and_then(Value::as_str) == Some("cue") {
+                        if let Some(ms) = e.get("late_ms").and_then(Value::as_f64) {
+                            late.push(ms);
+                        }
+                    }
+                }
+            }
+        }
+        late.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        if late.is_empty() {
+            line("cue lateness p50/p95", "no cue fired".into(), "phase 4");
         } else {
-            "not on this script".into()
-        },
-        "phase 2",
-    );
-    line(
-        "cue lateness p50/p95",
-        if has("run") {
-            "TODO once phase 4 lands".into()
-        } else {
-            "not on this script".into()
-        },
-        "phase 4",
-    );
+            line(
+                "cue lateness p50/p95",
+                format!(
+                    "{:.1} / {:.1} ms over {} cues",
+                    pct(&late, 0.5),
+                    pct(&late, 0.95),
+                    late.len()
+                ),
+                "phase 4",
+            );
+        }
+        let _ = conn.send_command("unsubscribe", Some(json!({})));
+    } else if has("run") {
+        line(
+            "cue lateness p50/p95",
+            "transport stopped: press play".into(),
+            "phase 4",
+        );
+    } else {
+        line(
+            "cue lateness p50/p95",
+            "not on this script".into(),
+            "phase 4",
+        );
+    }
     conn.disconnect();
 }

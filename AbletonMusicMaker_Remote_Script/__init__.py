@@ -62,7 +62,7 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.29.0"
+SCRIPT_VERSION = "1.31.0"
 PROTOCOL_VERSION = 2
 # Where client sockets are read. "main_thread_tick": sockets are non-blocking
 # and drained from the same tick the clock runs on, so a message waits one
@@ -243,6 +243,10 @@ SCRIPT_CAPABILITIES = [
     "delete_device",
     "move_device",
     "get_meter_scale",
+    "subscribe",
+    "unsubscribe",
+    "describe",
+    "run",
 ]
 
 def create_instance(c_instance):
@@ -283,6 +287,69 @@ class _TickSampler(object):
         p95 = xs[int(0.95 * (n - 1))]
         return {"period_ms": round(p50, 2), "jitter_ms": round(p95 - p50, 2),
                 "max_ms": round(xs[-1], 2), "samples": n}
+
+
+# ── The generic surface: paths into Live's object model ────────────────────
+#
+# `describe` and `run` reach Live's own objects and nothing else. The socket
+# has no authentication and loopback is the boundary (decision 0003), so this
+# must be exactly as dangerous as the fixed command list and not one step
+# more: three roots, no underscore attributes (which covers every dunder, so
+# no __class__, __globals__ or __builtins__ to climb out through), no import,
+# no eval, no file. Every refusal below is a test.
+
+PATH_ROOTS = ("song", "application", "browser")
+_PATH_MAX_STEPS = 24
+
+
+def _parse_path(path):
+    """[('attr', name) | ('index', n), ...] with the root first. Raises
+    ValueError with the reason a path is refused."""
+    text = ("%s" % (path or "")).strip()
+    if not text:
+        raise ValueError("a path is required")
+    steps = []
+    i = 0
+    n = len(text)
+    name = ""
+    while i < n:
+        ch = text[i]
+        if ch == ".":
+            if not name:
+                raise ValueError("empty name in %r" % text)
+            steps.append(("attr", name))
+            name = ""
+            i += 1
+        elif ch == "[":
+            if name:
+                steps.append(("attr", name))
+                name = ""
+            close = text.find("]", i)
+            if close < 0:
+                raise ValueError("unclosed [ in %r" % text)
+            digits = text[i + 1:close].strip()
+            try:
+                steps.append(("index", int(digits)))
+            except ValueError:
+                raise ValueError("index must be a whole number, got %r" % digits)
+            i = close + 1
+            if i < n and text[i] == ".":
+                i += 1
+        else:
+            name += ch
+            i += 1
+    if name:
+        steps.append(("attr", name))
+    if not steps or steps[0][0] != "attr":
+        raise ValueError("a path starts with a name, not an index")
+    if steps[0][1] not in PATH_ROOTS:
+        raise ValueError("path must start with %s" % ", ".join(PATH_ROOTS))
+    if len(steps) > _PATH_MAX_STEPS:
+        raise ValueError("a path is at most %d steps" % _PATH_MAX_STEPS)
+    for kind, value in steps:
+        if kind == "attr" and value.startswith("_"):
+            raise ValueError("%r is not reachable: names starting with _ are refused" % value)
+    return steps
 
 
 class _Client(object):
@@ -377,6 +444,12 @@ class AbletonMCP(ControlSurface):
         self._tick_sampler = _TickSampler(600)
         self._clock_tick_armed = False
         self._live_version = None
+        self._started_at = time.time()
+        self._last_clock_event = 0.0
+        self._clock_event_sent_stopped = False
+        self._levels_event_bar = None
+        self._watch_prev = None
+        self._changes_ticks = 0
         self._pending_record = None
         # Performance mode: while on, every response carries a clock and the
         # tick watches which scene row plays (phrases count from there).
@@ -1045,6 +1118,10 @@ class AbletonMCP(ControlSurface):
             return self._get_device_parameters(
                 params.get("track_index", 0), params.get("device_index", 0),
                 params.get("kind", "track"))
+        elif command_type == "describe":
+            return self._describe(params.get("path"))
+        elif command_type == "run":
+            return self._run_ops(params)
         elif command_type == "get_meter_scale":
             return self._get_meter_scale()
         elif command_type == "get_session_snapshot":
@@ -4117,7 +4194,7 @@ class AbletonMCP(ControlSurface):
     CROSSFADE_SIDES = {"a": 0, "none": 1, "b": 2}
     PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
     CUE_ACTIONS = ("fire_scene", "fire_clip", "stop_clip", "stop_all_clips",
-                   "set", "ramp", "stop_playback", "restore_mix")
+                   "set", "ramp", "stop_playback", "restore_mix", "ops")
     CUE_TARGETS = ("tempo", "crossfader", "volume", "mute", "send", "device")
     # A launch is issued this many beats before the end of the bar preceding
     # its target, so a 1-bar quantization lands it exactly on the target bar.
@@ -5258,6 +5335,10 @@ class AbletonMCP(ControlSurface):
             steps = []
             for i, st in enumerate(steps_in):
                 action = str(st.get("action") or "")
+                if st.get("ops") is not None and not action:
+                    # A step may be a batch of generic ops instead of a named
+                    # action: Rust plans, the tick still fires it.
+                    action = "ops"
                 if action not in self.CUE_ACTIONS:
                     raise ValueError("step %d: unknown action '%s'" % (i + 1, action))
                 if st.get("beat") is None:
@@ -5344,10 +5425,37 @@ class AbletonMCP(ControlSurface):
                 self._live_version = self._read_live_version()
             if SOCKET_READER == "main_thread_tick":
                 self._drain_clients()
+            self._event_tick()
+            # The channels write after the drain flushed, so flush again:
+            # an event must not wait a tick behind the reply that triggered it.
+            if SOCKET_READER == "main_thread_tick":
+                self._flush_clients()
         except Exception as e:
             self.log_message("clock tick error: " + str(e))
         if self.running:
             self._arm_clock_tick()
+
+    EVENT_CHANNELS = ("clock", "levels", "changes", "cue")
+    CLOCK_EVERY_MS_DEFAULT = 100.0
+    CHANGES_EVERY_TICKS = 3
+
+    def _event_tick(self):
+        """The three channels, on the tick, only while someone is listening.
+        Counted inside the tick's own budget: each is a handful of reads."""
+        try:
+            if self._any_subscriber("clock"):
+                self._clock_event_tick(time.time())
+            if self._any_subscriber("levels"):
+                bar = self._bar_position()[0]
+                self._level_tick(bar)
+                self._levels_event_tick(bar)
+            if self._any_subscriber("changes"):
+                self._changes_ticks += 1
+                if self._changes_ticks >= self.CHANGES_EVERY_TICKS:
+                    self._changes_ticks = 0
+                    self._changes_tick()
+        except Exception as e:
+            self.log_message("event tick error: " + str(e))
 
     # ── Clients on the tick ─────────────────────────────────────────────────
 
@@ -5362,6 +5470,15 @@ class AbletonMCP(ControlSurface):
             self._client_start(c, now)
             self._client_expire(c, now)
             self._client_flush(c)
+        with self._clients_lock:
+            self._clients = [c for c in self._clients if not c.closed]
+
+    def _flush_clients(self):
+        with self._clients_lock:
+            clients = list(self._clients)
+        for c in clients:
+            if not c.closed:
+                self._client_flush(c)
         with self._clients_lock:
             self._clients = [c for c in self._clients if not c.closed]
 
@@ -5415,6 +5532,15 @@ class AbletonMCP(ControlSurface):
             if command_type == "get_script_info":
                 self._client_write(c, rid, {"status": "success", "result": self._get_script_info()})
                 continue
+            if command_type in ("subscribe", "unsubscribe"):
+                # Per-socket bookkeeping: it touches nothing in Live, so it
+                # never goes near the executor.
+                try:
+                    handler = self._subscribe if command_type == "subscribe" else self._unsubscribe
+                    self._client_write(c, rid, {"status": "success", "result": handler(c, params)})
+                except Exception as e:
+                    self._client_write(c, rid, {"status": "error", "message": str(e)})
+                continue
             token = c.next_token
             c.next_token += 1
             sink = _ClientSink(self, c, rid, token)
@@ -5433,6 +5559,316 @@ class AbletonMCP(ControlSurface):
             if now > deadline and not sink.done:
                 sink.put({"status": "error",
                           "message": "Timeout waiting for %s to complete" % command_type})
+
+    # ── The generic surface ────────────────────────────────────────────────
+
+    def _path_root(self, name):
+        if name == "song":
+            return self._song
+        if name == "application":
+            return self.application()
+        if name == "browser":
+            return self.application().browser
+        raise ValueError("path must start with %s" % ", ".join(PATH_ROOTS))
+
+    def _walk(self, steps):
+        """Follow every step but the last; returns (owner, last_step)."""
+        obj = self._path_root(steps[0][1])
+        for i in range(1, len(steps) - 1):
+            obj = self._step(obj, steps[i], steps, i)
+        return obj, (steps[-1] if len(steps) > 1 else None)
+
+    def _step(self, obj, step, steps, i):
+        kind, value = step
+        where = self._path_text(steps[:i + 1])
+        if kind == "index":
+            try:
+                seq = list(obj)
+            except Exception:
+                raise ValueError("%s is not a list" % self._path_text(steps[:i]))
+            if value < 0 or value >= len(seq):
+                raise ValueError("%s: index %d is out of range (%d)" % (
+                    self._path_text(steps[:i]), value, len(seq)))
+            return seq[value]
+        if not hasattr(obj, value):
+            raise ValueError("%s does not exist on Live %s" % (where, self._live_version or "?"))
+        return getattr(obj, value)
+
+    def _path_text(self, steps):
+        out = ""
+        for kind, value in steps:
+            if kind == "attr":
+                out = value if not out else out + "." + value
+            else:
+                out += "[%d]" % value
+        return out
+
+    def _resolve(self, path):
+        """The object a path names."""
+        steps = _parse_path(path)
+        obj = self._path_root(steps[0][1])
+        for i in range(1, len(steps)):
+            obj = self._step(obj, steps[i], steps, i)
+        return obj
+
+    _DESCRIBE_TYPES = {bool: "bool", int: "int", float: "float", str: "str"}
+
+    def _type_name(self, value):
+        name = self._DESCRIBE_TYPES.get(type(value))
+        if name:
+            return name
+        if isinstance(value, (list, tuple)):
+            inner = self._type_name(value[0]) if len(value) else "?"
+            return "list[%s]" % inner
+        if value is None:
+            return "none"
+        try:
+            return type(value).__name__
+        except Exception:
+            return "object"
+
+    def _describe(self, path):
+        obj = self._resolve(path)
+        attrs = {}
+        methods = []
+        for name in sorted(dir(obj)):
+            if name.startswith("_"):
+                continue
+            try:
+                value = getattr(obj, name)
+            except Exception:
+                continue
+            if callable(value):
+                methods.append(name)
+                continue
+            readonly = True
+            try:
+                prop = getattr(type(obj), name, None)
+                readonly = not (isinstance(prop, property) and prop.fset is not None)
+            except Exception:
+                pass
+            attrs[name] = {"type": self._type_name(value), "readonly": readonly}
+        try:
+            class_name = type(obj).__name__
+        except Exception:
+            class_name = "object"
+        name = None
+        try:
+            if hasattr(obj, "name"):
+                name = "%s" % obj.name
+        except Exception:
+            pass
+        return {"path": path, "class": class_name, "name": name, "attrs": attrs,
+                "methods": methods, "live_version": self._live_version}
+
+    RUN_OPS = ("get", "set", "call", "wait_tick")
+    RUN_MAX_OPS = 512
+
+    def _run_ops(self, params):
+        """An ordered batch on the main thread, sliced by the executor: one
+        round trip however many ops. The first failure stops the batch and
+        the error names the op, so the server can say what did run."""
+        ops = list((params or {}).get("ops") or [])
+        if not ops:
+            raise ValueError("run needs at least one op")
+        if len(ops) > self.RUN_MAX_OPS:
+            raise ValueError("at most %d ops per run" % self.RUN_MAX_OPS)
+        out = {}
+        done = 0
+        for i, op in enumerate(ops):
+            if not isinstance(op, dict):
+                raise ValueError("run: op %d is not an object" % i)
+            kind = "%s" % (op.get("op") or "")
+            if kind not in self.RUN_OPS:
+                raise ValueError("run: op %d: unknown op %r; known: %s" % (
+                    i, kind, ", ".join(self.RUN_OPS)))
+            try:
+                if kind == "wait_tick":
+                    ticks = max(1, min(32, int(op.get("ticks", 1))))
+                    for _ in range(ticks):
+                        yield None
+                    done += 1
+                    continue
+                steps = _parse_path(op.get("path"))
+                if kind == "get":
+                    value = self._resolve(op.get("path"))
+                    if op.get("as"):
+                        out["%s" % op["as"]] = self._jsonable(value)
+                elif kind == "set":
+                    owner, last = self._walk(steps)
+                    if last is None or last[0] != "attr":
+                        raise ValueError("set needs a name to set, not an index")
+                    name = last[1]
+                    if not hasattr(owner, name):
+                        raise ValueError("%s does not exist on Live %s" % (
+                            op.get("path"), self._live_version or "?"))
+                    try:
+                        setattr(owner, name, op.get("value"))
+                    except AttributeError:
+                        raise ValueError("%s is read-only on Live %s" % (
+                            op.get("path"), self._live_version or "?"))
+                    if op.get("as"):
+                        out["%s" % op["as"]] = self._jsonable(getattr(owner, name, None))
+                else:
+                    target = self._resolve(op.get("path"))
+                    if not callable(target):
+                        raise ValueError("%s is not a method" % op.get("path"))
+                    args = list(op.get("args") or [])
+                    value = target(*args)
+                    if op.get("as"):
+                        out["%s" % op["as"]] = self._jsonable(value)
+            except ValueError as e:
+                raise ValueError("run: op %d: %s" % (i, str(e)))
+            done += 1
+            yield None
+        out["ops"] = done
+        yield Done(out)
+
+    def _jsonable(self, value):
+        if isinstance(value, bool) or value is None:
+            return value
+        if isinstance(value, (int, float)):
+            return value
+        if isinstance(value, (list, tuple)):
+            return [self._jsonable(v) for v in list(value)[:256]]
+        try:
+            return "%s" % value
+        except Exception:
+            return None
+
+    # ── Events ──────────────────────────────────────────────────────────────
+
+    def _publish(self, channel, payload):
+        """One event to every client subscribed to `channel`, and to nobody
+        else. Called on the tick, so it never blocks."""
+        body = None
+        with self._clients_lock:
+            clients = list(self._clients)
+        for c in clients:
+            if c.closed or channel not in c.subscriptions:
+                continue
+            if body is None:
+                body = dict(payload)
+                body["event"] = channel
+                body["t"] = round(time.time() - self._started_at, 4)
+            self._client_write(c, None, body)
+
+    def _any_subscriber(self, channel):
+        with self._clients_lock:
+            for c in self._clients:
+                if not c.closed and channel in c.subscriptions:
+                    return True
+        return False
+
+    def _subscribe(self, c, params):
+        channels = params.get("channels") or []
+        if not isinstance(channels, list):
+            raise ValueError("channels must be a list")
+        unknown = [x for x in channels if x not in self.EVENT_CHANNELS]
+        if unknown:
+            raise ValueError("unknown channel(s): %s; known: %s" % (
+                ", ".join("%s" % u for u in unknown), ", ".join(self.EVENT_CHANNELS)))
+        every = params.get("clock_every_ms")
+        for name in channels:
+            opts = {}
+            if name == "clock" and every is not None:
+                opts["clock_every_ms"] = max(0.0, float(every))
+            c.subscriptions[name] = opts
+        if "changes" in c.subscriptions and self._watch_prev is None:
+            self._watch_prev = self._watch_snapshot()
+        self._arm_clock_tick()
+        return {"subscribed": sorted(c.subscriptions.keys()),
+                "clock_every_ms": c.subscriptions.get("clock", {}).get(
+                    "clock_every_ms", self.CLOCK_EVERY_MS_DEFAULT)}
+
+    def _unsubscribe(self, c, params):
+        channels = params.get("channels")
+        if channels is None:
+            c.subscriptions = {}
+        else:
+            for name in channels:
+                c.subscriptions.pop(name, None)
+        return {"subscribed": sorted(c.subscriptions.keys())}
+
+    def _watch_snapshot(self):
+        """The small set of things a `changes` subscriber is told about, as
+        path -> value. Read on the main thread; no listener is registered on
+        anything, which is what the first capture's deadlock taught us."""
+        out = {}
+        try:
+            song = self._song
+            out["song.is_playing"] = bool(song.is_playing)
+            out["song.tempo"] = round(float(song.tempo), 4)
+            out["song.signature_numerator"] = int(song.signature_numerator)
+            tracks = list(song.tracks)
+            out["song.tracks.count"] = len(tracks)
+            for i, t in enumerate(tracks):
+                out["song.tracks[%d].name" % i] = "%s" % t.name
+                out["song.tracks[%d].mute" % i] = bool(self._safe_attr(t, "mute", bool, False))
+                out["song.tracks[%d].solo" % i] = bool(self._safe_attr(t, "solo", bool, False))
+                out["song.tracks[%d].arm" % i] = bool(self._safe_arm(t))
+                out["song.tracks[%d].playing_slot_index" % i] = int(
+                    self._safe_attr(t, "playing_slot_index", int, -1))
+            scenes = list(song.scenes)
+            out["song.scenes.count"] = len(scenes)
+            for i, sc in enumerate(scenes):
+                out["song.scenes[%d].name" % i] = "%s" % sc.name
+                out["song.scenes[%d].is_triggered" % i] = bool(
+                    self._safe_attr(sc, "is_triggered", bool, False))
+        except Exception as e:
+            self.log_message("watch snapshot error: " + str(e))
+        return out
+
+    def _changes_tick(self):
+        now = self._watch_snapshot()
+        prev = self._watch_prev or {}
+        changed = []
+        for key in sorted(set(list(prev.keys()) + list(now.keys()))):
+            before = prev.get(key)
+            after = now.get(key)
+            if before != after:
+                changed.append({"path": key, "from": before, "to": after})
+        self._watch_prev = now
+        if changed:
+            self._publish("changes", {"changed": changed[:64]})
+
+    def _clock_event_tick(self, now_s):
+        every = self.CLOCK_EVERY_MS_DEFAULT
+        with self._clients_lock:
+            for c in self._clients:
+                opts = c.subscriptions.get("clock")
+                # 0 is a real answer -- every tick -- so ask whether the key
+                # is there, never whether the number is truthy.
+                if opts is not None and opts.get("clock_every_ms") is not None:
+                    every = min(every, float(opts["clock_every_ms"]))
+        if (now_s - self._last_clock_event) * 1000.0 < every:
+            return
+        song = self._song
+        playing = bool(song.is_playing)
+        if not playing and self._clock_event_sent_stopped:
+            return
+        self._last_clock_event = now_s
+        self._clock_event_sent_stopped = not playing
+        bar, bib, beat = self._bar_position()
+        bpb = self._beats_per_bar()
+        tempo = float(song.tempo)
+        self._publish("clock", {
+            "bar": bar, "beat_in_bar": bib, "beat": beat, "tempo": tempo,
+            "beats_per_bar": bpb, "playing": playing,
+            "scene": self._current_scene,
+            "phrase_bar": (self._phrase_info(bar) or {}).get("bar_in_phrase"),
+            "next_bar_in_s": max(0.0, (bar * bpb - beat) * 60.0 / max(1.0, tempo)),
+        })
+
+    def _levels_event_tick(self, bar):
+        if self._levels_event_bar == bar:
+            return
+        self._levels_event_bar = bar
+        cur = self._bar_peaks
+        if cur is None:
+            return
+        self._publish("levels", {"bar": cur["bar"], "master": round(cur["master"], 5),
+                                 "tracks": [round(v, 5) for v in cur["tracks"]]})
 
     def _client_write(self, c, request_id, payload):
         if c.closed:
@@ -5545,6 +5981,15 @@ class AbletonMCP(ControlSurface):
             pending = len(self._cues) > 0
         return pending or self._pending_record is not None or self._performance_mode
 
+    def _run_cue_ops(self, cue, step, now):
+        """A step that is a batch of ops: run it to completion on this tick.
+        The batch is the producer's plan, already validated by the server."""
+        gen = self._run_ops({"ops": step.get("ops") or []})
+        while True:
+            item = next(gen)
+            if isinstance(item, Done):
+                return item.result
+
     def _run_cue_action(self, cue, step, now):
         action = step["action"]
         detail = {"cue_id": cue["id"], "cue": cue["name"], "step": step["index"],
@@ -5571,7 +6016,21 @@ class AbletonMCP(ControlSurface):
                     self._perf_write(step, float(step.get("value")))
             elif action == "restore_mix":
                 self._restore_mix(step.get("snapshot_id"))
+            elif action == "ops":
+                detail["ops"] = self._run_cue_ops(cue, step, now)
+            # How far past its beat the step actually fired. A launch is
+            # issued before its beat on purpose (Live's own quantization
+            # places it), so this is negative for those and near zero for
+            # the rest; it is the number the story is judged by.
+            detail["fired_at_beat"] = now
+            detail["late_beats"] = round(now - step["beat"], 4)
+            try:
+                detail["late_ms"] = round(
+                    (now - step["beat"]) * 60000.0 / max(1.0, float(self._song.tempo)), 2)
+            except Exception:
+                detail["late_ms"] = None
             self._perf_event("cue_step_fired", detail)
+            self._publish("cue", detail)
         except Exception as e:
             detail["error"] = str(e)
             self._perf_event("cue_step_failed", detail)

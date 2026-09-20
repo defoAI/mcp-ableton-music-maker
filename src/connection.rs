@@ -189,6 +189,8 @@ pub struct LiveState {
     pub activity: Activity,
     pub performance: Mutex<Option<Performance>>,
     pub library: crate::library::Library,
+    /// What the server has learned about this Live's object model.
+    pub lom: crate::lom::Lom,
     pub samples: crate::samples::Samples,
     /// The last 20 round trips in seconds, for latency compensation.
     pub round_trips: Mutex<std::collections::VecDeque<f64>>,
@@ -220,6 +222,7 @@ impl LiveState {
             activity,
             performance: Mutex::new(None),
             library: crate::library::Library::default(),
+            lom: crate::lom::Lom::default(),
             samples: crate::samples::Samples::default(),
             round_trips: Mutex::new(std::collections::VecDeque::new()),
             last_clock: Mutex::new(None),
@@ -379,12 +382,28 @@ pub struct AbletonConnection {
 pub struct Inbox {
     bytes: Vec<u8>,
     docs: std::collections::VecDeque<Value>,
+    /// Events the script pushed (clock, levels, changes, cue). They arrive
+    /// on the same socket as the replies and are set aside here as they are
+    /// met; a consumer drains them with [`AbletonConnection::take_events`].
+    events: std::collections::VecDeque<Value>,
 }
+
+/// Events older than this are dropped rather than grown without bound: a
+/// clock at 10 a second fills it in half a minute if nobody is draining.
+const MAX_HELD_EVENTS: usize = 512;
 
 impl Inbox {
     fn clear(&mut self) {
         self.bytes.clear();
         self.docs.clear();
+        self.events.clear();
+    }
+
+    fn note_event(&mut self, event: Value) {
+        self.events.push_back(event);
+        while self.events.len() > MAX_HELD_EVENTS {
+            self.events.pop_front();
+        }
     }
 }
 
@@ -479,6 +498,23 @@ impl AbletonConnection {
         Err(connect_err(last))
     }
 
+    /// Every event the script has pushed since this was last called. Events
+    /// share the socket with replies, so they are picked up as commands are
+    /// sent; a consumer that wants them sooner sends a cheap read.
+    pub fn take_events(&self) -> Vec<Value> {
+        let mut inbox = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        inbox.events.drain(..).collect()
+    }
+
+    /// Ask the script to push these channels on this socket.
+    pub fn subscribe(&self, channels: &[&str], clock_every_ms: Option<f64>) -> LiveResult<Value> {
+        let mut params = json!({ "channels": channels });
+        if let Some(ms) = clock_every_ms {
+            params["clock_every_ms"] = json!(ms);
+        }
+        self.send_command("subscribe", Some(params))
+    }
+
     pub fn is_connected(&self) -> bool {
         self.lock().is_some()
     }
@@ -535,8 +571,8 @@ impl AbletonConnection {
             while i < inbox.docs.len() {
                 let doc = &inbox.docs[i];
                 if doc.get("event").is_some() {
-                    tracing::trace!("event before a subscriber exists: {}", doc);
-                    inbox.docs.remove(i);
+                    let event = inbox.docs.remove(i).expect("indexed");
+                    inbox.note_event(event);
                     continue;
                 }
                 match doc.get("id").and_then(Value::as_u64) {
@@ -868,6 +904,24 @@ mod protocol_tests {
             std::thread::sleep(Duration::from_millis(300));
         });
         port
+    }
+
+    #[test]
+    fn events_are_kept_not_dropped_and_drain_once() {
+        let port = fake_script(vec![
+            "{\"event\":\"clock\",\"bar\":3}\n{\"event\":\"levels\",\"bar\":3}\n".into(),
+            "{\"id\":1,\"status\":\"success\",\"result\":{}}\n".into(),
+        ]);
+        let conn = AbletonConnection::new("127.0.0.1", port);
+        conn.send_command("get_session_info", None).unwrap();
+        let events = conn.take_events();
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0]["event"], json!("clock"));
+        assert_eq!(events[1]["event"], json!("levels"));
+        assert!(
+            conn.take_events().is_empty(),
+            "draining twice returns them twice"
+        );
     }
 
     #[test]

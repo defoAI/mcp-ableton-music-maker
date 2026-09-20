@@ -116,6 +116,10 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "delete_device",
     "move_device",
     "get_meter_scale",
+    "subscribe",
+    "unsubscribe",
+    "describe",
+    "run",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -982,6 +986,8 @@ pub const CREATE_LOCATOR: ToolSpec = ToolSpec::new("create_locator");
 pub const SET_TRACK_MIXER: ToolSpec = ToolSpec::new("set_track_mixer");
 pub const SET_SEND: ToolSpec = ToolSpec::new("set_send");
 pub const GET_RETURNS: ToolSpec = ToolSpec::new("get_returns");
+pub const DESCRIBE_LIVE: ToolSpec = ToolSpec::new("describe_live");
+pub const RUN_OPS: ToolSpec = ToolSpec::new("run_ops");
 pub const SET_COLOR: ToolSpec = ToolSpec::new("set_color");
 pub const GET_DRUM_RACK_PADS: ToolSpec = ToolSpec::new("get_drum_rack_pads");
 pub const DELETE_ARRANGEMENT_CLIP: ToolSpec = ToolSpec::new("delete_arrangement_clip");
@@ -3060,6 +3066,72 @@ pub fn set_send_body(live: &LiveState, p: &SetSendParams) -> ToolResult {
         get_display(&r, "return_name", "return"),
         get_display(&r, "value", &p.value.to_string())
     ))
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DescribeLiveParams {
+    /// A path into Live's object model, rooted at `song`, `application` or
+    /// `browser`: `song`, `song.tracks[0]`, `song.tracks[0].mixer_device.volume`.
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RunOpsParams {
+    /// The operations, in order. Each is `{"op": "get"|"set"|"call"|"wait_tick",
+    /// "path": "song...", "value": …, "args": […], "ticks": n, "as": "name"}`.
+    pub ops: Vec<Value>,
+}
+
+/// What this Live actually has at a path: its class, every attribute with
+/// its type and whether it can be written, and the methods that can be
+/// called. Cached per Live version.
+pub fn describe_live_body(live: &LiveState, p: &DescribeLiveParams) -> ToolResult {
+    require(live, "describe")?;
+    let path = crate::lom::Path::from_str_checked(&p.path)?;
+    let d = live.lom.describe(live, &path)?;
+    let mut names: Vec<_> = d.attrs.iter().collect();
+    names.sort_by_key(|(k, _)| k.as_str());
+    let mut out = format!(
+        "{} at {}{}\n\nLive {}\n",
+        d.class,
+        path,
+        d.name
+            .as_deref()
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default(),
+        d.live_version.as_deref().unwrap_or("?")
+    );
+    out.push_str("\nAttributes (· = read-only):\n");
+    for (name, a) in names {
+        out.push_str(&format!(
+            "  {}{} {}\n",
+            if a.readonly { "· " } else { "  " },
+            name,
+            a.r#type
+        ));
+    }
+    if !d.methods.is_empty() {
+        out.push_str(&format!("\nMethods: {}\n", d.methods.join(", ")));
+    }
+    Ok(out)
+}
+
+/// A batch of operations against Live's object model, in one round trip.
+pub fn run_ops_body(live: &LiveState, p: &RunOpsParams) -> ToolResult {
+    require(live, "run")?;
+    let batch = crate::lom::Batch::from_values(&p.ops)?;
+    let out = batch.run(live)?;
+    let ran = out.get("ops").and_then(Value::as_u64).unwrap_or(0);
+    let mut named: Vec<_> = out.iter().filter(|(k, _)| k.as_str() != "ops").collect();
+    named.sort_by_key(|(k, _)| k.as_str());
+    if named.is_empty() {
+        return Ok(format!("{ran} ops ran; nothing was asked back."));
+    }
+    let mut text = format!("{ran} ops ran:\n");
+    for (name, value) in named {
+        text.push_str(&format!("  {name} = {value}\n"));
+    }
+    Ok(text)
 }
 
 pub fn get_returns_body(live: &LiveState, _p: &Empty) -> ToolResult {
@@ -7573,6 +7645,26 @@ impl Server {
         self.run(&SET_SEND, p, set_send_body).await
     }
 
+    /// (advanced) What this Live has at a path in its object model: the
+    /// class, every attribute with its type and whether it can be written,
+    /// and the methods. Paths start at `song`, `application` or `browser` —
+    /// `song.tracks[0].mixer_device.volume`. Use it when the artist's tools
+    /// have no word for what you need, then reach it with run_ops.
+    #[tool(name = "describe_live")]
+    async fn describe_live(&self, Parameters(p): Parameters<DescribeLiveParams>) -> CallToolResult {
+        self.run(&DESCRIBE_LIVE, p, describe_live_body).await
+    }
+
+    /// (advanced) Run operations against Live's object model in one round
+    /// trip: get, set, call and wait_tick, in order, each with a path rooted
+    /// at `song`, `application` or `browser`. `as` names a result to return.
+    /// The first failure stops the batch and says which op failed; what ran
+    /// before it has happened. Nothing outside Live is reachable.
+    #[tool(name = "run_ops")]
+    async fn run_ops(&self, Parameters(p): Parameters<RunOpsParams>) -> CallToolResult {
+        self.run(&RUN_OPS, p, run_ops_body).await
+    }
+
     /// List the return tracks (index, letter, name, level, devices) so sends
     /// can be addressed by name.
     #[tool(name = "get_returns")]
@@ -8429,7 +8521,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 102);
+        assert_eq!(tools.len(), 104);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();
@@ -8447,7 +8539,7 @@ mod tests {
         // intent. Keeping a performance is part of playing one.
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 102, "the take must not add a tool");
+        assert_eq!(tools.len(), 104, "the take must not add a tool");
         // start_performance is served as adv_start_performance (decision 0006).
         for name in ["adv_start_performance", "play_song"] {
             let tool = tools.iter().find(|t| t.name == name).unwrap();
