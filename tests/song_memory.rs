@@ -359,11 +359,15 @@ async fn identity_comes_from_song_file_path_through_one_op() {
         bridge.commands()
     );
 
-    // The fake Live's set has never been saved, so the key is provisional
-    // and the note is kept against it (AC20).
+    // The note is kept against whichever identity the set has (AC20). The
+    // fake's set has never been saved, so that is the provisional one; a
+    // real Live may have a saved set open, and then the note belongs to
+    // that song by name. What must hold on both is that the note came back.
     let shown = text_of(&song_memory(&server, SongMemoryParams::default()).await);
-    assert!(shown.contains("not saved yet"), "{shown}");
     assert!(shown.contains("D Dorian, and it stays there"), "{shown}");
+    if !common::targets_a_real_live() {
+        assert!(shown.contains("not saved yet"), "{shown}");
+    }
 }
 
 /// AC14, AC22: the overview survives a server restart and comes back
@@ -454,6 +458,140 @@ async fn the_first_save_renames_the_file_and_says_so_once() {
     // Said once: the next get_context does not repeat it.
     let again = context(&server).await;
     assert!(!again.contains("has been saved as"), "{again}");
+}
+
+/// AC18, the case the test above cannot reach: the save happens **between
+/// sessions**.
+///
+/// The producer builds with one client open, closes it, presses Cmd+S, and
+/// comes back tomorrow — so the process that wrote the provisional notes is
+/// not the process that first sees a path. Reading only the open memory
+/// orphaned the provisional file and started an empty one under the saved
+/// key, losing the overview at the moment the set was committed (measured
+/// against Live 12.4.6 on 2026-09-20).
+#[tokio::test]
+async fn the_first_save_is_adopted_by_a_later_session_too() {
+    let _env = ENV.lock().await;
+    let _dir = state_dir();
+
+    // Session one: an unsaved set, and something worth keeping.
+    {
+        let b = FakeBridge::responding(json!({}));
+        b.script("run", vec![json!({"set": ""})]);
+        let server = server_with(b.clone());
+        remember(
+            &server,
+            overview(json!({"next": "the answer phrase an octave up"})),
+        )
+        .await;
+        remember(
+            &server,
+            RememberParams {
+                about: Some("song".into()),
+                note: Some("keep the sitar".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+    } // the client goes away; the Server and its open memory are dropped.
+
+    assert!(
+        memory::load(memory::PROVISIONAL_KEY).is_some(),
+        "filed provisionally"
+    );
+
+    // Session two, a new process in all but name: the set now has a path.
+    let b = FakeBridge::responding(json!({}));
+    b.script(
+        "get_performance_state",
+        vec![json!({"tracks": [], "scenes": []})],
+    );
+    b.script(
+        "get_context",
+        vec![json!({"session": {}, "tracks": [], "scenes": []})],
+    );
+    b.script(
+        "run",
+        vec![json!({"set": "/Users/p/Music/Smoke Project/Smoke.als"})],
+    );
+    let server = server_with(b.clone());
+    let text = context(&server).await;
+
+    assert!(
+        text.contains("has been saved as 'Smoke'"),
+        "the adoption is reported: {text}"
+    );
+    assert!(
+        text.contains("the answer phrase an octave up"),
+        "the overview came with it: {text}"
+    );
+    let moved = memory::load(&memory::key_for("/Users/p/Music/Smoke Project/Smoke.als"))
+        .expect("the notes moved to the song's own file");
+    assert_eq!(moved.notes.len(), 1, "nothing was lost in the move");
+    assert_eq!(moved.notes[0].note, "keep the sitar");
+    assert_eq!(moved.overview.len(), 1, "the overview moved too");
+    assert!(
+        memory::load(memory::PROVISIONAL_KEY).is_none(),
+        "the provisional file is gone, not left as a second copy"
+    );
+}
+
+/// A song that already has a memory is not waiting to be told what it is.
+///
+/// One `unsaved-set.json` serves the whole machine, so adopting it into any
+/// set that happens to be saved next would hand one song's notes to another.
+/// A set with a file of its own keeps it, and the provisional one is left
+/// where it is rather than merged or deleted.
+#[tokio::test]
+async fn a_song_that_already_remembers_is_not_given_the_provisional_notes() {
+    let _env = ENV.lock().await;
+    let _dir = state_dir();
+    let path = "/Users/p/Music/Smoke Project/Smoke.als";
+
+    // Smoke has its own memory, from a session of its own.
+    {
+        let b = FakeBridge::responding(json!({}));
+        b.script("run", vec![json!({"set": path})]);
+        let server = server_with(b.clone());
+        remember(&server, overview(json!({"what_it_is": "Smoke's own plan"}))).await;
+    }
+    // …and some other unsaved set left a provisional file behind.
+    {
+        let b = FakeBridge::responding(json!({}));
+        b.script("run", vec![json!({"set": ""})]);
+        let server = server_with(b.clone());
+        remember(&server, overview(json!({"what_it_is": "a different song"}))).await;
+    }
+
+    let b = FakeBridge::responding(json!({}));
+    b.script(
+        "get_performance_state",
+        vec![json!({"tracks": [], "scenes": []})],
+    );
+    b.script(
+        "get_context",
+        vec![json!({"session": {}, "tracks": [], "scenes": []})],
+    );
+    b.script("run", vec![json!({"set": path})]);
+    let server = server_with(b.clone());
+    let text = context(&server).await;
+
+    assert!(
+        text.contains("Smoke's own plan"),
+        "Smoke kept its own overview: {text}"
+    );
+    assert!(
+        !text.contains("a different song"),
+        "the other set's notes were not adopted: {text}"
+    );
+    assert!(
+        !text.contains("has been saved as"),
+        "nothing was adopted, so nothing is announced: {text}"
+    );
+    assert!(
+        memory::load(memory::PROVISIONAL_KEY).is_some(),
+        "the provisional file is left where it is, not deleted"
+    );
 }
 
 /// AC23: a renamed track keeps its notes, the move is reported, and where it
@@ -1113,8 +1251,15 @@ async fn the_file_holds_no_midi_note_no_audio_and_no_foreign_path() {
                 file.display()
             );
         }
-        // The only path is the set's own, and this set was never saved.
-        assert_eq!(parsed["set_path"], "", "no path but the set's own: {text}");
+        // The only path in the file is the set's own. The fake's set has
+        // never been saved, so that is the empty string; a real Live may
+        // have one open and saved, and then it is exactly that path and
+        // nothing else — never a sample, a recording or a project folder.
+        let set_path = parsed["set_path"].as_str().unwrap_or_default();
+        if !set_path.is_empty() {
+            let open = mcp_ableton_music_maker::memory::set_path_of_for_test(server.live());
+            assert_eq!(set_path, open, "no path but the set's own: {text}");
+        }
     }
 }
 
@@ -1235,4 +1380,55 @@ async fn reset_set_with_no_memory_still_points_at_the_overview() {
     assert!(!text.contains("The memory of"), "{text}");
     assert!(text.contains("This set now remembers nothing"), "{text}");
     assert!(text.contains("remember(overview:"), "{text}");
+}
+
+/// #69: placing into a row the producer has not named says which slot, not
+/// "into  ".
+///
+/// An unnamed scene parses to an empty section name, and the reply read
+/// "Placed 'sitar wide' on Sitar into  (2 notes)" — measured on Live 12.4.6,
+/// 2026-09-20.
+#[tokio::test]
+async fn placing_into_an_unnamed_row_names_the_slot() {
+    let _env = ENV.lock().await;
+    let _dir = state_dir();
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    set.build(&[("Sitar", "midi", "")]);
+    let sitar = set.track_index("Sitar").unwrap();
+    set.write_clip(
+        sitar,
+        0,
+        "answer phrase",
+        json!([{"pitch": 64, "start_time": 0.0, "duration": 1.0, "velocity": 100}]),
+    );
+
+    let r = stash(
+        &server,
+        StashParams {
+            action: "save".into(),
+            track: Some(json!("Sitar")),
+            clip: Some(json!("answer phrase")),
+            name: Some("sitar wide".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+
+    // Slot 3 is a row nobody has named.
+    let r = stash(
+        &server,
+        StashParams {
+            action: "place".into(),
+            clip: Some(json!("sitar wide")),
+            slot: Some(3),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let t = text_of(&r);
+    assert!(t.contains("into slot 3"), "the slot is named: {t}");
+    assert!(!t.contains("into  "), "no empty section name: {t}");
 }

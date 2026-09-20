@@ -27,6 +27,12 @@ pub struct Item {
     pub is_device: bool,
 }
 
+/// Bumped when a disk copy written by an older build cannot be trusted.
+/// Format 1 files were written by a build that stopped paging after the
+/// first 1000 items and stamped them `complete` (#68); they are indexes of
+/// a library that is mostly missing, so they are re-walked rather than read.
+pub const INDEX_FORMAT: u32 = 2;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Index {
     /// Live version plus the pack list, from the Remote Script
@@ -35,6 +41,9 @@ pub struct Index {
     pub complete: bool,
     /// When the walk finished (or the last page arrived), local time
     pub walked_at: String,
+    /// What wrote it. Absent (0) in files from before the format existed.
+    #[serde(default)]
+    pub format: u32,
 }
 
 /// The in-memory index plus whether a warm-up thread is running.
@@ -108,6 +117,15 @@ pub fn load_from_disk(key: &str) -> Option<Index> {
     }
     let bytes = std::fs::read(file_for(key)).ok()?;
     let ix: Index = serde_json::from_slice(&bytes).ok()?;
+    if ix.format < INDEX_FORMAT {
+        tracing::info!(
+            "the library index on disk was written by an older build ({} items, format {}); \
+             walking Live's browser again",
+            ix.items.len(),
+            ix.format
+        );
+        return None;
+    }
     (ix.key == key).then_some(ix)
 }
 
@@ -133,6 +151,10 @@ fn now_hhmm() -> String {
     chrono::Local::now().format("%H:%M").to_string()
 }
 
+/// How many items one `get_browser_index` exchange asks for. The script
+/// caps its own limit at 2000.
+const PAGE: usize = 1000;
+
 /// One page of the walk: merges into the in-memory index (loading the disk
 /// copy first when the key matches) and returns whether the index is complete.
 pub fn warm_up_step(live: &LiveState, budget_s: f64) -> Result<bool, String> {
@@ -156,7 +178,7 @@ pub fn warm_up_step(live: &LiveState, budget_s: f64) -> Result<bool, String> {
     let page = live
         .send_command(
             "get_browser_index",
-            Some(json!({"category": "all", "offset": offset, "limit": 1000, "budget_s": budget_s})),
+            Some(json!({"category": "all", "offset": offset, "limit": PAGE, "budget_s": budget_s})),
         )
         .map_err(|e| e.to_string())?;
     let key = page
@@ -164,10 +186,22 @@ pub fn warm_up_step(live: &LiveState, budget_s: f64) -> Result<bool, String> {
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
-    let complete = page
+    // `index_complete` says the browser *walk* finished — not that this page
+    // is the whole of it. The script walks everything, then answers with
+    // `items[offset:offset + limit]` and reports the full count as
+    // `total_walked`. Reading the flag as "done" stopped the paging after
+    // the first page, wrote 1000 items to disk marked complete, and every
+    // later session trusted that file — so "Boom Bap Kit" and "reverb" read
+    // as absent from a full Suite library (#68). The index is complete when
+    // the walk finished *and* every walked item has been fetched.
+    let walk_finished = page
         .get("index_complete")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let total_walked = page
+        .get("total_walked")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize);
     let items: Vec<Item> = page
         .get("items")
         .and_then(Value::as_array)
@@ -190,20 +224,30 @@ pub fn warm_up_step(live: &LiveState, budget_s: f64) -> Result<bool, String> {
             }
             *guard = Some(Index {
                 key: key.clone(),
+                format: INDEX_FORMAT,
                 ..Default::default()
             });
             guard.as_mut().unwrap()
         }
     };
+    let page_was_empty = items.is_empty();
     if offset == ix.items.len() {
         ix.items.extend(items);
     }
-    ix.complete = complete;
+    // Complete when the walk finished and nothing is left to fetch. A script
+    // too old to report `total_walked` has only the flag to go on, and a
+    // short page from such a script is the end of the walk.
+    let fetched_everything = match total_walked {
+        Some(total) => ix.items.len() >= total,
+        None => page_was_empty || ix.items.len() < offset + PAGE,
+    };
+    ix.complete = walk_finished && fetched_everything;
+    ix.format = INDEX_FORMAT;
     ix.walked_at = now_hhmm();
-    if complete {
+    if ix.complete {
         save_to_disk(ix);
     }
-    Ok(complete)
+    Ok(ix.complete)
 }
 
 /// Walk the index on a background thread, one small page per exchange so
@@ -293,6 +337,7 @@ mod tests {
             key: "k".into(),
             complete: true,
             walked_at: "14:12".into(),
+            format: INDEX_FORMAT,
             items: vec![
                 Item {
                     name: "Analog Bass Warm".into(),

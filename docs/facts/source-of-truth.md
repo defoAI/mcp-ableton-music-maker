@@ -107,7 +107,7 @@ matches on them.
 | MCP tools | **109** | `src/tools.rs` |
 | Test suites | **21** | `tests/*.rs` plus the crate's unit tests |
 | Remote Script commands | **98** | `ALL_REMOTE_COMMANDS` |
-| Remote Script version | **1.34.2** | `SCRIPT_VERSION` |
+| Remote Script version | **1.35.0** | `SCRIPT_VERSION` |
 | Server version | **2.0.0** | `Cargo.toml` |
 | Image size limit | **50** MB | `docker/verify-image.sh` |
 | Port | **9877** | `DEFAULT_PORT` |

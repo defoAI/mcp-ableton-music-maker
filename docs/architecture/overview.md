@@ -199,6 +199,11 @@ script is loaded and up to date. Both are for CI and the Mac app.
   `tools::resolve_clip_slot` turns a Session clip's name into its slot (read off
   `get_track_info`) and `tools::resolve_bar` turns a locator's name into a bar — the locators
   are read through the generic ops layer (`song.cue_points`), so no command was added for it.
+  That read needs a collection to come back as a collection, which is why script 1.35.0
+  renders Live's `Base.Vector` as a list: it is neither a `list` nor a `tuple`, and rendering
+  it as its repr gave the count 0, so every locator name was refused as "the set has none"
+  while Live held four. A read that fails now says so instead, rather than reading as an
+  empty set.
   Two rules hold all three: an **ambiguous** name lists every candidate and changes nothing,
   and a name that matches nothing is an error listing what does exist — it never falls back
   to an index, because reading "Drop" as slot 0 is how the wrong clip gets overwritten. The
@@ -222,7 +227,11 @@ script is loaded and up to date. Both are for CI and the Mac app.
   model of the track, capped at 8 KB), the **notes**, and a per-session **digest**, in
   `state_dir()/songs/<key>.json`, keyed on `song.file_path` read through the generic ops layer —
   no command, no `SCRIPT_VERSION` bump. A set that was never saved is filed provisionally and
-  the first Cmd+S renames the file and says so once.
+  the first Cmd+S renames the file and says so once — **looked for on disk, not only in the
+  running process**, because the session that wrote the notes is usually not the one running
+  when Live finally reports a path: the producer builds, closes the client, saves, and comes
+  back tomorrow. One provisional file serves the machine, so it is adopted only into a song
+  that has no memory of its own, and the adoption is announced rather than silent.
   **Retrieval is not a call**: the whole overview rides back in the `get_context` header, the
   call an agent makes first anyway, because a "load my memory" call is one an agent can fail to
   make and the turn it skips it on is the first turn of a session. That header is derived from
@@ -278,7 +287,12 @@ script is loaded and up to date. Both are for CI and the Mac app.
 - **The library index.** `src/library.rs` pages the script's browser walk in the background
   after the handshake (one-second pages so tool calls interleave on the shared socket),
   keeps it under `state_dir()/library/` and answers `search_browser` and every internal
-  lookup locally once complete.
+  lookup locally once complete. **Complete means the walk finished *and* every walked item
+  was fetched**: the script's `index_complete` reports only the first of those, and reading
+  it as both stopped the paging after one page — on a Live 12 Suite that left 1,000 of
+  12,036 items on disk marked complete, so "Boom Bap Kit" and "reverb" read as absent from a
+  library that had them. The file carries a format number so a truncated one written by an
+  older build is re-walked rather than believed.
 - **The sample index.** `src/samples.rs` asks the script once where samples live
   (`list_sample_folders`: the Core Library inside the application, the Packs and the User
   Library around the script's own folder, the open set's folder from `Song.file_path`, and
@@ -411,7 +425,9 @@ built, not that the right commands were sent to nobody.
 RackDevice/Chain/DrumPad, DeviceParameter, MixerDevice, Scene, CuePoint, AutomationEnvelope,
 MidiNote, Groove/GroovePool, both Views, Browser/BrowserItem and Application, with Live's
 semantics where the script depends on them: sequences are `Vector` (not a list and not a
-tuple, which is why `describe` types them `Vector` and `run … get` hands back a repr),
+tuple, which is why `describe` types them `Vector`; `run … get` renders one as a list from
+script 1.35.0, and the model stays sequence-shaped without becoming a list so it keeps
+telling `describe` the truth),
 `set_notes` adds,
 `get_notes` and `get_notes_extended` take their arguments in different orders, every track
 has one clip slot per scene, a return gives every track a send, a parameter outside its

@@ -36,6 +36,15 @@ DEFAULT_PORT = 9877
 DEFAULT_HOST = "127.0.0.1"
 BIND_FILE_NAME = "bind_host.txt"
 
+# Live 10 runs Python 2, where a text value may be `str` or `unicode`; Live 11+
+# runs Python 3, where it is `str` alone. Used to keep text out of the
+# sequence branch of `_jsonable` -- a string is a sequence, and splitting one
+# into characters would be worse than rendering it.
+try:
+    _STRING_TYPES = (str, unicode)  # noqa: F821 -- Python 2 only
+except NameError:
+    _STRING_TYPES = (str, bytes)
+
 
 def _configured_host():
     """The address to bind. Anything missing, unreadable or empty falls back
@@ -63,7 +72,7 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.34.2"
+SCRIPT_VERSION = "1.35.0"
 PROTOCOL_VERSION = 2
 # Where client sockets are read. "main_thread_tick": sockets are non-blocking
 # and drained from the same tick the clock runs on, so a message waits one
@@ -5571,6 +5580,20 @@ class AbletonMCP(ControlSurface):
             return value
         if isinstance(value, (list, tuple)):
             return [self._jsonable(v) for v in list(value)[:256]]
+        # Live's own sequences -- song.cue_points, song.tracks, scene.clip_slots
+        # -- are `Base.Vector`, which is neither a list nor a tuple. Rendering
+        # one as its repr ("<Base.Vector object at 0x...>") told a caller it had
+        # a value when what it had was an address, so a `run ... get` of a
+        # collection could not be counted or read. A Vector is a sequence: it
+        # is rendered as one. Strings are sequences too and must not be split
+        # into characters, so they are excluded by name rather than by type
+        # (Live 10 runs Python 2, where `str` is not `unicode`).
+        if not isinstance(value, _STRING_TYPES):
+            try:
+                if hasattr(value, "__len__") and hasattr(value, "__getitem__"):
+                    return [self._jsonable(v) for v in list(value)[:256]]
+            except Exception:
+                pass
         try:
             return "%s" % value
         except Exception:

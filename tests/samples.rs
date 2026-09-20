@@ -911,3 +911,60 @@ async fn batch_can_add_a_sample() {
         b.commands()
     );
 }
+
+/// #69: parking a sample must not rename the producer's track.
+///
+/// Putting a sample in a slot can rename the track it lands on. For
+/// `add_sample` into a section that is a commitment the producer asked for;
+/// for `stash save` it is not — parking an idea is the one action that is
+/// explicitly *not* a commitment, and the track's name is also where a role
+/// lives (`Sitar [lead]`, #63), so a stash save could eat a role suffix.
+/// Measured on Live 12.4.6, 2026-09-20: a track called `3-Audio` came back
+/// as `3-Snare Boom Bap`.
+#[tokio::test]
+async fn parking_a_sample_leaves_the_tracks_name_alone() {
+    let _lock = LOCK.lock().await;
+    let _state = temp_state();
+    let tree = sample_tree();
+    let b = bridge_for(&tree);
+    // Live renamed the track after the clip; the ops layer reads it back.
+    // `set` is the memory's identity read, `name` is the track's.
+    b.script("run", vec![json!({"set": "", "name": "Snare Boom Bap"})]);
+    b.script("create_scene", vec![json!({"index": 2})]);
+    b.script(
+        "place_sample",
+        vec![json!({
+            "track": "Snare Boom Bap", "track_index": 1, "where": "session", "slot": 2,
+            "name": "snare option", "beats_per_bar": 4.0, "duration_s": 1.0,
+            "file_path": "/packs/Chop and Swing/Samples/Cymbals/Crash Bright 01.aif",
+            "read_back": true
+        })],
+    );
+    let server = server_with(b.clone());
+
+    let r = server
+        .run(
+            &tools::STASH,
+            mcp_ableton_music_maker::memory::StashParams {
+                action: "save".into(),
+                track: Some(json!("FX")),
+                sample: Some("Crash Bright".into()),
+                name: Some("snare option".into()),
+                ..Default::default()
+            },
+            mcp_ableton_music_maker::memory::stash_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+
+    let put_back = b
+        .sent()
+        .into_iter()
+        .find(|(c, _)| c == "set_track_name")
+        .expect("the track's name was put back");
+    assert_eq!(put_back.1["track_index"], 1);
+    assert_eq!(
+        put_back.1["name"], "FX",
+        "the name the producer gave it, not the sample's"
+    );
+}

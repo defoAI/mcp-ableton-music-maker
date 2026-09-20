@@ -79,17 +79,25 @@
         "unavailable_features_has_listener"
       ],
       "reads": {
-        "average_process_usage": 0.7086381316184998,
-        "browser": "<Browser.Browser object at 0x12609d140>",
-        "control_surfaces": "<Base.ObjectVector object at 0x12609d6c0>",
+        "average_process_usage": 0.6404589414596558,
+        "browser": "<Browser.Browser object at 0x1656f65c0>",
+        "control_surfaces": [
+          "<AbletonMusicMaker.AbletonMCP object at 0x164746fd0>",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
         "current_dialog_button_count": 0,
         "current_dialog_message": "",
         "number_of_push_apps_running": 0,
         "open_dialog_count": 0,
         "ops": 10,
         "peak_process_usage": 0.8957812786102295,
-        "unavailable_features": "<Application.UnavailableFeatureVector object at 0x12609d140>",
-        "view": "<Application.View object at 0x12609d040>"
+        "unavailable_features": [],
+        "view": "<Application.View object at 0x1656f6ec0>"
       }
     },
     "application.view": {
@@ -227,13 +235,15 @@
       "reads": {
         "audio_effects": "<TPythonBrowserItem Audio Effects>",
         "clips": "<TPythonBrowserItem Clips>",
-        "colors": "<Browser.BrowserItemVector object at 0x1262efb40>",
+        "colors": [
+          "<TPythonBrowserItem Favorites>"
+        ],
         "current_project": "<TPythonBrowserItem Current Project>",
         "drums": "<TPythonBrowserItem Drums>",
         "filter_type": -1,
         "hotswap_target": null,
         "instruments": "<TPythonBrowserItem Instruments>",
-        "legacy_libraries": "<Browser.BrowserItemVector object at 0x1262efb40>",
+        "legacy_libraries": [],
         "max_for_live": "<TPythonBrowserItem Max for Live>",
         "midi_effects": "<TPythonBrowserItem MIDI Effects>",
         "ops": 17,
@@ -241,7 +251,7 @@
         "plugins": "<TPythonBrowserItem Plug-Ins>",
         "samples": "<TPythonBrowserItem Samples>",
         "sounds": "<TPythonBrowserItem Sounds>",
-        "user_folders": "<Browser.BrowserItemVector object at 0x1262efac0>",
+        "user_folders": [],
         "user_library": "<TPythonBrowserItem User Library>"
       }
     },
@@ -287,12 +297,36 @@
       "class": "BrowserItem",
       "methods": [],
       "reads": {
-        "children": "<Browser.BrowserItemVector object at 0x1262ef440>",
+        "children": [
+          "<TPythonBrowserItem Analog>",
+          "<TPythonBrowserItem Collision>",
+          "<TPythonBrowserItem Drift>",
+          "<TPythonBrowserItem Drum Rack>",
+          "<TPythonBrowserItem Drum Sampler>",
+          "<TPythonBrowserItem DS Clang>",
+          "<TPythonBrowserItem DS Clap>",
+          "<TPythonBrowserItem DS Cymbal>",
+          "<TPythonBrowserItem DS FM>",
+          "<TPythonBrowserItem DS HH>",
+          "<TPythonBrowserItem DS Kick>",
+          "<TPythonBrowserItem DS Snare>",
+          "<TPythonBrowserItem DS Tom>",
+          "<TPythonBrowserItem Electric>",
+          "<TPythonBrowserItem External Instrument>",
+          "<TPythonBrowserItem Impulse>",
+          "<TPythonBrowserItem Instrument Rack>",
+          "<TPythonBrowserItem Meld>",
+          "<TPythonBrowserItem Operator>",
+          "<TPythonBrowserItem Sampler>",
+          "<TPythonBrowserItem Simpler>",
+          "<TPythonBrowserItem Tension>",
+          "<TPythonBrowserItem Wavetable>"
+        ],
         "is_device": false,
         "is_folder": false,
         "is_loadable": false,
         "is_selected": false,
-        "iter_children": "<Browser.BrowserItemIterator object at 0x1262da7a0>",
+        "iter_children": "<Browser.BrowserItemIterator object at 0x1656d3250>",
         "name": "Instruments",
         "ops": 9,
         "source": "",
@@ -730,27 +764,27 @@
         "back_to_arranger": false,
         "can_capture_midi": false,
         "can_jump_to_next_cue": true,
-        "can_jump_to_prev_cue": true,
+        "can_jump_to_prev_cue": false,
         "can_redo": false,
-        "can_undo": true,
+        "can_undo": false,
         "clip_trigger_quantization": 4,
         "count_in_duration": 0,
-        "cue_points": "<Base.Vector object at 0x12609e6c0>",
-        "current_song_time": 12.0,
+        "cue_points": [],
+        "current_song_time": 0.0,
         "exclusive_arm": true,
         "exclusive_solo": true,
         "file_path": "",
         "groove_amount": 0.0,
-        "groove_pool": "<GroovePool.GroovePool object at 0x12609c7c0>",
+        "groove_pool": "<GroovePool.GroovePool object at 0x1657167c0>",
         "is_ableton_link_enabled": false,
         "is_ableton_link_start_stop_sync_enabled": false,
         "is_counting_in": false,
         "is_playing": false,
-        "last_event_time": 16.0,
+        "last_event_time": 24.0,
         "loop": false,
         "loop_length": 16.0,
-        "loop_start": 0.0,
-        "master_track": "<Track.Track object at 0x12609e6c0>",
+        "loop_start": 8.0,
+        "master_track": "<Track.Track object at 0x1657165c0>",
         "metronome": false,
         "midi_recording_quantization": 0,
         "name": "",
@@ -762,12 +796,32 @@
         "punch_out": false,
         "re_enable_automation_enabled": false,
         "record_mode": false,
-        "return_tracks": "<Base.Vector object at 0x12609c7c0>",
-        "root_note": 2,
-        "scale_intervals": "<Base.IntVector object at 0x12609e6c0>",
+        "return_tracks": [
+          "<Track.Track object at 0x165716740>",
+          "<Track.Track object at 0x165716ec0>"
+        ],
+        "root_note": 0,
+        "scale_intervals": [
+          0,
+          2,
+          4,
+          5,
+          7,
+          9,
+          11
+        ],
         "scale_mode": true,
-        "scale_name": "Minor",
-        "scenes": "<Base.Vector object at 0x12609c7c0>",
+        "scale_name": "Major",
+        "scenes": [
+          "<Scene.Scene object at 0x165716740>",
+          "<Scene.Scene object at 0x1657165c0>",
+          "<Scene.Scene object at 0x165716440>",
+          "<Scene.Scene object at 0x165716340>",
+          "<Scene.Scene object at 0x1657162c0>",
+          "<Scene.Scene object at 0x1657161c0>",
+          "<Scene.Scene object at 0x165716140>",
+          "<Scene.Scene object at 0x165715e40>"
+        ],
         "select_on_launch": true,
         "session_automation_record": true,
         "session_record": false,
@@ -775,14 +829,24 @@
         "signature_denominator": 4,
         "signature_numerator": 4,
         "song_length": 232.0,
-        "start_time": 12.0,
+        "start_time": 0.0,
         "swing_amount": 0.0,
-        "tempo": 124.0,
+        "tempo": 120.0,
         "tempo_follower_enabled": false,
-        "tracks": "<Base.Vector object at 0x12609e6c0>",
+        "tracks": [
+          "<Track.Track object at 0x165716740>",
+          "<Track.Track object at 0x1657165c0>",
+          "<Track.Track object at 0x165716440>",
+          "<Track.Track object at 0x165716340>"
+        ],
         "tuning_system": null,
-        "view": "<Song.View object at 0x12609c7c0>",
-        "visible_tracks": "<Base.Vector object at 0x12609fe40>"
+        "view": "<Song.View object at 0x165716340>",
+        "visible_tracks": [
+          "<Track.Track object at 0x165715e40>",
+          "<Track.Track object at 0x1657165c0>",
+          "<Track.Track object at 0x165716440>",
+          "<Track.Track object at 0x1657167c0>"
+        ]
       }
     },
     "song.cue_points[0]": {
@@ -1137,22 +1201,39 @@
         "take_lanes_has_listener"
       ],
       "reads": {
-        "available_input_routing_channels": "<Track.RoutingChannelVector object at 0x12609e8c0>",
-        "available_input_routing_types": "<Track.RoutingTypeVector object at 0x12609eac0>",
-        "available_output_routing_channels": "<Track.RoutingChannelVector object at 0x12609e8c0>",
-        "available_output_routing_types": "<Track.RoutingTypeVector object at 0x12609eac0>",
+        "available_input_routing_channels": [],
+        "available_input_routing_types": [
+          "<Track.RoutingType object at 0x11f882ae0>",
+          "<Track.RoutingType object at 0x164daa1f0>",
+          "<Track.RoutingType object at 0x164dab480>",
+          "<Track.RoutingType object at 0x164dab1c0>",
+          "<Track.RoutingType object at 0x164da9d20>",
+          "<Track.RoutingType object at 0x164da9900>"
+        ],
+        "available_output_routing_channels": [
+          "<Track.RoutingChannel object at 0x164de2ac0>",
+          "<Track.RoutingChannel object at 0x164de2a20>",
+          "<Track.RoutingChannel object at 0x164de2980>"
+        ],
+        "available_output_routing_types": [
+          "<Track.RoutingType object at 0x11f882ae0>",
+          "<Track.RoutingType object at 0x164da9900>",
+          "<Track.RoutingType object at 0x164daa1f0>",
+          "<Track.RoutingType object at 0x164dab480>",
+          "<Track.RoutingType object at 0x164dab1c0>"
+        ],
         "back_to_arranger": false,
         "can_be_armed": false,
         "can_be_frozen": false,
         "can_show_chains": false,
-        "clip_slots": "<Base.Vector object at 0x12609e640>",
-        "color": 11958214,
-        "color_index": 25,
+        "clip_slots": [],
+        "color": 49071,
+        "color_index": 20,
         "current_input_routing": "Ext. In",
         "current_input_sub_routing": "1/2",
         "current_output_routing": "Ext. Out",
         "current_output_sub_routing": "1/2",
-        "devices": "<Base.Vector object at 0x12609e8c0>",
+        "devices": [],
         "group_track": null,
         "has_audio_input": true,
         "has_audio_output": true,
@@ -1161,29 +1242,47 @@
         "input_meter_left": 0.0,
         "input_meter_level": 0.0,
         "input_meter_right": 0.0,
-        "input_routing_channel": "<Track.RoutingChannel object at 0x16cbe5b20>",
-        "input_routing_type": "<Track.RoutingType object at 0x16711a140>",
-        "input_routings": "<Base.StringVector object at 0x12609eac0>",
-        "input_sub_routings": "<Base.StringVector object at 0x12609e8c0>",
+        "input_routing_channel": "<Track.RoutingChannel object at 0x164de2ca0>",
+        "input_routing_type": "<Track.RoutingType object at 0x11f882ae0>",
+        "input_routings": [
+          "Ext. In",
+          "Resampling",
+          "3-Audio",
+          "4-Audio",
+          "A-Reverb",
+          "B-Delay",
+          "No Input"
+        ],
+        "input_sub_routings": [],
         "is_foldable": false,
         "is_frozen": false,
         "is_grouped": false,
         "is_part_of_selection": false,
         "is_showing_chains": false,
         "is_visible": true,
-        "mixer_device": "<MixerDevice.MixerDevice object at 0x12609e640>",
+        "mixer_device": "<MixerDevice.MixerDevice object at 0x165714ac0>",
         "name": "Main",
         "ops": 46,
         "output_meter_left": 0.0,
         "output_meter_level": 0.0,
         "output_meter_right": 0.0,
-        "output_routing_channel": "<Track.RoutingChannel object at 0x16cbe5b20>",
-        "output_routing_type": "<Track.RoutingType object at 0x16711a140>",
-        "output_routings": "<Base.StringVector object at 0x12609eac0>",
-        "output_sub_routings": "<Base.StringVector object at 0x12609e640>",
-        "performance_impact": 8.08736658655107e-05,
-        "take_lanes": "<Base.Vector object at 0x12609e640>",
-        "view": "<Track.View object at 0x12609e8c0>"
+        "output_routing_channel": "<Track.RoutingChannel object at 0x164de2ca0>",
+        "output_routing_type": "<Track.RoutingType object at 0x11f882ae0>",
+        "output_routings": [
+          "Ext. Out",
+          "Main",
+          "3-Audio",
+          "4-Audio",
+          "Sends Only"
+        ],
+        "output_sub_routings": [
+          "1/2",
+          "1",
+          "2"
+        ],
+        "performance_impact": 0.00017146809841506183,
+        "take_lanes": [],
+        "view": "<Track.View object at 0x165714740>"
       }
     },
     "song.master_track.mixer_device": {
@@ -1255,8 +1354,8 @@
         "panning": "C",
         "panning_mode": 0,
         "right_split_stereo": "50R",
-        "sends": "<Base.Vector object at 0x1262edc40>",
-        "song_tempo": "124.00",
+        "sends": [],
+        "song_tempo": "120.00",
         "track_activator": "On",
         "volume": "0.0 dB"
       }
@@ -1885,22 +1984,39 @@
         "take_lanes_has_listener"
       ],
       "reads": {
-        "available_input_routing_channels": "<Track.RoutingChannelVector object at 0x12608fbc0>",
-        "available_input_routing_types": "<Track.RoutingTypeVector object at 0x12608f6c0>",
-        "available_output_routing_channels": "<Track.RoutingChannelVector object at 0x12608fe40>",
-        "available_output_routing_types": "<Track.RoutingTypeVector object at 0x12608f8c0>",
+        "available_input_routing_channels": [],
+        "available_input_routing_types": [
+          "<Track.RoutingType object at 0x11f882ae0>",
+          "<Track.RoutingType object at 0x164e9fb60>",
+          "<Track.RoutingType object at 0x164e9fc10>",
+          "<Track.RoutingType object at 0x164e9fcc0>",
+          "<Track.RoutingType object at 0x164e9fd70>",
+          "<Track.RoutingType object at 0x164e9fe20>"
+        ],
+        "available_output_routing_channels": [
+          "<Track.RoutingChannel object at 0x1657082c0>"
+        ],
+        "available_output_routing_types": [
+          "<Track.RoutingType object at 0x11f882ae0>",
+          "<Track.RoutingType object at 0x164e9fe20>",
+          "<Track.RoutingType object at 0x164e9fb60>",
+          "<Track.RoutingType object at 0x164e9fc10>",
+          "<Track.RoutingType object at 0x164e9fcc0>"
+        ],
         "back_to_arranger": false,
         "can_be_armed": false,
         "can_be_frozen": false,
         "can_show_chains": false,
-        "clip_slots": "<Base.Vector object at 0x12608fbc0>",
-        "color": 9611263,
-        "color_index": 10,
+        "clip_slots": [],
+        "color": 2490280,
+        "color_index": 6,
         "current_input_routing": "Ext. In",
         "current_input_sub_routing": "1/2",
         "current_output_routing": "Master",
         "current_output_sub_routing": "",
-        "devices": "<Base.Vector object at 0x12608f8c0>",
+        "devices": [
+          "<Device.Device object at 0x1657017c0>"
+        ],
         "group_track": null,
         "has_audio_input": true,
         "has_audio_output": true,
@@ -1909,17 +2025,25 @@
         "input_meter_left": 0.0,
         "input_meter_level": 0.0,
         "input_meter_right": 0.0,
-        "input_routing_channel": "<Track.RoutingChannel object at 0x16714d620>",
-        "input_routing_type": "<Track.RoutingType object at 0x16711a140>",
-        "input_routings": "<Base.StringVector object at 0x12608fe40>",
-        "input_sub_routings": "<Base.StringVector object at 0x12608fac0>",
+        "input_routing_channel": "<Track.RoutingChannel object at 0x165708220>",
+        "input_routing_type": "<Track.RoutingType object at 0x11f882ae0>",
+        "input_routings": [
+          "Ext. In",
+          "Resampling",
+          "3-Audio",
+          "4-Audio",
+          "B-Delay",
+          "Main",
+          "No Input"
+        ],
+        "input_sub_routings": [],
         "is_foldable": false,
         "is_frozen": false,
         "is_grouped": false,
         "is_part_of_selection": false,
         "is_showing_chains": false,
         "is_visible": true,
-        "mixer_device": "<MixerDevice.MixerDevice object at 0x12608fbc0>",
+        "mixer_device": "<MixerDevice.MixerDevice object at 0x1657017c0>",
         "mute": false,
         "muted_via_solo": false,
         "name": "A-Reverb",
@@ -1927,14 +2051,22 @@
         "output_meter_left": 0.0,
         "output_meter_level": 0.0,
         "output_meter_right": 0.0,
-        "output_routing_channel": "<Track.RoutingChannel object at 0x16714d620>",
-        "output_routing_type": "<Track.RoutingType object at 0x16711a140>",
-        "output_routings": "<Base.StringVector object at 0x12608f6c0>",
-        "output_sub_routings": "<Base.StringVector object at 0x12608fbc0>",
+        "output_routing_channel": "<Track.RoutingChannel object at 0x165708220>",
+        "output_routing_type": "<Track.RoutingType object at 0x11f882ae0>",
+        "output_routings": [
+          "Ext. Out",
+          "Main",
+          "3-Audio",
+          "4-Audio",
+          "Sends Only"
+        ],
+        "output_sub_routings": [
+          ""
+        ],
         "performance_impact": 0.0,
         "solo": false,
-        "take_lanes": "<Base.Vector object at 0x12608fac0>",
-        "view": "<Track.View object at 0x12608fbc0>"
+        "take_lanes": [],
+        "view": "<Track.View object at 0x1657017c0>"
       }
     },
     "song.return_tracks[0].devices[0]": {
@@ -2032,9 +2164,43 @@
         "latency_in_samples": 0,
         "name": "Reverb",
         "ops": 13,
-        "parameters": "<Device.ATimeableValueVector object at 0x1262ea260>",
+        "parameters": [
+          "On",
+          "2.50 ms",
+          "On",
+          "On",
+          "830 Hz",
+          "5.85 ",
+          "On",
+          "0.25 Hz",
+          "3.00 ",
+          "0.50 ",
+          "On",
+          "Shelf",
+          "4.50 kHz",
+          "0.70 ",
+          "Off",
+          "90.0 Hz",
+          "0.75 ",
+          "On",
+          "0.02 Hz",
+          "0.02 ",
+          "2.50 s",
+          "60 %",
+          "40 %",
+          "Off",
+          "On",
+          "On",
+          "100.00 ",
+          "None",
+          "100.00 ",
+          "High",
+          "0.0 dB",
+          "0.0 dB",
+          "100 %"
+        ],
         "type": 2,
-        "view": "<Device.View object at 0x12608fd40>"
+        "view": "<Device.View object at 0x165702940>"
       }
     },
     "song.return_tracks[0].mixer_device": {
@@ -2097,7 +2263,10 @@
         "panning": "C",
         "panning_mode": 0,
         "right_split_stereo": "50R",
-        "sends": "<Base.Vector object at 0x12608f7c0>",
+        "sends": [
+          "-inf dB",
+          "-inf dB"
+        ],
         "track_activator": "On",
         "volume": "0.0 dB"
       }
@@ -2190,10 +2359,15 @@
         "time_signature_numerator_has_listener"
       ],
       "reads": {
-        "clip_slots": "<Base.Vector object at 0x12609d0c0>",
+        "clip_slots": [
+          "<ClipSlot.ClipSlot object at 0x1657030c0>",
+          "<ClipSlot.ClipSlot object at 0x165703140>",
+          "<ClipSlot.ClipSlot object at 0x1657031c0>",
+          "<ClipSlot.ClipSlot object at 0x165703240>"
+        ],
         "color": 0,
         "color_index": null,
-        "is_empty": false,
+        "is_empty": true,
         "is_triggered": false,
         "name": "",
         "ops": 11,
@@ -2573,24 +2747,61 @@
       ],
       "reads": {
         "arm": false,
-        "arrangement_clips": "<Base.Vector object at 0x1262eefc0>",
-        "available_input_routing_channels": "<Track.RoutingChannelVector object at 0x1262ef140>",
-        "available_input_routing_types": "<Track.RoutingTypeVector object at 0x1262ef1c0>",
-        "available_output_routing_channels": "<Track.RoutingChannelVector object at 0x1262ef240>",
-        "available_output_routing_types": "<Track.RoutingTypeVector object at 0x1262ef2c0>",
+        "arrangement_clips": [],
+        "available_input_routing_channels": [
+          "<Track.RoutingChannel object at 0x164de16c0>",
+          "<Track.RoutingChannel object at 0x164de1940>",
+          "<Track.RoutingChannel object at 0x164de1440>",
+          "<Track.RoutingChannel object at 0x164de13a0>",
+          "<Track.RoutingChannel object at 0x164de1300>",
+          "<Track.RoutingChannel object at 0x164de0fe0>",
+          "<Track.RoutingChannel object at 0x164debba0>",
+          "<Track.RoutingChannel object at 0x164deb6a0>",
+          "<Track.RoutingChannel object at 0x164deb4c0>",
+          "<Track.RoutingChannel object at 0x164debb00>",
+          "<Track.RoutingChannel object at 0x164de19e0>",
+          "<Track.RoutingChannel object at 0x164de1b20>",
+          "<Track.RoutingChannel object at 0x164de1a80>",
+          "<Track.RoutingChannel object at 0x164de1bc0>",
+          "<Track.RoutingChannel object at 0x164de1c60>",
+          "<Track.RoutingChannel object at 0x164de1d00>",
+          "<Track.RoutingChannel object at 0x164de1da0>"
+        ],
+        "available_input_routing_types": [
+          "<Track.RoutingType object at 0x11f882ae0>",
+          "<Track.RoutingType object at 0x164dab1c0>",
+          "<Track.RoutingType object at 0x164da9900>",
+          "<Track.RoutingType object at 0x164daa1f0>"
+        ],
+        "available_output_routing_channels": [
+          "<Track.RoutingChannel object at 0x164deb6a0>"
+        ],
+        "available_output_routing_types": [
+          "<Track.RoutingType object at 0x11f882ae0>",
+          "<Track.RoutingType object at 0x164daa1f0>"
+        ],
         "back_to_arranger": false,
         "can_be_armed": true,
         "can_be_frozen": false,
         "can_show_chains": false,
-        "clip_slots": "<Base.Vector object at 0x1262eef40>",
-        "color": 16773172,
-        "color_index": 17,
+        "clip_slots": [
+          "<ClipSlot.ClipSlot object at 0x165750140>",
+          "<ClipSlot.ClipSlot object at 0x1657516c0>",
+          "<ClipSlot.ClipSlot object at 0x164d8f340>",
+          "<ClipSlot.ClipSlot object at 0x164d8d0c0>",
+          "<ClipSlot.ClipSlot object at 0x1657141c0>",
+          "<ClipSlot.ClipSlot object at 0x165714340>",
+          "<ClipSlot.ClipSlot object at 0x1657145c0>",
+          "<ClipSlot.ClipSlot object at 0x1657149c0>"
+        ],
+        "color": 6094824,
+        "color_index": 7,
         "current_input_routing": "Ext: All Ins",
         "current_input_sub_routing": "",
         "current_monitoring_state": 1,
         "current_output_routing": "None",
         "current_output_sub_routing": "",
-        "devices": "<Base.Vector object at 0x1262ef140>",
+        "devices": [],
         "fired_slot_index": -1,
         "group_track": null,
         "has_audio_input": false,
@@ -2599,31 +2810,59 @@
         "has_midi_output": true,
         "implicit_arm": false,
         "input_meter_level": 0.0,
-        "input_routing_channel": "<Track.RoutingChannel object at 0x1262f23e0>",
-        "input_routing_type": "<Track.RoutingType object at 0x16711a140>",
-        "input_routings": "<Base.StringVector object at 0x1262eefc0>",
-        "input_sub_routings": "<Base.StringVector object at 0x1262ef2c0>",
+        "input_routing_channel": "<Track.RoutingChannel object at 0x164debba0>",
+        "input_routing_type": "<Track.RoutingType object at 0x11f882ae0>",
+        "input_routings": [
+          "All Ins",
+          "Computer Keyboard",
+          "2-MIDI",
+          "No Input"
+        ],
+        "input_sub_routings": [
+          "All Channels",
+          "Ch. 1",
+          "Ch. 2",
+          "Ch. 3",
+          "Ch. 4",
+          "Ch. 5",
+          "Ch. 6",
+          "Ch. 7",
+          "Ch. 8",
+          "Ch. 9",
+          "Ch. 10",
+          "Ch. 11",
+          "Ch. 12",
+          "Ch. 13",
+          "Ch. 14",
+          "Ch. 15",
+          "Ch. 16"
+        ],
         "is_foldable": false,
         "is_frozen": false,
         "is_grouped": false,
-        "is_part_of_selection": false,
+        "is_part_of_selection": true,
         "is_showing_chains": false,
         "is_visible": true,
-        "mixer_device": "<MixerDevice.MixerDevice object at 0x1262ef040>",
+        "mixer_device": "<MixerDevice.MixerDevice object at 0x1657516c0>",
         "mute": false,
         "muted_via_solo": false,
         "name": "1-MIDI",
         "ops": 51,
         "output_meter_level": 0.0,
-        "output_routing_channel": "<Track.RoutingChannel object at 0x1262f23e0>",
-        "output_routing_type": "<Track.RoutingType object at 0x16711a140>",
-        "output_routings": "<Base.StringVector object at 0x1262ef2c0>",
-        "output_sub_routings": "<Base.StringVector object at 0x1262eefc0>",
+        "output_routing_channel": "<Track.RoutingChannel object at 0x164debba0>",
+        "output_routing_type": "<Track.RoutingType object at 0x11f882ae0>",
+        "output_routings": [
+          "2-MIDI",
+          "No Output"
+        ],
+        "output_sub_routings": [
+          ""
+        ],
         "performance_impact": 0.0,
         "playing_slot_index": -1,
         "solo": false,
-        "take_lanes": "<Base.Vector object at 0x1262ef1c0>",
-        "view": "<Track.View object at 0x1262ef0c0>"
+        "take_lanes": [],
+        "view": "<Track.View object at 0x164d8d0c0>"
       }
     },
     "song.tracks[0].clip_slots[0]": {
@@ -2802,7 +3041,10 @@
         "panning": "C",
         "panning_mode": 0,
         "right_split_stereo": "50R",
-        "sends": "<Base.Vector object at 0x1262ef9c0>",
+        "sends": [
+          "-inf dB",
+          "-inf dB"
+        ],
         "track_activator": "On",
         "volume": "0.0 dB"
       }
@@ -3153,17 +3395,17 @@
         "detail_clip": null,
         "draw_mode": false,
         "follow_song": true,
-        "highlighted_clip_slot": "<ClipSlot.ClipSlot object at 0x12609e640>",
+        "highlighted_clip_slot": "<ClipSlot.ClipSlot object at 0x165716ec0>",
         "mod_mapping_device": null,
         "mod_mapping_parameter": null,
         "ops": 10,
         "selected_chain": null,
         "selected_parameter": null,
-        "selected_scene": "<Scene.Scene object at 0x12609dfc0>",
-        "selected_track": "<Track.Track object at 0x12609e640>"
+        "selected_scene": "<Scene.Scene object at 0x1657160c0>",
+        "selected_track": "<Track.Track object at 0x165716ec0>"
       }
     }
   },
-  "recorded_at": "2026-09-20T13:11:24Z",
-  "script_version": "1.34.2"
+  "recorded_at": "2026-09-20T16:30:13Z",
+  "script_version": "1.35.0"
 }
