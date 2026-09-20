@@ -191,10 +191,20 @@ class Parameters(unittest.TestCase):
         self.assertEqual(activator.value, 0.0)
         self.assertEqual(activator.str_for_value(activator.value), "Off")
 
-    def test_value_string_and_str_for_value_agree_on_the_current_value(self):
-        p = self.reverb.parameters[0]
-        p.value = 0.5
-        self.assertEqual(p.value_string, p.str_for_value(0.5))
+    def test_live_has_no_value_string_so_the_model_has_none_either(self):
+        """The script reads `param.value_string` as a fallback and says in
+        its own comment that it "is not in the LOM". A real Live 12.4.6
+        agrees: `describe` on a parameter lists `str_for_value` and no
+        `value_string`. The model matches Live, so the fallback is exercised
+        here exactly as it is there."""
+        volume = self.song.tracks[0].mixer_device.volume
+        with self.assertRaises(AttributeError):
+            volume.value_string
+        # What Live does give: the display for any value.
+        self.assertEqual(volume.str_for_value(0.85), "0.0 dB")
+        # And printing the parameter gives that display, which is what
+        # `run … get` on it hands back.
+        self.assertEqual(str(volume), volume.str_for_value(volume.value))
 
 
 class Fader(unittest.TestCase):
@@ -203,22 +213,16 @@ class Fader(unittest.TestCase):
     Cycling '74's reference does not document it, so it was measured on
     2026-09-20 against Live 12.4.6 by asking
     `song.tracks[0].mixer_device.volume.str_for_value` at twenty-one fader
-    positions over a `run` batch:
+    positions over a `run` batch. Above 0.4 it is a straight 40 dB per
+    unit; below it a quadratic. Both reproduce every measured point to the
+    decimal Live prints, and Live prints one — except where a value needs
+    more, as 0.6999869 does ("-6.001 dB").
 
-        0.05 -57.2   0.20 -34.4   0.40 -18.0   0.70  -6.0   0.90  +2.0
-        0.10 -48.6   0.25 -28.8   0.50 -14.0   0.85   0.0   1.00  +6.0
-        0.15 -41.0   0.30 -24.2   0.60 -10.0   0.75  -4.0
+    The five points in `src/song.rs`'s
+    `lives_own_curve_converts_a_meter_reading` (`[0.4,-30] [0.7,-12]`) are
+    **not** this curve: they are synthetic fixture data for `MeterScale`,
+    which takes its real points from `get_meter_scale` at run time."""
 
-    Above 0.4 that is a straight 40 dB per unit; below it a quadratic. Both
-    reproduce every measured point to the decimal Live prints, and Live
-    prints one decimal.
-
-    The five points in `src/song.rs`'s `lives_own_curve_converts_a_meter_reading`
-    (`[0.4,-30] [0.7,-12]`) are **not** this curve — they are synthetic
-    fixture data for `MeterScale`, which takes its real points from the
-    script's `get_meter_scale` at run time. Nothing converts with them."""
-
-    # What Live printed, position by position.
     MEASURED = ((0.05, -57.2), (0.10, -48.6), (0.15, -41.0), (0.20, -34.4),
                 (0.25, -28.8), (0.30, -24.2), (0.35, -20.6), (0.40, -18.0),
                 (0.45, -16.0), (0.50, -14.0), (0.55, -12.0), (0.60, -10.0),
@@ -326,22 +330,34 @@ class Exceptions(unittest.TestCase):
             with self.assertRaises(AttributeError):
                 setattr(obj, attr, 1)
 
-    def test_a_track_that_cannot_be_armed_refuses_the_arm(self):
-        """`ensure_capture_track` depends on this: Live raises where
-        `can_be_armed` is False."""
-        master = self.song.master_track
-        self.assertFalse(master.can_be_armed)
-        # Live refuses the write rather than ignoring it. The model raises
-        # RuntimeError; which exception Live 12.4.6 actually raises is one
-        # of the things the transcript differential (#53 section E) settles.
-        with self.assertRaises(RuntimeError):
-            master.arm = True
+    def test_the_master_and_the_returns_have_no_arm_at_all(self):
+        """`ensure_capture_track` checks `can_be_armed` before touching
+        `arm`, and this is why: on Live 12.4.6 neither the master nor a
+        return has an `arm` member — `describe song.master_track` lists
+        none, and reading it raises. The check is not belt-and-braces, it
+        is the only thing standing between the script and an
+        AttributeError."""
+        for track in (self.song.master_track, self.song.return_tracks[0]):
+            self.assertFalse(track.can_be_armed)
+            with self.assertRaises(AttributeError):
+                track.arm
+            with self.assertRaises(AttributeError):
+                track.arm = True
+
+    def test_a_midi_track_arms_and_arming_one_disarms_the_rest(self):
+        """exclusive_arm is on in a new set."""
+        first, second = self.song.tracks[0], self.song.tracks[1]
+        first.arm = True
+        self.assertTrue(first.arm)
+        second.arm = True
+        self.assertTrue(second.arm)
+        self.assertFalse(first.arm, "exclusive_arm disarms the other track")
 
 
 class Cues(unittest.TestCase):
-    """`set_or_delete_cue()` toggles a cue AT THE PLAY POSITION, which is
-    why `_create_locator` is two-phase (#25): the playhead move is applied
-    asynchronously and the second step must see it."""
+    """`set_or_delete_cue` toggles a locator at the play position — Live
+    gives no way to put one anywhere else, which is what `create_locator`'s
+    two-phase move is for (#25)."""
 
     def setUp(self):
         self.song = fake_live.default_set()

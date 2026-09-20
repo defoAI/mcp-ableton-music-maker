@@ -42,9 +42,18 @@ VIEW_CLASSES = (fake_live.SongView, fake_live.ApplicationView)
 # descriptors, so those are checked on an instance.
 INSTANCES = {"Note": lambda: fake_live.MidiNote(60, 0.0, 1.0)}
 
-# Members the script feature-detects and the model leaves out on purpose,
-# so the fallback path runs too. Keep this empty unless a test needs it.
-DELIBERATELY_ABSENT = set()
+# Members the script reaches for that a real Live does not have. The script
+# probes each behind `getattr`/`try`, and the model matches Live rather than
+# the probe — so the fallback path is the one that runs, here as in Live.
+# Verified against Live 12.4.6 on 2026-09-20 with
+# `describe song.tracks[0].mixer_device.volume`: neither is in `attrs`.
+DELIBERATELY_ABSENT = {
+    # The script's own comment says so: "value_string is not in the LOM, so
+    # it is only a fallback for the current value."
+    ("DeviceParameter", "value_string"),
+    # Live has `automation_state`; `is_automated` is not on DeviceParameter.
+    ("DeviceParameter", "is_automated"),
+}
 
 
 def load_surface():

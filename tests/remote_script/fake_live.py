@@ -138,10 +138,27 @@ class RoutingTypeVector(Vector):
     """Live's own name for the vector of routing types."""
 
 
+class ATimeableValueVector(Vector):
+    """What Live calls a device's `parameters`."""
+
+
+class BrowserItemVector(Vector):
+    """What Live calls a browser item's `children` and `user_folders`."""
+
+
 # Live's Quantization enum values. Module level on purpose: Live's Song has
 # no `Q_BAR` attribute, so a model that put them on the class would describe
 # a Live that does not exist. `live_module()` hands these to the script as
 # `Live.Song.Quantization`.
+class Quantization(int):
+    """Live's Quantization enum: an int that `describe` types
+    `Quantization`, which is what `song.clip_trigger_quantization` is."""
+
+
+class RecordingQuantization(int):
+    """Live's MIDI recording quantization enum."""
+
+
 Q_NONE, Q_8_BARS, Q_4_BARS, Q_2_BARS = 0, 1, 2, 3
 Q_BAR, Q_HALF, Q_HALF_TRIPLET, Q_QUARTER = 4, 5, 6, 7
 Q_QUARTER_TRIPLET, Q_EIGHTH, Q_EIGHTH_TRIPLET = 8, 9, 10
@@ -167,6 +184,16 @@ def live_prop(attr, readonly=False, cast=None, doc=None):
         setattr(self, storage, cast(value) if cast is not None else value)
 
     return property(getter, setter, doc=doc)
+
+
+def _vector_seq(attr, kind, doc=None):
+    """A Vector under the subclass name Live gives it."""
+    storage = "_" + attr
+
+    def getter(self):
+        return kind(getattr(self, storage))
+
+    return property(getter, doc=doc)
 
 
 def _routing_seq(attr, doc=None):
@@ -507,13 +534,20 @@ class DeviceParameter(LiveObject):
     max = live_prop("max", readonly=True)
     default_value = live_prop("default_value", readonly=True)
     is_quantized = live_prop("is_quantized", readonly=True)
-    value_items = seq_prop("value_items")
     automation_state = live_prop("automation_state", readonly=True)
     is_enabled = live_prop("is_enabled", readonly=True)
 
     @property
-    def is_automated(self):
-        return self._automation_state != AUTOMATION_NONE
+    def value_items(self):
+        """Only a quantized parameter has them, as in Live."""
+        if not self._is_quantized:
+            raise AttributeError("'value_items' is only on a quantized parameter")
+        return Vector(self._value_items)
+
+    def __str__(self):
+        """`run … get` on a parameter gives its display, because that is
+        what Live's DeviceParameter prints: "0.0 dB", "C", "Mono"."""
+        return self._display(self._value)
 
     @property
     def value(self):
@@ -542,10 +576,6 @@ class DeviceParameter(LiveObject):
     def str_for_value(self, value):
         return self._display(value)
 
-    @property
-    def value_string(self):
-        return self._display(self._value)
-
     def re_enable_automation(self):
         if self._automation_state == AUTOMATION_OVERRIDDEN:
             self._automation_state = AUTOMATION_PLAYING
@@ -556,12 +586,15 @@ class DeviceParameter(LiveObject):
 class MixerDevice(LiveObject):
     """Live.MixerDevice.MixerDevice: the fader strip every track has."""
 
-    def __init__(self, song, sends=0):
+    def __init__(self, song, sends=0, is_master=False):
         LiveObject.__init__(self)
         self._song = song
+        self._is_master = is_master
         self._volume = DeviceParameter("Volume", 0.85, 0.0, 1.0, display_db, original_name="Track Volume")
         self._panning = DeviceParameter("Panning", 0.0, -1.0, 1.0, display_pan, original_name="Track Panning")
-        self._crossfader = DeviceParameter("Crossfader", 0.0, -1.0, 1.0, display_pan)
+        # Live shows the crossfader as a number, not as L/C/R.
+        self._crossfader = DeviceParameter(
+            "Crossfader", 0.0, -1.0, 1.0, lambda v: "%d" % int(round(float(v) * 50)))
         self._track_activator = DeviceParameter("Track Activator", 1.0, 0.0, 1.0,
                                                 value_items=("Off", "On"))
         self._sends = [self._new_send(i) for i in range(sends)]
@@ -579,7 +612,12 @@ class MixerDevice(LiveObject):
 
     volume = live_prop("volume", readonly=True)
     panning = live_prop("panning", readonly=True)
-    crossfader = live_prop("crossfader", readonly=True)
+    @property
+    def crossfader(self):
+        """Live puts the crossfader on the master mixer and nowhere else."""
+        if not self._is_master:
+            raise AttributeError("the crossfader is on the master mixer only")
+        return self._crossfader
     track_activator = live_prop("track_activator", readonly=True)
     crossfade_assign = live_prop("crossfade_assign", cast=int)
 
@@ -622,9 +660,15 @@ class Device(LiveObject):
     class_display_name = live_prop("class_display_name", readonly=True)
     type = live_prop("type", readonly=True)
     is_active = live_prop("is_active", readonly=True)
-    parameters = seq_prop("parameters")
-    chains = seq_prop("chains")
+    parameters = _vector_seq("parameters", ATimeableValueVector)
     can_have_chains = live_prop("can_have_chains", readonly=True)
+
+    @property
+    def chains(self):
+        """Live gives `chains` to a rack; a plain device has no such member."""
+        if not self._can_have_chains:
+            raise AttributeError("'%s' is not a rack" % self._name)
+        return Vector(self._chains)
     can_have_drum_pads = live_prop("can_have_drum_pads", readonly=True)
     canonical_parent = live_prop("canonical_parent", readonly=True)
 
@@ -1128,6 +1172,63 @@ def _nearest_color_index(value):
             best, best_d = i, d
     return best
 
+
+def _not_on_master_mixer(prop):
+    """`crossfade_assign` is on a track's mixer, not the master's."""
+    def getter(self):
+        if getattr(self, "_is_master", False):
+            raise AttributeError("the master mixer has no crossfade_assign")
+        return prop.fget(self)
+
+    def setter(self, value):
+        if getattr(self, "_is_master", False):
+            raise AttributeError("the master mixer has no crossfade_assign")
+        prop.fset(self, value)
+
+    return property(getter, setter)
+
+
+def _not_on_master(prop):
+    """A member every track has except the master: `mute` and `solo`. A
+    return has both; the master has neither. Verified 2026-09-20."""
+    def getter(self):
+        if self._kind == "master":
+            raise AttributeError("the master track has no such member")
+        return prop.fget(self)
+
+    def setter(self, value):
+        if self._kind == "master":
+            raise AttributeError("the master track has no such member")
+        prop.fset(self, value)
+
+    return property(getter, setter)
+
+
+def _playable_only(prop):
+    """A member Live puts on a MIDI or audio track and nowhere else.
+
+    The master and the returns are Tracks without the channel strip: no
+    `arm`, `arrangement_clips`, `current_monitoring_state`,
+    `playing_slot_index`, `fired_slot_index` or `implicit_arm`. `describe`
+    on 12.4.6 lists none of them for either, and `describe` skips what
+    raises. Verified 2026-09-20.
+    """
+    def getter(self):
+        if self._kind not in ("midi", "audio"):
+            raise AttributeError("'%s' is only on a MIDI or audio track" % self._kind)
+        return prop.fget(self)
+
+    if prop.fset is None:
+        return property(getter)
+
+    def setter(self, value):
+        if self._kind not in ("midi", "audio"):
+            raise AttributeError("'%s' is only on a MIDI or audio track" % self._kind)
+        prop.fset(self, value)
+
+    return property(getter, setter)
+
+
 class Track(LiveObject):
     """Live.Track.Track. `kind` is "midi", "audio", "return" or "master";
     the two last have no clip slots."""
@@ -1143,7 +1244,9 @@ class Track(LiveObject):
         self._named = bool(name) and kind in ("return", "master")
         self._kind = kind
         self._has_midi_input = kind == "midi"
-        self._has_audio_input = kind == "audio"
+        # Live's master and return tracks take audio in; only a MIDI track
+        # does not. Verified 2026-09-20 against 12.4.6.
+        self._has_audio_input = kind in ("audio", "return", "master")
         self._has_audio_output = True
         self._has_midi_output = False
         self._can_be_armed = kind in ("midi", "audio")
@@ -1154,7 +1257,9 @@ class Track(LiveObject):
         self._clip_slots = []
         self._arrangement_clips = []
         self._devices = []
-        self._mixer_device = MixerDevice(song, sends=len(song._return_tracks) if kind in ("midi", "audio") else 0)
+        self._mixer_device = MixerDevice(
+            song, sends=len(song._return_tracks) if kind in ("midi", "audio") else 0,
+            is_master=(kind == "master"))
         self._mute = False
         self._solo = False
         self._arm = False
@@ -1170,8 +1275,6 @@ class Track(LiveObject):
         self._output_routing_type = self._available_output_routing_types[0]
         self._playing_slot_index = -1
         self._fired_slot_index = -1
-        self._output_meter_left = 0.0
-        self._output_meter_right = 0.0
         self._output_meter_level = 0.0
         self._input_meter_level = 0.0
         self._implicit_arm = False
@@ -1217,6 +1320,7 @@ class Track(LiveObject):
     mute = live_prop("mute", cast=bool)
     solo = live_prop("solo", cast=bool)
     color_index = live_prop("color_index", cast=int)
+
     current_monitoring_state = live_prop("current_monitoring_state", cast=int)
     available_input_routing_types = _routing_seq("available_input_routing_types")
     available_output_routing_types = _routing_seq("available_output_routing_types")
@@ -1582,10 +1686,11 @@ class BrowserItem(LiveObject):
     is_loadable = live_prop("is_loadable", readonly=True)
     is_selected = live_prop("is_selected", readonly=True)
     source = live_prop("source", readonly=True)
-    children = seq_prop("children")
+    children = _vector_seq("children", BrowserItemVector)
 
-    def iter_children(self):
-        return iter(self._children)
+    def __str__(self):
+        """Live prints a browser item as `<TPythonBrowserItem Drums>`."""
+        return "<TPythonBrowserItem %s>" % self._name
 
     def _find(self, uri):
         if self._uri == uri:
@@ -1608,7 +1713,10 @@ class Browser(LiveObject):
 
     def _root(name):
         def getter(self):
-            return self._roots[name]
+            value = self._roots[name]
+            # Live hands back a BrowserItemVector where the root is a list
+            # of places rather than one item (user_folders).
+            return BrowserItemVector(value) if isinstance(value, list) else value
         return property(getter)
 
     instruments = _root("instruments")
@@ -1754,8 +1862,8 @@ class Song(LiveObject):
         self._session_record = False
         self._session_automation_record = False
         self._metronome = False
-        self._clip_trigger_quantization = Q_BAR
-        self._midi_recording_quantization = 0
+        self._clip_trigger_quantization = Quantization(Q_BAR)
+        self._midi_recording_quantization = RecordingQuantization(0)
         self._root_note = 0
         self._scale_name = "Major"
         # Live 12 ships with the global scale switched on (C Major):
@@ -1801,8 +1909,8 @@ class Song(LiveObject):
     session_record = live_prop("session_record", cast=bool)
     session_automation_record = live_prop("session_automation_record", cast=bool)
     metronome = live_prop("metronome", cast=bool)
-    clip_trigger_quantization = live_prop("clip_trigger_quantization", cast=int)
-    midi_recording_quantization = live_prop("midi_recording_quantization", cast=int)
+    clip_trigger_quantization = live_prop("clip_trigger_quantization", cast=Quantization)
+    midi_recording_quantization = live_prop("midi_recording_quantization", cast=RecordingQuantization)
     root_note = live_prop("root_note", cast=int)
     scale_name = live_prop("scale_name", cast=str)
     scale_mode = live_prop("scale_mode", cast=bool)
@@ -2337,5 +2445,16 @@ del _cls
 
 # Live calls both of them `View`; the model needs two classes but only one
 # name, and `describe` reports `type(obj).__name__`.
-SongView.__name__ = "View"
-ApplicationView.__name__ = "View"
+SongView.__name__ = SongView.__qualname__ = "View"
+ApplicationView.__name__ = ApplicationView.__qualname__ = "View"
+
+
+# The channel strip Live gives a MIDI or audio track and withholds from
+# the master and the returns. `mute` and `solo` stay: a return has both.
+for _name in ("arm", "arrangement_clips", "current_monitoring_state",
+              "playing_slot_index", "fired_slot_index", "implicit_arm"):
+    setattr(Track, _name, _playable_only(getattr(Track, _name)))
+for _name in ("mute", "solo"):
+    setattr(Track, _name, _not_on_master(getattr(Track, _name)))
+del _name
+MixerDevice.crossfade_assign = _not_on_master_mixer(MixerDevice.crossfade_assign)
