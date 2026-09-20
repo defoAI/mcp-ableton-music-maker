@@ -191,6 +191,8 @@ pub struct LiveState {
     pub library: crate::library::Library,
     /// What a device on this Live answered to, across songs and sessions.
     pub devices: crate::devices::Devices,
+    /// This song's own memory: the overview, the notes and the digest.
+    pub songs: crate::memory::Songs,
     /// Which Live this is, learned from whatever reply carries it first.
     /// Every device fact is stamped with it, so an unknown one is never
     /// written to disk.
@@ -229,6 +231,7 @@ impl LiveState {
             performance: Mutex::new(None),
             library: crate::library::Library::default(),
             devices: crate::devices::Devices::default(),
+            songs: crate::memory::Songs::default(),
             live_version: Mutex::new(None),
             lom: crate::lom::Lom::default(),
             samples: crate::samples::Samples::default(),

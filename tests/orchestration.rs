@@ -972,7 +972,20 @@ async fn get_context_is_one_round_trip_with_the_workflow_footer() {
         )
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
-    assert_eq!(bridge.commands(), vec!["get_context"], "one round trip");
+    // One round trip for the set, and one generic op for the set's own
+    // identity — `song.file_path`, which is what says *which song* the
+    // memory header belongs to and has nowhere else to come from (#63). The
+    // header itself is derived from the payload already in hand: a header
+    // that read the state again would have cost three.
+    assert_eq!(
+        bridge.commands(),
+        vec!["get_context", "run"],
+        "one round trip for the set, one op for its identity"
+    );
+    assert_eq!(
+        bridge.last("run").unwrap()["ops"][0]["path"],
+        "song.file_path"
+    );
     assert_eq!(bridge.sent()[0].1["include_library"], false);
     let t = text_of(&r);
     assert!(t.starts_with("Live 12.4.6 · script 1.15.0 · 120 BPM 4/4 · stopped at bar 1.1 · launch quantization 1 bar · key C Major\n"), "{t}");
@@ -997,7 +1010,9 @@ async fn get_context_is_one_round_trip_with_the_workflow_footer() {
         text_of(&r).trim_start().starts_with('{'),
         "raw JSON on request"
     );
-    assert_eq!(bridge.sent()[1].1["include_library"], true);
+    // Addressed by command rather than by position: the identity op now
+    // sits between the two reads.
+    assert_eq!(bridge.last("get_context").unwrap()["include_library"], true);
 }
 
 #[tokio::test]

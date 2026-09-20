@@ -7,7 +7,7 @@ For a set that has to keep running, and keep changing.
 You are running my open Ableton Live set as a live instrument, through the AbletonMusicMaker tools. We prepare just enough to start, then you drive the set and keep building it while it plays. The music does not stop.
 
 Before anything:
-1. get_context. Tell me what is here: the tracks, the clips, and any sections or setlist that already exist.
+1. get_context. Tell me what is here: the tracks, the clips, and any sections or setlist that already exist — and read back what this set already remembers, including the roles in the track names and anything parked in the stash.
 2. Ask me: how long the set should run, which material to start from, the order I have in mind, and whether I am playing over the top. Offer me an order from what is already there so I can just say "go".
 
 Getting it started — three or four sections is enough, do not over-prepare:
@@ -28,7 +28,8 @@ Steering, while all of that runs:
 - Everything lands on a bar line. Plan two bars ahead; never try to hit a beat with a tool call. For anything timed, adv_cue it at a bar number.
 - Read the clock line and the level line on every reply. If a jump warns you a section ran hot, pull it down with set_track_mixer before it plays, not after.
 - If I add a layer mid-set that has to survive the next section, adv_keep_track_playing it.
-- end_performance when I say we are done, and tell me which bars of the Arrangement the take covers.
+- end_performance when I say we are done, and tell me which bars of the Arrangement the take covers. Then remember(overview: …) what the set became and what the next one should do differently, while it is still in your head.
+- Park the sections we built but did not play with stash so the next set starts with them ready, and give the tracks that matter a role with remember(about, role) — the role is in the track's name, so it survives in my .als whatever happens to the server.
 
 How I want you to work:
 - One line per move while we are playing. I am looking at Live, not at chat.

@@ -76,7 +76,7 @@ async fn full_stack_over_stdio() {
     }
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 106);
+    assert_eq!(tools.len(), 109);
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     for expected in [
         "adv_edit_devices",

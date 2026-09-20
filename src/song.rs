@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 pub const SEP: &str = " · ";
 /// The scene whose name holds the song.
 pub const SETLIST_PREFIX: &str = "Setlist:";
+/// The scene row that holds parked ideas. The same trick as `Setlist:`: a
+/// reserved prefix on a scene name, kept by Live's own Save, travelling in
+/// the `.als` — an idea you cannot hear is not an idea.
+pub const STASH_PREFIX: &str = "Stash:";
 /// Bars per phrase for a scene whose name carries no suffix.
 pub const DEFAULT_PHRASE: i64 = 16;
 
@@ -22,7 +26,7 @@ pub const DEFAULT_PHRASE: i64 = 16;
 /// A `Setlist:` scene is never parsed.
 pub fn parse_section_name(name: &str) -> (String, Option<i64>) {
     let text = name.trim();
-    if is_setlist_scene(text) {
+    if is_reserved_scene(text) {
         return (text.to_string(), None);
     }
     if let Some((head, tail)) = text.rsplit_once(SEP) {
@@ -46,6 +50,16 @@ pub fn section_name(base: &str, bars: Option<i64>) -> String {
 
 pub fn is_setlist_scene(name: &str) -> bool {
     name.trim().starts_with(SETLIST_PREFIX)
+}
+
+pub fn is_stash_scene(name: &str) -> bool {
+    name.trim().starts_with(STASH_PREFIX)
+}
+
+/// A scene the server owns rather than the song: the setlist and the stash.
+/// Neither is a section, so neither is listed, launched, counted or played.
+pub fn is_reserved_scene(name: &str) -> bool {
+    is_setlist_scene(name) || is_stash_scene(name)
 }
 
 /// One entry of the song: a section, looping until `go` unless it carries a
@@ -201,7 +215,7 @@ pub fn sections(state: &PerfState) -> Vec<Section> {
     state
         .scenes
         .iter()
-        .filter(|s| !is_setlist_scene(&s.name))
+        .filter(|s| !is_reserved_scene(&s.name))
         .map(section_of)
         .collect()
 }

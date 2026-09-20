@@ -514,5 +514,57 @@ class TheModelIsNotLive(unittest.TestCase):
         self.assertNotIn("Song.create_midi_track", table.table)
 
 
+class SongFilePath(unittest.TestCase):
+    """`Song.file_path` is the path to the open Set, and it is empty until
+    the Set has been saved.
+
+    Cycling '74's LOM reference, Song > file_path
+    (`docs/reference/ableton/live-object-model.md:223`): "Type: symbol —
+    Access: get. The path to the current Live Set, in OS-native format. If
+    the Live Set hasn't been saved, the path is empty."
+
+    The server identifies a song by this, through a generic `run` op, so
+    three things have to hold: reading it never raises, an unsaved Set reads
+    empty rather than None, and it cannot be written (Live's API cannot save
+    or name a Set, which is why the producer presses Cmd+S). The model had
+    the Clip helper `_audio_only` on it, whose getter reads
+    `self._is_midi_clip`; every read raised `AttributeError: 'Song' object
+    has no attribute '_is_midi_clip'` (measured 2026-09-20)."""
+
+    def setUp(self):
+        self.song = fake_live.default_set()
+
+    def test_an_unsaved_set_reads_an_empty_path_rather_than_raising(self):
+        self.assertEqual(self.song.file_path, "")
+
+    def test_a_saved_set_reads_the_path_live_would_give(self):
+        self.song._file_path = "/Users/p/Music/Smoke Project/Smoke.als"
+        self.assertEqual(self.song.file_path,
+                         "/Users/p/Music/Smoke Project/Smoke.als")
+
+    def test_it_cannot_be_written_because_lives_api_cannot_save_a_set(self):
+        with self.assertRaises(AttributeError):
+            self.song.file_path = "/tmp/anything.als"
+
+    def test_it_reads_back_through_the_generic_ops_layer(self):
+        """The server asks for it with `run`, so no command is added and
+        SCRIPT_VERSION does not move."""
+        ns = harness.load(song=self.song)
+        done = ns["Done"]
+        script = harness.instance(ns)
+
+        def read():
+            gen = script._run_ops(
+                {"ops": [{"op": "get", "path": "song.file_path", "as": "set"}]})
+            while True:
+                item = next(gen)
+                if isinstance(item, done):
+                    return item.result["set"]
+
+        self.assertEqual(read(), "")
+        self.song._file_path = "/Users/p/Music/Smoke Project/Smoke.als"
+        self.assertEqual(read(), "/Users/p/Music/Smoke Project/Smoke.als")
+
+
 if __name__ == "__main__":
     unittest.main()

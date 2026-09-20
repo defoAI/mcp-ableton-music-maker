@@ -21,7 +21,7 @@
 //! - [`lom`]        Live's object model reached generically: built paths, batches of ops, what this Live has (pure + cached)
 //! - [`library`]      the server's copy of Live's browser: paged from the script, on disk, searched locally
 //! - [`devices`]      what a device answered to, keyed on the device and the Live version, not on a song
-//! - [`devices`]      what a device answered to, keyed on the device and the Live version, not on a song
+//! - [`memory`]       the song's own memory: the overview, the notes, the digest, identity from song.file_path
 //! - [`variation`]    clip variations and the key of a recording (pure)
 //! - [`song`]         sections (scene names) and songs (the Setlist: scene): parsing, the plan, the cursor (pure)
 //! - [`sections`]     the section and song tools: make_section, set_song, play_song, the steering verbs
@@ -49,6 +49,7 @@ pub mod handshake;
 pub mod install;
 pub mod library;
 pub mod lom;
+pub mod memory;
 pub mod notes;
 pub mod performance;
 pub mod samples;

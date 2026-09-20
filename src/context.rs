@@ -28,10 +28,12 @@ RULES: Live's bar numbers are 1-based. Every launch lands on the next bar. A sec
 
 DEVICES: anything you load you can read back and undo. adv_get_device_parameters, adv_set_device_parameter and adv_edit_devices (remove, move, bypass, enable) address a track the same way and speak Live's display strings (\"200 Hz\", \"Low Cut 48 dB\").
 
+MEMORY: get_context opens with what this song remembers — the overview (the model of the track: what it is for, the plan, what each track is for, what was decided, what is next), the roles read out of the track names, the last note, and what is in the stash. Read it before the first change and keep it current with remember(overview: {…}); named keys merge. remember(about, note) keeps one thing about the song, a track or a section; remember(about, role) writes a role into the track's name, and that role then addresses the track. stash parks a clip or a sample in a Stash: row where it can still be heard; a Stash: row is never a section. The overview and notes are a local file (adv_song_memory shows and deletes it); roles and the stash are in the producer's own set.
+
 THE SURFACE: the tools without a prefix are the artist's set and cover the whole workflow; the adv_ tools are the raw layer of scenes, clips, cues, meters, snapshots and the browser underneath, for when the artist's set has no word for it.";
 
 /// The short form appended to every get_context result.
-pub const FOOTER: &str = "Workflow: build_song (key, tempo, sections, tracks with instrument words, clips as step strings, notes_csv or patterns) → add_sample for audio → shape_sound and feel → arrange in bars → hear it with capture_mix → play_song, then go / hold_section / next_section / back / jump_to steer the sections; end_performance stops. Faders and levels in dB, positions in bars. Live's Save is yours (Cmd+S); the API cannot save.";
+pub const FOOTER: &str = "Read the memory above before the first change, and keep it current with remember. Workflow: build_song (key, tempo, sections, tracks with instrument words, clips as step strings, notes_csv or patterns) → add_sample for audio → shape_sound and feel → arrange in bars → hear it with capture_mix → play_song, then go / hold_section / next_section / back / jump_to steer the sections; end_performance stops. Faders and levels in dB, positions in bars. Live's Save is yours (Cmd+S); the API cannot save.";
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
@@ -227,6 +229,11 @@ pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
     for sc in scenes {
         if crate::song::is_setlist_scene(s(sc, "name")) {
             setlist = Some(s(sc, "name"));
+            continue;
+        }
+        // A Stash: row is not a section and not the setlist: it is not
+        // listed, counted or named here at all.
+        if crate::song::is_stash_scene(s(sc, "name")) {
             continue;
         }
         let (base, suffix) = crate::song::parse_section_name(s(sc, "name"));
@@ -499,10 +506,19 @@ mod tests {
             "set_song",
             "play_song",
             "jump_to",
+            "remember",
+            "stash",
         ] {
             assert!(INSTRUCTIONS.contains(word), "{word}");
         }
-        assert!(INSTRUCTIONS.len() < 5000);
+        // The budget a client renders at initialize. It was 5,000 bytes
+        // until the MEMORY paragraph, and it was raised once, deliberately,
+        // for that paragraph alone: it is the one that decides whether the
+        // song memory is used at all. An instruction nobody reads is worth
+        // nothing, and an overview nobody writes is worth less. Anything
+        // else that wants room here takes it from prose that has stopped
+        // earning its place, not from another raise.
+        assert!(INSTRUCTIONS.len() < 5900, "{}", INSTRUCTIONS.len());
         assert_eq!(ranges(&[5, 6, 7, 9]), "5–7, 9");
     }
 }

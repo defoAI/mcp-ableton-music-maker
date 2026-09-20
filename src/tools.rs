@@ -196,6 +196,9 @@ pub const CORE_TOOLS: &[&str] = &[
     "capture_mix",
     "clear_captures",
     "end_performance",
+    // remember
+    "remember",
+    "stash",
     // housekeeping
     "delete_track",
     "delete_clip",
@@ -1058,6 +1061,9 @@ pub const BATCH: ToolSpec = ToolSpec::new("batch");
 pub const BUILD_SONG: ToolSpec = ToolSpec::new("build_song");
 pub const GET_LIBRARY_STATUS: ToolSpec = ToolSpec::new("get_library_status");
 pub const DEVICE_VOCABULARY: ToolSpec = ToolSpec::new("device_vocabulary");
+pub const REMEMBER: ToolSpec = ToolSpec::new("remember");
+pub const STASH: ToolSpec = ToolSpec::new("stash");
+pub const SONG_MEMORY: ToolSpec = ToolSpec::new("song_memory");
 pub const CAPTURE_MIX: ToolSpec = ToolSpec::new("capture_mix");
 pub const LIST_CAPTURES: ToolSpec = ToolSpec::new("list_captures");
 pub const MEASURE_CAPTURE: ToolSpec = ToolSpec::new("measure_capture");
@@ -1274,6 +1280,25 @@ fn resolve_track_name(live: &LiveState, given: &str) -> Result<TrackTarget, Stri
             kind: "track".into(),
             name: t.name.clone(),
         });
+    }
+    // A role is a suffix on the track's name (`Sitar [lead]`), so "lead"
+    // addresses the track — and the base name still does, whatever role it
+    // was given since.
+    for by in [
+        |n: &str| crate::memory::split_role(n).1.unwrap_or_default(),
+        |n: &str| crate::memory::split_role(n).0,
+    ] {
+        if let Some(t) = state
+            .tracks
+            .iter()
+            .find(|t| by(&t.name).to_lowercase() == want)
+        {
+            return Ok(TrackTarget {
+                index: t.index,
+                kind: "track".into(),
+                name: t.name.clone(),
+            });
+        }
     }
     let mut returns: Vec<(i64, String, String)> = Vec::new();
     if live.script.has_capability("get_returns") {
@@ -4851,6 +4876,11 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
         p.bars,
         tempo,
     ));
+    // #63: the drift line travels, beside the reading this call already
+    // returns — the set may have moved since the overview was written.
+    if let Some(said) = drift_note_now(live) {
+        text.push_str(&format!("\n{said}"));
+    }
     Ok(text)
 }
 
@@ -4966,16 +4996,31 @@ pub fn reset_set_body(live: &LiveState, p: &ResetSetParams) -> ToolResult {
     if let Some(v) = p.returns {
         params.insert("returns".into(), json!(v));
     }
+    // The memory is about the song that is about to stop existing: its
+    // plan, its roles and its parked ideas all described tracks and clips
+    // this call is deleting. Carrying it into the empty set would have the
+    // next agent read a plan for music that is not there.
+    let forgotten = crate::memory::open_for_set(live);
+    let had = !forgotten.is_empty();
     let r = live
         .send_command("reset_set", Some(Value::Object(params)))
         .map_err(|e| live_err("reset the set", e))?;
+    if had {
+        live.songs.forget();
+    }
+    live.songs.start_over();
     let removed = r.get("removed").cloned().unwrap_or_else(|| json!({}));
     let count = |k: &str| removed.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
     Ok(format!(
         "The set is back to a new one: {} tracks ({}), {} scenes, {} BPM. \
          Cleared {} session clip(s), {} Arrangement clip(s), {} track(s), {} locator(s). \
          The Live API has no File > New, so this emptied the open set rather than opening one — \
-         and nothing is saved until you save it in Live (Cmd+S).",
+         and nothing is saved until you save it in Live (Cmd+S).\n\
+         {}This set now remembers nothing: no overview, no notes, no roles (they were in the \
+         track names that just went) and nothing parked. Start the new one the way you would \
+         start any song — set_key and set_tempo first, then build_song — and write the overview \
+         as you go with remember(overview: {{\"what_it_is\": …, \"plan\": …, \"tracks\": …, \
+         \"next\": …}}), so the next session picks this up instead of guessing.",
         get_display(&r, "track_count", "?"),
         join_names(r.get("tracks")),
         get_display(&r, "scene_count", "?"),
@@ -4984,6 +5029,21 @@ pub fn reset_set_body(live: &LiveState, p: &ResetSetParams) -> ToolResult {
         count("arrangement_clips"),
         count("tracks"),
         count("locators"),
+        if had {
+            format!(
+                "The memory of '{}' went with it ({} overview key(s), {} note(s)) — it described \
+                 tracks and clips that no longer exist. ",
+                if forgotten.set_name.is_empty() {
+                    "this set"
+                } else {
+                    &forgotten.set_name
+                },
+                forgotten.overview.len(),
+                forgotten.notes.len()
+            )
+        } else {
+            String::new()
+        },
     ))
 }
 
@@ -5449,7 +5509,7 @@ pub fn get_context_body(live: &LiveState, p: &GetContextParams) -> ToolResult {
         )
     });
     let text = crate::context::context_text(&ctx, since);
-    Ok(text.replace(
+    let text = text.replace(
         crate::context::FOOTER,
         &format!(
             "{} · round trip {:.2} s\n{}",
@@ -5457,7 +5517,122 @@ pub fn get_context_body(live: &LiveState, p: &GetContextParams) -> ToolResult {
             live.round_trip_s(),
             crate::context::FOOTER
         ),
-    ))
+    );
+    // #63: the whole memory rides back on the call the agent makes first
+    // anyway. A "load my memory" call is one an agent can fail to make, and
+    // the turn it skips it on is the first turn of a session.
+    Ok(format!("{}{text}", song_memory_header(live, &ctx)))
+}
+
+/// The one drift line, for the replies that are not `get_context`.
+///
+/// `get_context` is called once per session — which is why the overview
+/// rides there, and exactly why the staleness check cannot ride there alone.
+/// A set the producer nudges mid-session is noticed without a second call.
+pub(crate) fn drift_note(live: &LiveState, state: &PerfState) -> Option<String> {
+    let memory = live.songs.snapshot()?;
+    if memory.overview.is_empty() {
+        return None;
+    }
+    crate::memory::drift_line(&memory.as_of, &crate::memory::as_of_from(state))
+}
+
+/// The same, for a caller with no state in hand. The overview check comes
+/// first and is free, so a set with nothing remembered pays no round trip
+/// and a tool that refuses before Live still refuses before Live.
+pub(crate) fn drift_note_now(live: &LiveState) -> Option<String> {
+    let memory = live.songs.snapshot()?;
+    if memory.overview.is_empty() {
+        return None;
+    }
+    drift_note(live, &read_perf_state(live).ok()?)
+}
+
+/// The song-memory header `get_context` leads with — empty when there is
+/// nothing to say.
+///
+/// **Everything but the set's identity comes out of the `get_context`
+/// payload already in hand.** `get_context` is one round trip for the set
+/// and that is the point of it; a header that read the state again would
+/// have cost three. The one op it does add is `song.file_path`, which is
+/// what says *which song* this is and has nowhere else to come from.
+fn song_memory_header(live: &LiveState, ctx: &Value) -> String {
+    let memory = crate::memory::open_for_set(live);
+    // The digest is written whether or not anything was remembered on
+    // purpose, so a session that never called `remember` still leaves a trace.
+    live.songs.flush_digest();
+    let session = ctx.get("session").cloned().unwrap_or(Value::Null);
+    let scenes = ctx
+        .get("scenes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let now = crate::memory::AsOf {
+        tempo: session.get("tempo").and_then(Value::as_f64).unwrap_or(0.0),
+        key: match (
+            session.get("root_note_name").and_then(Value::as_str),
+            session.get("scale_name").and_then(Value::as_str),
+        ) {
+            (Some(r), Some(k)) if !r.is_empty() && !k.is_empty() => format!("{r} {k}"),
+            _ => String::new(),
+        },
+        sections: scenes
+            .iter()
+            .filter(|sc| !crate::song::is_reserved_scene(&get_display(sc, "name", "")))
+            .count(),
+        tracks: ctx
+            .get("tracks")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
+        at: crate::memory::now(),
+    };
+    let names: Vec<String> = ctx
+        .get("tracks")
+        .and_then(Value::as_array)
+        .map(|ts| ts.iter().map(|t| get_display(t, "name", "")).collect())
+        .unwrap_or_default();
+    // The parked ideas are the clips in the Stash: rows, which the payload
+    // already counted.
+    let stashed: usize = scenes
+        .iter()
+        .filter(|sc| crate::song::is_stash_scene(&get_display(sc, "name", "")))
+        .map(|sc| {
+            sc.get("clip_count")
+                .and_then(Value::as_u64)
+                .unwrap_or_else(|| {
+                    sc.get("clip_tracks")
+                        .and_then(Value::as_array)
+                        .map_or(0, |t| t.len() as u64)
+                }) as usize
+        })
+        .sum();
+    let renamed = live
+        .songs
+        .renamed
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    let mut text = crate::memory::header_text(&crate::memory::Header {
+        memory: Some(&memory),
+        full: live.songs.take_full(),
+        now: &now,
+        roles: crate::memory::roles(&names),
+        stashed,
+        renamed,
+    });
+    // A note whose track was renamed is reported, never repointed by guess.
+    let mut subjects: Vec<String> = memory
+        .notes
+        .iter()
+        .map(|n| n.about.clone())
+        .filter(|a| a != "song" && !a.starts_with("section:"))
+        .collect();
+    subjects.sort();
+    subjects.dedup();
+    for moved in crate::memory::reconcile(&subjects, &names) {
+        text.push_str(&format!("{}\n", moved.line()));
+    }
+    text
 }
 
 pub fn set_scene_body(live: &LiveState, p: &SetSceneParams) -> ToolResult {
@@ -7235,6 +7410,12 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "set_key" => (crate::arrange::SetKeyParams, crate::arrange::set_key_body),
         "create_return" => (crate::arrange::CreateReturnParams, crate::arrange::create_return_body),
         "clear_captures" => (crate::arrange::ClearCapturesParams, crate::arrange::clear_captures_body),
+        "remember" => (crate::memory::RememberParams, crate::memory::remember_body),
+        "stash" => (crate::memory::StashParams, crate::memory::stash_body),
+        "song_memory" => (
+            crate::memory::SongMemoryParams,
+            crate::memory::song_memory_body
+        ),
         "feel" => (crate::arrange::FeelParams, crate::arrange::feel_body),
         "arrange" => (crate::arrange::ArrangeParams, crate::arrange::arrange_body),
         "import_set" => (crate::sets::ImportSetParams, crate::sets::import_set_body),
@@ -8076,6 +8257,9 @@ fn run_blocking<P: Serialize>(
     let start = Instant::now();
     connection::begin_trace();
     let _ = take_notes(live);
+    // The per-session digest (#63 AC2): counted here, so a session that
+    // never calls `remember` still leaves a trace of what it did.
+    live.songs.note_call(spec.name);
     let result = body(live, params);
     // A guard may have ended a stale performance on the way in; the tool that
     // was being called says so.
@@ -9216,6 +9400,55 @@ impl Server {
             .await
     }
 
+    /// Keep what Live cannot hold. `overview` is your model of the song as
+    /// an object — what it is trying to be, the plan section by section,
+    /// what each track is for, what was decided and why, what is next — and
+    /// the whole of it comes back in the get_context header next session,
+    /// with no call to fetch it. Named keys merge, so a patch of one leaves
+    /// the rest alone; `replace: true` rewrites it. `about` + `note` keeps
+    /// one thing about the song, a track or a section ("section:Drop");
+    /// `about` alone reads them back. `about` + `role` writes a role into
+    /// the track's name (`Sitar [lead]`), so Live's Save keeps it, it
+    /// travels in the .als, and the role then addresses that track in every
+    /// tool. Local, capped at 8 KB, and off with ABLETON_MCP_SONG_MEMORY=false.
+    #[tool(name = "remember")]
+    async fn remember(
+        &self,
+        Parameters(p): Parameters<crate::memory::RememberParams>,
+    ) -> CallToolResult {
+        self.run(&REMEMBER, p, crate::memory::remember_body).await
+    }
+
+    /// Park an idea where it can still be heard. `save` puts a Session clip
+    /// (`track` + `clip`), or audio (`sample`: words, a path or a browser
+    /// URI, placed the way add_sample does), into a `Stash:` scene row —
+    /// so three candidates can be fired against the song before one is
+    /// committed. `list` shows what is parked with its track, bars, notes
+    /// and tags; `place` copies one into a section and leaves the parked
+    /// copy; `drop` removes one. A `Stash:` row is never a section: it is
+    /// not listed, launched, counted or played. All of it lives in your Live
+    /// set, kept by Live's own Save — not in any file of the server's.
+    #[tool(name = "stash")]
+    async fn stash(&self, Parameters(p): Parameters<crate::memory::StashParams>) -> CallToolResult {
+        self.run(&STASH, p, crate::memory::stash_body).await
+    }
+
+    /// What is remembered about this song, and what is not: `show` names the
+    /// file, its size, the overview, the notes, the sessions, and says
+    /// plainly what never enters it (no MIDI note, no audio, no path outside
+    /// the set's own). `list` every song on this machine, `attach` notes
+    /// whose track was renamed, `forget` deletes this song's file and
+    /// touches nothing in Live — the roles are in your track names and the
+    /// stash is a scene row in your set.
+    #[tool(name = "song_memory")]
+    async fn song_memory(
+        &self,
+        Parameters(p): Parameters<crate::memory::SongMemoryParams>,
+    ) -> CallToolResult {
+        self.run(&SONG_MEMORY, p, crate::memory::song_memory_body)
+            .await
+    }
+
     /// Make a clip feel played: swing (delay the off-beats by a fraction of
     /// the step), humanize_ms (hits drift early or late, velocities vary),
     /// groove (one from the set's Groove Pool, Live's own, non-destructive),
@@ -9506,7 +9739,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 106);
+        assert_eq!(tools.len(), 109);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().cloned().unwrap_or_default();
@@ -9527,7 +9760,7 @@ mod tests {
         // intent. Keeping a performance is part of playing one.
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 106, "the take must not add a tool");
+        assert_eq!(tools.len(), 109, "the take must not add a tool");
         // start_performance is served as adv_start_performance (decision 0006).
         for name in ["adv_start_performance", "play_song"] {
             let tool = tools.iter().find(|t| t.name == name).unwrap();

@@ -212,6 +212,29 @@ script is loaded and up to date. Both are for CI and the Mac app.
   with the list rather than silently written. The strings cost Live three calls per parameter,
   so they are read for the device a person asked about and left out of the snapshot and the
   rack-chain walk.
+- **The song remembers itself** (`src/memory.rs`). What Live can hold, Live holds — measured,
+  not assumed: a `describe` sweep of a real Live 12.4.6 shows the only writable text in Live's
+  object model is a `name`. So a track's **role** is a suffix on its name (`Sitar [lead]`) and a
+  parked idea is a clip in a `Stash:` scene row — the same trick as the `Setlist:` scene, kept by
+  Live's own Save, travelling in the `.als`, working with no server at all. `is_reserved_scene`
+  is what keeps both rows out of the sections: a `Stash:` row is never listed, launched, counted
+  or played. Only what has nowhere to go in Live is written down: the **overview** (the agent's
+  model of the track, capped at 8 KB), the **notes**, and a per-session **digest**, in
+  `state_dir()/songs/<key>.json`, keyed on `song.file_path` read through the generic ops layer —
+  no command, no `SCRIPT_VERSION` bump. A set that was never saved is filed provisionally and
+  the first Cmd+S renames the file and says so once.
+  **Retrieval is not a call**: the whole overview rides back in the `get_context` header, the
+  call an agent makes first anyway, because a "load my memory" call is one an agent can fail to
+  make and the turn it skips it on is the first turn of a session. That header is derived from
+  the `get_context` payload already in hand — `get_context` stays one round trip for the set,
+  plus the single op that reads the set's identity. Full on the first call of a session and
+  after any change, one line after that: a server rule, so the agent decides nothing and a
+  repeat call stops spending the cap on something unchanged. The staleness check cannot ride
+  there alone for the same reason, so the drift line also travels on `capture_mix` and
+  `play_song` — and it costs nothing when there is no overview to be stale.
+  `reset_set` forgets the file: the plan it held described tracks and clips that call deletes.
+  Notes are **never repointed by guess** — a rename is reattached only when exactly one unspoken
+  track is named like the missing subject, and anything less certain is reported and left alone.
 - **The sound vocabulary** (`src/sound.rs`) is a table, not a guess: a word is resolved at call
   time against the device's rack macros by name, then candidate parameter names per Live
   instrument, then aliases and the word itself; `shape_sound` writes several words through one

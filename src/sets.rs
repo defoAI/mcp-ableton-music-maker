@@ -250,6 +250,11 @@ pub fn document(
             setlist = song::parse_setlist(&scene_name).unwrap_or_default();
             continue;
         }
+        // The stash is the producer's parked ideas, not part of the song an
+        // export rebuilds.
+        if song::is_stash_scene(&scene_name) {
+            continue;
+        }
         let (base, bars) = song::parse_section_name(&scene_name);
         sections.push(SetSection {
             index: sc.get("index").and_then(Value::as_i64).unwrap_or(0),

@@ -66,7 +66,7 @@ Paths are relative to the repository root.
 | What the activity log writes, and that payloads are off by default | `src/activity.rs`; `tests/activity.rs` pins the defaults | `cargo test --test activity` |
 | Set exports are written only on an explicit call, and where | `src/sets.rs`; `tests/sets.rs` pins the folder and that no other tool creates it | `cargo test --test sets` |
 | Every environment variable the server reads | the code | `grep -rhoE 'ABLETON_MCP_[A-Z_]+' src \| sort -u` |
-| Where the server writes | `src/state.rs` — `ABLETON_MCP_STATE_DIR`, else `~/.ableton-music-maker/` with `activity/`, `sessions/`, `library/`, `devices/` and (only after an `export_set` call) `sets/` under it | `ableton-music-maker --status` |
+| Where the server writes | `src/state.rs` — `ABLETON_MCP_STATE_DIR`, else `~/.ableton-music-maker/` with `activity/`, `sessions/`, `library/`, `devices/`, `songs/` and (only after an `export_set` call) `sets/` under it | `ableton-music-maker --status` |
 | What the heartbeat contains | `app::write_heartbeat` in `src/app.rs` | one `<pid>.json` per running server |
 | Plain-language description of the above, and how to delete it | `TERMS.md` — must match the code facts in this table | |
 | Who publishes the product | DefoAI UG — [decision 0004](../decisions/0004-who-publishes-and-holds-the-data.md); nobody holds data because none leaves the machine | |
@@ -104,8 +104,8 @@ matches on them.
 
 | | Verified value | Source |
 |---|---|---|
-| MCP tools | **106** | `src/tools.rs` |
-| Test suites | **20** | `tests/*.rs` plus the crate's unit tests |
+| MCP tools | **109** | `src/tools.rs` |
+| Test suites | **21** | `tests/*.rs` plus the crate's unit tests |
 | Remote Script commands | **98** | `ALL_REMOTE_COMMANDS` |
 | Remote Script version | **1.34.2** | `SCRIPT_VERSION` |
 | Server version | **2.0.0** | `Cargo.toml` |
@@ -115,6 +115,7 @@ matches on them.
 | Uploads | **none** — no code path exists | `tests/local_only.rs`, CI dependency gate |
 | Activity log | on by default, payloads off; `ABLETON_MCP_ACTIVITY=false` / `ABLETON_MCP_ACTIVITY_PAYLOADS=true` | `tests/activity.rs` |
 | Device vocabulary | on by default, one file per Live version; `ABLETON_MCP_LIBRARY_INDEX=false` keeps it in memory, `adv_device_vocabulary(action: forget)` deletes it | `tests/device_vocabulary.rs` |
+| Song memory | on by default, one file per song, 8 KB overview cap; `ABLETON_MCP_SONG_MEMORY=false` stops every write, `adv_song_memory(action: forget)` deletes it | `tests/song_memory.rs` |
 | Transport | stdio only | `src/app.rs` |
 | Bind address | **127.0.0.1** by default; `bind_host.txt` overrides | `DEFAULT_HOST` |
 | Live versions | 11 and 12 fully; 10 without the arrangement tools; untested beyond the script's own branches | the Remote Script |

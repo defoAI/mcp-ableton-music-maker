@@ -107,6 +107,31 @@ is. That is the header, never the audio: nothing decodes, plays, copies or moves
 and a sample Claude puts in your set is referenced where it lies, exactly as if you had
 dragged it in. The same `ABLETON_MCP_LIBRARY_INDEX=false` keeps this index in memory only.
 
+## Song memory
+
+This is the most content-bearing thing the server writes, and it is on by default, so read this
+one twice.
+
+While Claude works on a song it keeps a written model of it: **what the track is trying to be,
+the plan section by section, what each track is for, what you decided and why, and what the next
+move is** — plus any note you tell it to keep ("the Smoke Bass is mine, never regenerate it") and
+a one-line digest per session (the date, which tracks and sections were worked on, and the names
+of the tools that ran). That is prose about your unreleased music, written by Claude rather than
+typed by you. It is capped at 8 KB per song and lives in one JSON file per song under
+`~/.ableton-music-maker/songs/`, identified by the path of the Live Set it belongs to — which is
+the only path the file ever holds.
+
+What is **not** in it: no MIDI note, no audio, no path outside your set's own. A track's **role**
+(`Sitar [lead]`) is in the track's name and a parked idea is a clip in a `Stash:` scene row — both
+are in your own Live set, kept by your own Cmd+S, and neither is copied here. Delete this file and
+they are still there.
+
+On by default is defensible only because it is local, capped, inspectable in one call and
+deletable in one call. `ABLETON_MCP_SONG_MEMORY=false` stops every write to the folder;
+`adv_song_memory` shows you the whole file and what is not in it, and
+`adv_song_memory(action: "forget")` deletes it. So does "Delete all local data" in the Mac app, or
+deleting the folder. Nothing uploads — see **Nothing is uploaded** above.
+
 ## Set exports
 
 When Claude is asked to export a set, the server writes one JSON file under
