@@ -163,7 +163,8 @@ class Streams(unittest.TestCase):
     # ── the levels ─────────────────────────────────────────────────────────
     def test_levels_arrive_once_a_bar_in_lives_own_meter_scale(self):
         # Real meters on the real set: the master and both tracks at 0.5.
-        for t in (self.song.master_track,) + self.song.tracks:
+        # Live's Vector does not concatenate with a tuple; make a list.
+        for t in [self.song.master_track] + list(self.song.tracks):
             t._output_meter_level = 0.5
         self.subscribe(["levels"])
         self.script.tick(3)
@@ -203,11 +204,23 @@ class Streams(unittest.TestCase):
     def test_no_listener_is_ever_registered_on_anything(self):
         self.subscribe(["clock", "levels", "changes"])
         self.script.tick(10)
-        # The model has no add_..._listener anywhere, so ten ticks of every
-        # channel passing proves the diff is reads only. Registering one in
-        # Live is what deadlocked it during the first capture (#26).
-        for t in self.song.tracks:
-            self.assertFalse([a for a in dir(t) if "listener" in a])
+        # Live's objects all carry add_..._listener, and so does the model
+        # (`describe` lists them, so leaving them out would describe a Live
+        # that does not exist). What must never happen is the script
+        # *registering* one: that is what deadlocked Live during the first
+        # capture (#26). The model records every registration, so ten ticks
+        # of every channel passing with an empty registry is the proof that
+        # the diff is reads only.
+        objects = ([self.song, self.song.view, self.song.master_track]
+                   + list(self.song.tracks) + list(self.song.return_tracks)
+                   + list(self.song.scenes))
+        for track in self.song.tracks:
+            objects += list(track.clip_slots) + list(track.devices) + [track.mixer_device]
+        registered = [(type(o).__name__, name)
+                      for o in objects
+                      for name, callbacks in getattr(o, "_listeners", {}).items()
+                      if callbacks]
+        self.assertEqual(registered, [], "the script registered a listener in Live")
 
     def test_the_event_tick_survives_a_broken_read(self):
         self.subscribe(["changes"])

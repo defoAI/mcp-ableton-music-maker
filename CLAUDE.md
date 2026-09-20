@@ -42,7 +42,7 @@ No Rust toolchain on the machine? Build inside `rust:1-slim-bookworm` with the r
 src/connection.rs      LiveBridge trait, AbletonConnection (TCP), RealBridge (reconnecting), LiveError
 src/handshake.rs       get_script_info handshake, ScriptInfoCache, per-command capability check
 src/lom.rs             the Live Object Model in Rust: Path (typed, validated), Op, Batch, describe cache — how a capability is written without touching the script
-src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 104 tool bodies and their #[tool] bindings, run() wrapper
+src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 105 tool bodies and their #[tool] bindings, run() wrapper
 src/activity.rs        the local activity log: one JSON line per tool call, payloads off by default
 src/state.rs           state_dir / activity_dir / sessions_dir — the only places the server writes
 src/install.rs         installer logic (Library.cfg discovery, install with .bak)

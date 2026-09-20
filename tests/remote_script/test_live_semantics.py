@@ -23,12 +23,18 @@ import harness  # noqa: E402
 
 
 class Sequences(unittest.TestCase):
-    """`_step` does `list(obj)` and `describe` types them `list[...]`."""
+    """Live's sequences are its own `Vector`: not a list, not a tuple.
+
+    `describe song.tracks` on Live 12.4.6 reports `class: Vector`, and
+    `run … get song.tracks` hands back `"<Base.Vector object at 0x…>"` —
+    `_jsonable` tests `isinstance(value, (list, tuple))` and a Vector is
+    neither. `_step` still does `list(obj)`, which works on any sequence.
+    Verified against a real Live on 2026-09-20."""
 
     def setUp(self):
         self.song = fake_live.default_set()
 
-    def test_every_live_sequence_is_a_tuple_not_a_list(self):
+    def test_every_live_sequence_is_a_vector_not_a_list_or_tuple(self):
         for seq in (self.song.tracks, self.song.return_tracks, self.song.scenes,
                     self.song.cue_points, self.song.visible_tracks,
                     self.song.tracks[0].clip_slots, self.song.tracks[0].devices,
@@ -36,7 +42,9 @@ class Sequences(unittest.TestCase):
                     self.song.tracks[0].mixer_device.sends,
                     self.song.return_tracks[0].devices[0].parameters,
                     self.song.master_track.mixer_device.sends):
-            self.assertIsInstance(seq, tuple)
+            self.assertIsInstance(seq, fake_live.Vector)
+            self.assertNotIsInstance(seq, (list, tuple))
+            self.assertEqual(list(seq), list(iter(seq)))
 
     def test_a_sequence_cannot_be_assigned_to(self):
         """Live's `tracks` is a read-only property. A test that wants a set
@@ -190,31 +198,65 @@ class Parameters(unittest.TestCase):
 
 
 class Fader(unittest.TestCase):
-    """The volume fader's taper. Cycling '74's reference does not document
-    it; these three points were measured on Live 12.4.6 and are the curve
-    `src/song.rs` converts with (`[0,-80] [0.4,-30] [0.7,-12] [0.85,0]
-    [1.0,6]`). `get_meter_scale` hands the server the same points."""
+    """The volume fader's taper, as Live really draws it.
+
+    Cycling '74's reference does not document it, so it was measured on
+    2026-09-20 against Live 12.4.6 by asking
+    `song.tracks[0].mixer_device.volume.str_for_value` at twenty-one fader
+    positions over a `run` batch:
+
+        0.05 -57.2   0.20 -34.4   0.40 -18.0   0.70  -6.0   0.90  +2.0
+        0.10 -48.6   0.25 -28.8   0.50 -14.0   0.85   0.0   1.00  +6.0
+        0.15 -41.0   0.30 -24.2   0.60 -10.0   0.75  -4.0
+
+    Above 0.4 that is a straight 40 dB per unit; below it a quadratic. Both
+    reproduce every measured point to the decimal Live prints, and Live
+    prints one decimal.
+
+    The five points in `src/song.rs`'s `lives_own_curve_converts_a_meter_reading`
+    (`[0.4,-30] [0.7,-12]`) are **not** this curve — they are synthetic
+    fixture data for `MeterScale`, which takes its real points from the
+    script's `get_meter_scale` at run time. Nothing converts with them."""
+
+    # What Live printed, position by position.
+    MEASURED = ((0.05, -57.2), (0.10, -48.6), (0.15, -41.0), (0.20, -34.4),
+                (0.25, -28.8), (0.30, -24.2), (0.35, -20.6), (0.40, -18.0),
+                (0.45, -16.0), (0.50, -14.0), (0.55, -12.0), (0.60, -10.0),
+                (0.65, -8.0), (0.70, -6.0), (0.75, -4.0), (0.80, -2.0),
+                (0.85, 0.0), (0.90, 2.0), (0.95, 4.0), (1.00, 6.0))
 
     def setUp(self):
         self.song = fake_live.default_set()
         self.volume = self.song.tracks[0].mixer_device.volume
 
     def test_unity_is_0_85_and_the_top_is_plus_six(self):
-        self.assertEqual(self.volume.str_for_value(0.85), "0.00 dB")
-        self.assertEqual(self.volume.str_for_value(1.0), "6.00 dB")
+        self.assertEqual(self.volume.str_for_value(0.85), "0.0 dB")
+        self.assertEqual(self.volume.str_for_value(1.0), "6.0 dB")
 
     def test_the_bottom_reads_minus_infinity_not_a_number(self):
         self.assertEqual(self.volume.str_for_value(0.0), "-inf dB")
 
-    def test_the_curve_matches_the_one_src_song_rs_converts_with(self):
-        for value, db in ((0.0, -80.0), (0.4, -30.0), (0.7, -12.0),
-                          (0.85, 0.0), (1.0, 6.0)):
-            self.assertAlmostEqual(fake_live.fader_to_db(value), db, places=9)
+    def test_the_taper_reproduces_every_position_live_was_asked_for(self):
+        for value, db in self.MEASURED:
+            self.assertAlmostEqual(fake_live.fader_to_db(value), db, places=1,
+                                   msg="fader %.2f" % value)
+            self.assertEqual(self.volume.str_for_value(value), "%.1f dB" % db)
+
+    def test_above_the_knee_it_is_forty_dB_per_unit(self):
+        """0.4 to 1.0 is a straight line: 0.85 is unity, 1.0 is +6."""
+        for a, b in zip(self.MEASURED[7:], self.MEASURED[8:]):
+            slope = (b[1] - a[1]) / (b[0] - a[0])
+            self.assertAlmostEqual(slope, 40.0, places=6)
 
     def test_db_to_fader_is_the_inverse(self):
-        for db in (-30.0, -12.0, -6.0, 0.0, 3.0, 6.0):
+        for db in (-48.6, -30.0, -18.0, -12.0, -6.0, 0.0, 3.0, 6.0):
             self.assertAlmostEqual(fake_live.fader_to_db(fake_live.db_to_fader(db)),
-                                   db, places=6)
+                                   db, places=4)
+
+    def test_minus_six_lands_where_live_landed(self):
+        """The differential caught this: asking Live for -6 dB left the
+        fader at 0.6999, and a model on the old curve put it at 0.7749."""
+        self.assertAlmostEqual(fake_live.db_to_fader(-6.0), 0.70, places=3)
 
 
 class Arrangement(unittest.TestCase):
@@ -275,7 +317,9 @@ class Exceptions(unittest.TestCase):
             self.song.tempo = 5.0                       # outside 20..999
 
     def test_a_write_to_a_read_only_member_is_an_attribute_error(self):
-        for obj, attr in ((self.song, "is_playing"), (self.song, "can_undo"),
+        # Not is_playing: Live reports it writable (`describe song` gives
+        # readonly=False) and starts the transport when it is set.
+        for obj, attr in ((self.song, "exclusive_arm"), (self.song, "can_undo"),
                           (self.song.tracks[0], "clip_slots"),
                           (self.song.tracks[0], "has_midi_input"),
                           (self.song.tracks[0].mixer_device.volume, "min")):

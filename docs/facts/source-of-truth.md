@@ -102,9 +102,9 @@ matches on them.
 
 | | Verified value | Source |
 |---|---|---|
-| MCP tools | **104** | `src/tools.rs` |
-| Remote Script commands | **97** | `ALL_REMOTE_COMMANDS` |
-| Remote Script version | **1.33.1** | `SCRIPT_VERSION` |
+| MCP tools | **105** | `src/tools.rs` |
+| Remote Script commands | **98** | `ALL_REMOTE_COMMANDS` |
+| Remote Script version | **1.34.1** | `SCRIPT_VERSION` |
 | Server version | **2.0.0** | `Cargo.toml` |
 | Image size limit | **50** MB | `docker/verify-image.sh` |
 | Port | **9877** | `DEFAULT_PORT` |

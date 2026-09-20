@@ -405,10 +405,10 @@ fn song() -> BuildSongParams {
     let mut steps = BTreeMap::new();
     steps.insert("C1".to_string(), "x...x...x...x...".to_string());
     let mut sends = BTreeMap::new();
-    // Live names its returns "A Reverb" and "B Delay" in a new set, and
+    // Live names its returns "A-Reverb" and "B-Delay" in a new set, and
     // `_set_send` resolves a send by that name. The document used to say
     // "Reverb", which a canned bridge accepted and a real Live refuses.
-    sends.insert("A Reverb".to_string(), 0.3);
+    sends.insert("A-Reverb".to_string(), 0.3);
     BuildSongParams {
         tempo: Some(128.0),
         key: None,
@@ -544,7 +544,7 @@ async fn build_song_executes_in_order() {
     );
     assert_eq!(
         tracks[1]["sends"],
-        json!([{"name": "A Reverb", "value": 0.3}])
+        json!([{"name": "A-Reverb", "value": 0.3}])
     );
     let clips = bridge.last("write_clips").expect("write_clips")["clips"]
         .as_array()
@@ -706,13 +706,13 @@ async fn batch_returns_whole_multi_line_results() {
     let r = server.run(&tools::BATCH, p, tools::batch_body).await;
     assert!(!is_error(&r), "{}", text_of(&r));
     let t = text_of(&r);
-    // A new Live set has two returns, A Reverb and B Delay, and the batch
+    // A new Live set has two returns, A-Reverb and B-Delay, and the batch
     // keeps the whole reply rather than a one-line confirmation.
     assert!(
         t.contains("\"letter\": \"A\"") && t.contains("\"devices\""),
         "full JSON kept: {t}"
     );
-    assert!(t.contains("A Reverb") && t.contains("B Delay"), "{t}");
+    assert!(t.contains("A-Reverb") && t.contains("B-Delay"), "{t}");
 }
 
 #[tokio::test]

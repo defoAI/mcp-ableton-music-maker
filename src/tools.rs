@@ -77,6 +77,7 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "list_captures",
     "play_from",
     "delete_track",
+    "reset_set",
     "back_to_arrangement",
     "set_arrangement_loop",
     "get_performance_state",
@@ -137,7 +138,8 @@ fn annotations_for(name: &str) -> rmcp::model::ToolAnnotations {
         || name.starts_with("remove_")
         || matches!(
             name,
-            "import_set"
+            "reset_set"
+                | "import_set"
                 | "end_performance"
                 | "panic"
                 | "stop_playback"
@@ -346,6 +348,16 @@ params!(Empty {});
 params!(TrackParams {
     /// The index of the track
     track_index: i64,
+});
+params!(ResetSetParams {
+    /// How many tracks the fresh set has (default 4: two MIDI, two audio)
+    tracks: Option<i64>,
+    /// How many scenes (default 8)
+    scenes: Option<i64>,
+    /// The tempo to come back to (default 120)
+    tempo: Option<f64>,
+    /// Delete the return tracks too (default false: they are kept)
+    returns: Option<bool>,
 });
 params!(TrackInfoParams {
     /// The track: a name, an index, "master", or a return's name or letter
@@ -1015,6 +1027,7 @@ pub const CAPTURE_MIX: ToolSpec = ToolSpec::new("capture_mix");
 pub const LIST_CAPTURES: ToolSpec = ToolSpec::new("list_captures");
 pub const MEASURE_CAPTURE: ToolSpec = ToolSpec::new("measure_capture");
 pub const DELETE_TRACK: ToolSpec = ToolSpec::new("delete_track");
+pub const RESET_SET: ToolSpec = ToolSpec::new("reset_set");
 pub const BACK_TO_ARRANGEMENT: ToolSpec = ToolSpec::new("back_to_arrangement");
 pub const SET_ARRANGEMENT_LOOP: ToolSpec = ToolSpec::new("set_arrangement_loop");
 pub const START_PERFORMANCE: ToolSpec = ToolSpec::new("start_performance");
@@ -4412,6 +4425,62 @@ pub fn measure_capture_body(live: &LiveState, p: &MeasureCaptureParams) -> ToolR
 
 // ── Tracks and transport ────────────────────────────────────────────────────
 
+/// Empty the open set back to what Live starts with.
+///
+/// The Live API has no File > New, so nothing here opens a document: this
+/// clears the one that is open — every clip, every track, the locators, the
+/// scene names — and puts the tempo, the tracks and the scene count back to
+/// a new set's. It is how a test, a demo or a differential run starts from
+/// the same place twice.
+pub fn reset_set_body(live: &LiveState, p: &ResetSetParams) -> ToolResult {
+    require(live, "reset_set")?;
+    let mut params = serde_json::Map::new();
+    if let Some(v) = p.tracks {
+        if !(0..=64).contains(&v) {
+            return Err(format!(
+                "tracks: {v} — a fresh set has between 0 and 64 tracks"
+            ));
+        }
+        params.insert("tracks".into(), json!(v));
+    }
+    if let Some(v) = p.scenes {
+        if !(1..=128).contains(&v) {
+            return Err(format!(
+                "scenes: {v} — Live keeps at least one scene, and this stops at 128"
+            ));
+        }
+        params.insert("scenes".into(), json!(v));
+    }
+    if let Some(v) = p.tempo {
+        if !(20.0..=999.0).contains(&v) {
+            return Err(format!("tempo: {v} BPM is outside Live's range (20-999)"));
+        }
+        params.insert("tempo".into(), json!(v));
+    }
+    if let Some(v) = p.returns {
+        params.insert("returns".into(), json!(v));
+    }
+    let r = live
+        .send_command("reset_set", Some(Value::Object(params)))
+        .map_err(|e| live_err("reset the set", e))?;
+    let removed = r.get("removed").cloned().unwrap_or_else(|| json!({}));
+    let count = |k: &str| removed.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+    Ok(format!(
+        "The set is back to a new one: {} tracks ({}), {} scenes, {} BPM. \
+         Cleared {} session clip(s), {} Arrangement clip(s), {} track(s), {} locator(s). \
+         The Live API has no File > New, so this emptied the open set rather than opening one — \
+         and nothing is saved until you save it in Live (Cmd+S).",
+        get_display(&r, "track_count", "?"),
+        join_names(r.get("tracks")),
+        get_display(&r, "scene_count", "?"),
+        get_display(&r, "tempo", "?"),
+        count("session_clips"),
+        count("arrangement_clips"),
+        count("tracks"),
+        count("locators"),
+    ))
+}
+
 pub fn delete_track_body(live: &LiveState, p: &TrackParams) -> ToolResult {
     require(live, "delete_track")?;
     guard_delete(live, p.track_index, None)?;
@@ -6619,6 +6688,7 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "list_captures" => (Empty, list_captures_body),
         "measure_capture" => (MeasureCaptureParams, measure_capture_body),
         "delete_track" => (TrackParams, delete_track_body),
+        "reset_set" => (ResetSetParams, reset_set_body),
         "back_to_arrangement" => (Empty, back_to_arrangement_body),
         "set_arrangement_loop" => (SetArrangementLoopParams, set_arrangement_loop_body),
         "start_performance" => (StartPerformanceParams, start_performance_body),
@@ -8149,6 +8219,15 @@ impl Server {
         self.run(&MEASURE_CAPTURE, p, measure_capture_body).await
     }
 
+    /// Empty the open Live set back to what a new one is: the tracks, the
+    /// scenes, the tempo, and every clip and locator gone. Live's API has
+    /// no File > New, so this clears the set that is open rather than
+    /// opening a fresh one, and nothing is saved until you save it in Live.
+    #[tool(name = "adv_reset_set")]
+    async fn reset_set(&self, Parameters(p): Parameters<ResetSetParams>) -> CallToolResult {
+        self.run(&RESET_SET, p, reset_set_body).await
+    }
+
     /// Delete a track by index. Later tracks move up by one. Refused while
     /// a performance runs if the track is playing.
     #[tool(name = "delete_track")]
@@ -8881,7 +8960,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 104);
+        assert_eq!(tools.len(), 105);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();
@@ -8899,7 +8978,7 @@ mod tests {
         // intent. Keeping a performance is part of playing one.
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 104, "the take must not add a tool");
+        assert_eq!(tools.len(), 105, "the take must not add a tool");
         // start_performance is served as adv_start_performance (decision 0006).
         for name in ["adv_start_performance", "play_song"] {
             let tool = tools.iter().find(|t| t.name == name).unwrap();

@@ -63,7 +63,7 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.33.1"
+SCRIPT_VERSION = "1.34.1"
 PROTOCOL_VERSION = 2
 # Where client sockets are read. "main_thread_tick": sockets are non-blocking
 # and drained from the same tick the clock runs on, so a message waits one
@@ -875,6 +875,8 @@ class AbletonMCP(ControlSurface):
                 params.get("track_index", 0), params.get("clip_index", 0), params)
         elif command_type == "play_from":
             result = self._play_from(params.get("time", 0.0), response_queue)
+        elif command_type == "reset_set":
+            return self._reset_set(params)
         elif command_type == "delete_track":
             result = self._delete_track(params.get("track_index", -1))
         elif command_type == "back_to_arrangement":
@@ -3112,6 +3114,132 @@ class AbletonMCP(ControlSurface):
             return DEFERRED
         except Exception as e:
             self.log_message("Error playing from position: " + str(e))
+            raise
+
+    def _reset_set(self, params):
+        """Back to a fresh set, as near as the Live API allows.
+
+        The API has no File > New: nothing here opens a document. This
+        empties the one that is open and puts it back to what Live starts
+        with — the tracks, the scenes, the tempo — so a test, a demo or a
+        differential run begins from a known place instead of from whatever
+        the last session left. A generator: a set with fifty tracks would
+        hold Live's main thread for seconds otherwise.
+
+        params: tracks (2 MIDI + 2 audio by default), scenes (8), tempo
+        (120), returns (keep them by default; true deletes them too).
+        """
+        want_tracks = int(params.get("tracks", 4))
+        want_scenes = max(1, int(params.get("scenes", 8)))
+        tempo = float(params.get("tempo", 120.0))
+        drop_returns = bool(params.get("returns", False))
+        song = self._song
+        removed = {"tracks": 0, "return_tracks": 0, "scenes": 0, "arrangement_clips": 0,
+                   "session_clips": 0, "locators": 0}
+        try:
+            song.begin_undo_step()
+            try:
+                if self._safe_song_property("is_playing", bool, False):
+                    song.stop_playing()
+                yield None
+
+                # The Arrangement first: a clip there outlives its track's slot.
+                for track in list(song.tracks):
+                    clips = list(getattr(track, "arrangement_clips", []) or [])
+                    for clip in clips:
+                        try:
+                            track.delete_clip(clip)
+                            removed["arrangement_clips"] += 1
+                        except Exception:
+                            pass
+                    yield None
+
+                for track in list(song.tracks):
+                    for slot in list(track.clip_slots):
+                        if slot.has_clip:
+                            try:
+                                slot.delete_clip()
+                                removed["session_clips"] += 1
+                            except Exception:
+                                pass
+                    yield None
+
+                # Locators: Live only toggles one at the play position.
+                for cue in list(getattr(song, "cue_points", []) or []):
+                    try:
+                        song.current_song_time = float(cue.time)
+                        song.set_or_delete_cue()
+                        removed["locators"] += 1
+                    except Exception:
+                        pass
+                    yield None
+                song.current_song_time = 0.0
+
+                # Tracks: Live keeps at least one, so build the new ones
+                # first and delete the old ones after.
+                before = len(list(song.tracks))
+                midi = (want_tracks + 1) // 2
+                audio = want_tracks - midi
+                for _ in range(midi):
+                    song.create_midi_track(-1)
+                    yield None
+                for _ in range(audio):
+                    song.create_audio_track(-1)
+                    yield None
+                for _ in range(before):
+                    song.delete_track(0)
+                    removed["tracks"] += 1
+                    yield None
+
+                if drop_returns:
+                    while len(list(song.return_tracks)):
+                        song.delete_return_track(len(list(song.return_tracks)) - 1)
+                        removed["return_tracks"] += 1
+                        yield None
+
+                while len(list(song.scenes)) > want_scenes:
+                    song.delete_scene(len(list(song.scenes)) - 1)
+                    removed["scenes"] += 1
+                    yield None
+                while len(list(song.scenes)) < want_scenes:
+                    song.create_scene(-1)
+                    yield None
+                for scene in list(song.scenes):
+                    try:
+                        scene.name = ""
+                        scene.tempo = -1.0
+                    except Exception:
+                        pass
+                yield None
+
+                song.tempo = tempo
+                # song_length is read-only and derived: Live keeps it at the
+                # furthest the set has ever reached, so an emptied set still
+                # reports the old length. Nothing here can move it.
+                for name, value in (("signature_numerator", 4), ("signature_denominator", 4),
+                                    ("loop", False), ("loop_start", 0.0), ("loop_length", 16.0),
+                                    ("back_to_arranger", False), ("current_song_time", 0.0),
+                                    ("groove_amount", 0.0), ("record_mode", False)):
+                    try:
+                        setattr(song, name, value)
+                    except Exception:
+                        pass
+                # The tracks the reset created are the ones Live would name.
+                names = [("%s" % t.name) for t in song.tracks]
+            finally:
+                song.end_undo_step()
+            yield Done({
+                "reset": True,
+                "tracks": names,
+                "track_count": len(list(song.tracks)),
+                "return_track_count": len(list(song.return_tracks)),
+                "scene_count": len(list(song.scenes)),
+                "tempo": float(song.tempo),
+                "removed": removed,
+                "note": "The Live API has no File > New: this emptied the open set, it did not open one. Nothing is saved until you save it in Live (Cmd+S).",
+            })
+        except Exception as e:
+            self.log_message("Error resetting the set: " + str(e))
             raise
 
     def _delete_track(self, track_index):

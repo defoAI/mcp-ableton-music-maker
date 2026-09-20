@@ -113,20 +113,26 @@ class Conformance(unittest.TestCase):
         self.assertEqual(missing, [], "%s; missing:\n  %s" % (report, "\n  ".join(missing)))
         self.assertEqual(wrong, [], "%s; wrong shape:\n  %s" % (report, "\n  ".join(wrong)))
 
-    def test_sequences_are_tuples_as_in_live(self):
+    def test_sequences_are_vectors_as_in_live(self):
+        """Live's sequence type is its own `Vector` — `describe song.tracks`
+        on 12.4.6 reports `class: Vector`, and it is neither a list nor a
+        tuple, which is why `run … get` hands back its repr."""
         s = fake_live.default_set()
         for seq in (s.tracks, s.return_tracks, s.scenes, s.cue_points,
                     s.tracks[0].clip_slots, s.tracks[0].devices, s.tracks[0].arrangement_clips,
                     s.tracks[0].mixer_device.sends, s.return_tracks[0].devices[0].parameters,
                     s.master_track.mixer_device.sends):
-            self.assertIsInstance(seq, tuple)
+            self.assertIsInstance(seq, fake_live.Vector)
+            self.assertNotIsInstance(seq, (list, tuple))
 
     def test_describe_sees_writable_and_read_only_as_live_has_them(self):
         """What `describe` derives from `fset`, on members the script sets."""
         writable = [(fake_live.Song, "tempo"), (fake_live.Track, "name"), (fake_live.Track, "mute"),
+                    # Live reports these writable; verified 2026-09-20.
+                    (fake_live.Song, "is_playing"), (fake_live.Track, "color"),
                     (fake_live.Clip, "name"), (fake_live.Clip, "loop_end"), (fake_live.Scene, "name"),
                     (fake_live.DeviceParameter, "value"), (fake_live.MixerDevice, "crossfade_assign")]
-        read_only = [(fake_live.Song, "is_playing"), (fake_live.Song, "tracks"), (fake_live.Clip, "length"),
+        read_only = [(fake_live.Song, "exclusive_arm"), (fake_live.Song, "tracks"), (fake_live.Clip, "length"),
                      (fake_live.Clip, "is_midi_clip"), (fake_live.Track, "clip_slots"),
                      (fake_live.DeviceParameter, "min"), (fake_live.DeviceParameter, "name")]
         for cls, m in writable:

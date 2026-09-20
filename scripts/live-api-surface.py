@@ -18,7 +18,8 @@ import ast, collections, os, sys, re
 
 SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "AbletonMusicMaker_Remote_Script", "__init__.py")
-src = open(SCRIPT, encoding="utf-8").read()
+with open(SCRIPT, encoding="utf-8") as _handle:
+    src = _handle.read()
 tree = ast.parse(src)
 
 # receiver name -> Live class

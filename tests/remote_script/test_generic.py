@@ -140,10 +140,23 @@ class Run(unittest.TestCase):
         next(gen)                      # the get
         self.assertEqual(next(gen).result["t"], 120.0)
 
-    def test_a_list_comes_back_as_values_not_objects(self):
+    def test_getting_a_whole_sequence_gives_lives_repr_not_its_contents(self):
+        """What Live really does, so nobody builds on the other answer.
+
+        `song.tracks` is a `Vector`, and `_jsonable` serialises only what is
+        `isinstance(..., (list, tuple))` — a Vector is neither, so the value
+        that comes back is the object's repr. Verified against Live 12.4.6
+        on 2026-09-20: `run get song.tracks` returned
+        `"<Base.Vector object at 0x1656f6fc0>"`. Read the members by index,
+        or ask for the attribute you want (`song.tracks[0].name`)."""
         out = self.run_ops([{"op": "get", "path": "song.tracks", "as": "tracks"}])
-        self.assertEqual(len(out["tracks"]), 2)
-        self.assertTrue(all(isinstance(x, str) for x in out["tracks"]))
+        self.assertIsInstance(out["tracks"], str)
+        self.assertIn("Vector", out["tracks"])
+
+    def test_a_member_of_a_sequence_comes_back_as_a_value(self):
+        out = self.run_ops([{"op": "get", "path": "song.tracks[0].name", "as": "first"},
+                            {"op": "get", "path": "song.tracks[1].name", "as": "second"}])
+        self.assertTrue(all(isinstance(v, str) for v in (out["first"], out["second"])))
 
     def test_the_failing_op_is_named(self):
         with self.assertRaises(ValueError) as e:

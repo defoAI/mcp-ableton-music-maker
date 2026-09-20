@@ -84,6 +84,74 @@ class DrivenClock(object):
 
 # ── Descriptors ─────────────────────────────────────────────────────────────
 
+
+class Vector(object):
+    """Live's sequence type.
+
+    `song.tracks` is not a list and not a tuple in Live — `describe` reports
+    its class as `Vector`, and `_jsonable` (which tests `isinstance(value,
+    (list, tuple))`) therefore hands a `run … get` its repr rather than its
+    contents. A model that used a tuple here told both of those a different
+    story, so this is a sequence that is neither. Verified against Live
+    12.4.6 on 2026-09-20 with `describe song.tracks`.
+    """
+
+    __slots__ = ("_items",)
+
+    def __init__(self, items=()):
+        self._items = list(items)
+
+    def __len__(self):
+        return len(self._items)
+
+    def __getitem__(self, index):
+        return self._items[index]
+
+    def __iter__(self):
+        return iter(self._items)
+
+    def __contains__(self, item):
+        return item in self._items
+
+    def __eq__(self, other):
+        if isinstance(other, Vector):
+            return self._items == other._items
+        if isinstance(other, (list, tuple)):
+            return self._items == list(other)
+        return NotImplemented
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
+
+    def __repr__(self):
+        return "<Base.%s object at 0x%012x>" % (type(self).__name__, id(self))
+
+    def count(self, item):
+        return self._items.count(item)
+
+    def index(self, item):
+        return self._items.index(item)
+
+
+class RoutingTypeVector(Vector):
+    """Live's own name for the vector of routing types."""
+
+
+# Live's Quantization enum values. Module level on purpose: Live's Song has
+# no `Q_BAR` attribute, so a model that put them on the class would describe
+# a Live that does not exist. `live_module()` hands these to the script as
+# `Live.Song.Quantization`.
+Q_NONE, Q_8_BARS, Q_4_BARS, Q_2_BARS = 0, 1, 2, 3
+Q_BAR, Q_HALF, Q_HALF_TRIPLET, Q_QUARTER = 4, 5, 6, 7
+Q_QUARTER_TRIPLET, Q_EIGHTH, Q_EIGHTH_TRIPLET = 8, 9, 10
+Q_SIXTEENTH, Q_SIXTEENTH_TRIPLET, Q_THIRTYSECOND = 11, 12, 13
+
+MONITOR_IN, MONITOR_AUTO, MONITOR_OFF = 0, 1, 2
+AUTOMATION_NONE, AUTOMATION_PLAYING, AUTOMATION_OVERRIDDEN = 0, 1, 2
+TYPE_AUDIO_EFFECT, TYPE_INSTRUMENT, TYPE_MIDI_EFFECT = 0, 1, 2
+LAUNCH_MODE_TRIGGER, LAUNCH_MODE_GATE, LAUNCH_MODE_TOGGLE, LAUNCH_MODE_REPEAT = 0, 1, 2, 3
+
 def live_prop(attr, readonly=False, cast=None, doc=None):
     """A Live member: stored under `_<attr>`, exposed as a real property so
     `describe` sees the right `readonly`."""
@@ -101,15 +169,60 @@ def live_prop(attr, readonly=False, cast=None, doc=None):
     return property(getter, setter, doc=doc)
 
 
+def _routing_seq(attr, doc=None):
+    """A Vector Live names `RoutingTypeVector`."""
+    storage = "_" + attr
+
+    def getter(self):
+        return RoutingTypeVector(getattr(self, storage))
+
+    return property(getter, doc=doc)
+
+
 def seq_prop(attr, doc=None):
     """A Live sequence: a tuple over the private list."""
     storage = "_" + attr
 
     def getter(self):
-        return tuple(getattr(self, storage))
+        return Vector(getattr(self, storage))
 
     return property(getter, doc=doc)
 
+
+
+def with_listeners(cls):
+    """Give a class Live's listener boilerplate.
+
+    Every observable property in the Live Object Model carries three
+    methods — `add_<name>_listener`, `remove_<name>_listener` and
+    `<name>_has_listener`. Nothing in the Remote Script calls them (it runs
+    off Live's tick, not off notifications), but `describe` lists what an
+    object has, so a model without them tells Claude about a Live that does
+    not exist. Generated from the class's own properties, so a member added
+    to the model gets its three for free.
+    """
+    names = [n for n, v in vars(cls).items()
+             if isinstance(v, property) and not n.startswith("_")]
+    for name in names:
+        def make(name):
+            def add(self, callback):
+                self._listeners.setdefault(name, []).append(callback)
+
+            def remove(self, callback):
+                try:
+                    self._listeners.get(name, []).remove(callback)
+                except ValueError:
+                    raise RuntimeError("listener was not connected")
+
+            def has(self, callback=None):
+                registered = self._listeners.get(name, [])
+                return bool(registered) if callback is None else callback in registered
+            return add, remove, has
+        add, remove, has = make(name)
+        setattr(cls, "add_%s_listener" % name, add)
+        setattr(cls, "remove_%s_listener" % name, remove)
+        setattr(cls, "%s_has_listener" % name, has)
+    return cls
 
 class LiveObject(object):
     """What every Live object has: a name for messages, an id for `==`."""
@@ -118,6 +231,7 @@ class LiveObject(object):
     def __init__(self):
         self._id = LiveObject._next_id
         LiveObject._next_id += 1
+        self._listeners = {}
 
     def __eq__(self, other):
         return isinstance(other, LiveObject) and other._id == self._id
@@ -268,38 +382,68 @@ class LatencyTable(object):
 
 # ── Display curves ──────────────────────────────────────────────────────────
 
-# The fader taper the server assumes (src/song.rs): value on Live's 0-1
-# scale -> dB, straight lines between these points.
-VOLUME_CURVE = [(0.0, -80.0), (0.4, -30.0), (0.7, -12.0), (0.85, 0.0), (1.0, 6.0)]
-_CURVE_X = [x for x, _ in VOLUME_CURVE]
+# Live's volume fader taper, measured on Live 12.4.6 on 2026-09-20 by
+# asking `volume.str_for_value` at twenty-one fader positions:
+#
+#   0.05 -57.2   0.20 -34.4   0.40 -18.0   0.70  -6.0   0.90  +2.0
+#   0.10 -48.6   0.25 -28.8   0.50 -14.0   0.85   0.0   1.00  +6.0
+#
+# Above 0.4 it is a straight 40 dB per unit; below it a quadratic, and both
+# reproduce every measured point to the decimal Live prints. 0.0 is -inf.
+# This is not the curve in src/song.rs's test fixture, which puts -30 dB at
+# 0.4 and -12 dB at 0.7 where Live puts -18 and -6.
+VOLUME_UNITY = 0.85            # 0 dB
+VOLUME_TOP_DB = 6.0            # at 1.0
+_TAPER_KNEE = 0.4              # where the straight part starts
+_TAPER_SLOPE, _TAPER_OFFSET = 40.0, -34.0        # dB = 40v - 34 above the knee
+_TAPER_A, _TAPER_B, _TAPER_C = -200.0, 202.0, -66.8   # below it
 
 
 def fader_to_db(value):
-    value = max(0.0, min(1.0, float(value)))
-    i = bisect.bisect_right(_CURVE_X, value) - 1
-    i = max(0, min(i, len(VOLUME_CURVE) - 2))
-    (x0, y0), (x1, y1) = VOLUME_CURVE[i], VOLUME_CURVE[i + 1]
-    return y0 + (y1 - y0) * (value - x0) / (x1 - x0)
+    """The dB Live shows for a fader position."""
+    v = max(0.0, min(1.0, float(value)))
+    if v <= 0.0:
+        return float("-inf")
+    if v >= _TAPER_KNEE:
+        return _TAPER_SLOPE * v + _TAPER_OFFSET
+    return _TAPER_A * v * v + _TAPER_B * v + _TAPER_C
 
 
 def db_to_fader(db):
+    """The fader position that shows this dB: the taper, inverted."""
     db = float(db)
-    pts = VOLUME_CURVE
-    if db <= pts[0][1]:
-        return pts[0][0]
-    if db >= pts[-1][1]:
-        return pts[-1][0]
-    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-        if y0 <= db <= y1:
-            return x0 + (x1 - x0) * (db - y0) / (y1 - y0)
-    return 0.85
+    if db <= fader_to_db(0.001):
+        return 0.0
+    if db >= VOLUME_TOP_DB:
+        return 1.0
+    if db >= _TAPER_A * _TAPER_KNEE ** 2 + _TAPER_B * _TAPER_KNEE + _TAPER_C:
+        return (db - _TAPER_OFFSET) / _TAPER_SLOPE
+    # -200v^2 + 202v - 66.8 = db, the root inside [0, 0.4]
+    a, b, c = _TAPER_A, _TAPER_B, _TAPER_C - db
+    disc = b * b - 4 * a * c
+    if disc < 0:
+        return 0.0
+    root = (-b + disc ** 0.5) / (2 * a)
+    return max(0.0, min(_TAPER_KNEE, root))
 
 
 def display_db(value):
-    """Live's volume readout: "-inf dB" at the bottom, else two decimals."""
-    if value <= 0.0:
+    """Live's volume readout.
+
+    Three decimals, trailing zeros trimmed but never below one: Live prints
+    "-6.0 dB" at fader 0.7 and "-6.001 dB" at 0.6999869. Verified on
+    12.4.6, 2026-09-20 — the precision matters because
+    `_value_from_display` bisects over this string, so a coarser readout
+    lands the fader somewhere Live would not."""
+    db = fader_to_db(value)
+    if db == float("-inf"):
         return "-inf dB"
-    return "%.2f dB" % fader_to_db(value)
+    text = "%.3f" % db
+    if "." in text:
+        text = text.rstrip("0")
+        if text.endswith("."):
+            text += "0"
+    return "%s dB" % text
 
 
 def display_pan(value):
@@ -337,10 +481,7 @@ def display_plain(value):
 class DeviceParameter(LiveObject):
     """Live.DeviceParameter.DeviceParameter."""
 
-    AUTOMATION_NONE = 0
-    AUTOMATION_PLAYING = 1
-    AUTOMATION_OVERRIDDEN = 2
-
+            
     def __init__(self, name, value=0.0, minimum=0.0, maximum=1.0,
                  display=None, value_items=None, original_name=None):
         LiveObject.__init__(self)
@@ -353,7 +494,7 @@ class DeviceParameter(LiveObject):
         self._display = display or (self._quantized_display if self._is_quantized else display_plain)
         self._value = float(value)
         self._default_value = float(value)
-        self._automation_state = self.AUTOMATION_NONE
+        self._automation_state = AUTOMATION_NONE
         self._is_enabled = True
         # Set for a mixer strip's parameters: the only write anyone has
         # timed (`set_track_mixer`, 0.7 ms) is a mixer write.
@@ -372,7 +513,7 @@ class DeviceParameter(LiveObject):
 
     @property
     def is_automated(self):
-        return self._automation_state != self.AUTOMATION_NONE
+        return self._automation_state != AUTOMATION_NONE
 
     @property
     def value(self):
@@ -389,8 +530,8 @@ class DeviceParameter(LiveObject):
             self._song._charge(self._charge_as)
         self._value = float(int(round(v))) if self._is_quantized else v
         # A manual move while automation plays: Live shows it overridden.
-        if self._automation_state == self.AUTOMATION_PLAYING:
-            self._automation_state = self.AUTOMATION_OVERRIDDEN
+        if self._automation_state == AUTOMATION_PLAYING:
+            self._automation_state = AUTOMATION_OVERRIDDEN
 
     def _quantized_display(self, value):
         i = int(round(float(value))) - int(round(self._min))
@@ -406,8 +547,8 @@ class DeviceParameter(LiveObject):
         return self._display(self._value)
 
     def re_enable_automation(self):
-        if self._automation_state == self.AUTOMATION_OVERRIDDEN:
-            self._automation_state = self.AUTOMATION_PLAYING
+        if self._automation_state == AUTOMATION_OVERRIDDEN:
+            self._automation_state = AUTOMATION_PLAYING
 
 
 # ── MixerDevice ─────────────────────────────────────────────────────────────
@@ -429,15 +570,28 @@ class MixerDevice(LiveObject):
         self._crossfade_assign = 1  # 0 A, 1 none, 2 B
 
     @staticmethod
-    def _new_send(i):
-        return DeviceParameter("Send %s" % chr(ord("A") + i), 0.0, 0.0, 1.0, display_send)
+    def _new_send(i, return_track=None):
+        """Live names a send after the return it feeds — the send to
+        "A-Reverb" is called "A-Reverb", not "Send A". Verified against Live
+        12.4.6 on 2026-09-20."""
+        name = return_track.name if return_track is not None else "%s-Return" % chr(ord("A") + i)
+        return DeviceParameter(name, 0.0, 0.0, 1.0, display_send)
 
     volume = live_prop("volume", readonly=True)
     panning = live_prop("panning", readonly=True)
     crossfader = live_prop("crossfader", readonly=True)
     track_activator = live_prop("track_activator", readonly=True)
-    sends = seq_prop("sends")
     crossfade_assign = live_prop("crossfade_assign", cast=int)
+
+    @property
+    def sends(self):
+        """Each send carries the name of the return it feeds, so renaming a
+        return renames the sends, as it does in Live."""
+        returns = list(self._song._return_tracks)
+        for i, send in enumerate(self._sends):
+            if i < len(returns):
+                send._name = returns[i].name
+        return Vector(self._sends)
 
 
 # ── Devices ─────────────────────────────────────────────────────────────────
@@ -446,17 +600,14 @@ class Device(LiveObject):
     """Live.Device.Device. `class_name` is Live's internal name
     ("OriginalSimpler", "Eq8"), `class_display_name` the one in the browser."""
 
-    TYPE_AUDIO_EFFECT = 0
-    TYPE_INSTRUMENT = 1
-    TYPE_MIDI_EFFECT = 2
-
+            
     def __init__(self, name, class_name=None, parameters=None, device_type=None,
                  class_display_name=None, chains=None, can_have_drum_pads=False):
         LiveObject.__init__(self)
         self._name = name
         self._class_name = class_name or name.replace(" ", "")
         self._class_display_name = class_display_name or name
-        self._type = self.TYPE_INSTRUMENT if device_type is None else device_type
+        self._type = TYPE_INSTRUMENT if device_type is None else device_type
         self._is_active = True
         # Every Live device leads with "Device On".
         on = DeviceParameter("Device On", 1.0, 0.0, 1.0, value_items=("Off", "On"))
@@ -555,10 +706,8 @@ class RackDevice(Device):
 
 class MidiNote(object):
     """Live.Clip.MidiNote (Live 11+): what `get_notes_extended` returns."""
-    _next_note_id = 1
-
     def __init__(self, pitch, start_time, duration, velocity=100.0, mute=False,
-                 probability=1.0, velocity_deviation=0.0, release_velocity=64.0):
+                 probability=1.0, velocity_deviation=0.0, release_velocity=0.0):
         self.pitch = int(pitch)
         self.start_time = float(start_time)
         self.duration = float(duration)
@@ -566,9 +715,11 @@ class MidiNote(object):
         self.mute = bool(mute)
         self.probability = float(probability)
         self.velocity_deviation = float(velocity_deviation)
+        # Live reports 0.0 unless the note carries one.
         self.release_velocity = float(release_velocity)
-        self.note_id = MidiNote._next_note_id
-        MidiNote._next_note_id += 1
+        # Live numbers a clip's notes from 1, per clip. The clip sets this
+        # when the note joins it; until then it is unnumbered, as in Live.
+        self.note_id = 0
 
     def as_tuple(self):
         return (self.pitch, self.start_time, self.duration, self.velocity, self.mute)
@@ -597,15 +748,36 @@ class AutomationEnvelope(LiveObject):
 
 # ── Clip ────────────────────────────────────────────────────────────────────
 
+
+def _audio_only(attr, readonly=False, cast=None):
+    """A member Live puts on audio clips and not on MIDI ones.
+
+    Reading `gain` or `pitch_coarse` on a MIDI clip raises in Live, which is
+    why `get_clip_info` leaves them out of a MIDI clip's reply — a model
+    that answered would put fields in the reply that Live never sends."""
+    storage = "_" + attr
+
+    def getter(self):
+        if self._is_midi_clip:
+            raise AttributeError("'%s' is only on audio clips" % attr)
+        return getattr(self, storage)
+
+    if readonly:
+        return property(getter)
+
+    def setter(self, value):
+        if self._is_midi_clip:
+            raise AttributeError("'%s' is only on audio clips" % attr)
+        setattr(self, storage, cast(value) if cast is not None else value)
+
+    return property(getter, setter)
+
+
 class Clip(LiveObject):
     """Live.Clip.Clip. One class for Session and Arrangement clips, MIDI and
     audio, as in Live; `start_time` is where it sits in the Arrangement."""
 
-    LAUNCH_MODE_TRIGGER = 0
-    LAUNCH_MODE_GATE = 1
-    LAUNCH_MODE_TOGGLE = 2
-    LAUNCH_MODE_REPEAT = 3
-
+                
     def __init__(self, song, track, length, midi=True, name="", file_path=None,
                  start_time=0.0, in_arrangement=False):
         LiveObject.__init__(self)
@@ -626,7 +798,7 @@ class Clip(LiveObject):
         self._envelopes = {}
         self._color_index = track._color_index if track is not None else 0
         self._groove = None
-        self._launch_mode = self.LAUNCH_MODE_TRIGGER
+        self._launch_mode = LAUNCH_MODE_TRIGGER
         self._launch_quantization = 0  # q_global
         self._legato = False
         self._pitch_coarse = 0
@@ -645,7 +817,7 @@ class Clip(LiveObject):
     name = live_prop("name", cast=str)
     is_midi_clip = live_prop("is_midi_clip", readonly=True)
     is_audio_clip = live_prop("is_audio_clip", readonly=True)
-    file_path = live_prop("file_path", readonly=True)
+    file_path = _audio_only("file_path", readonly=True)
     is_arrangement_clip = live_prop("in_arrangement", readonly=True)
     start_marker = live_prop("start_marker", cast=float)
     end_marker = live_prop("end_marker", cast=float)
@@ -657,16 +829,19 @@ class Clip(LiveObject):
     launch_mode = live_prop("launch_mode", cast=int)
     launch_quantization = live_prop("launch_quantization", cast=int)
     legato = live_prop("legato", cast=bool)
-    pitch_coarse = live_prop("pitch_coarse", cast=int)
-    pitch_fine = live_prop("pitch_fine", cast=float)
+    # gain, the pitch pair and the warp members exist on audio clips only:
+    # Live raises for them on a MIDI clip, and `get_clip_info` leaves them
+    # out of a MIDI clip's reply because of it.
+    pitch_coarse = _audio_only("pitch_coarse", cast=int)
+    pitch_fine = _audio_only("pitch_fine", cast=float)
     velocity_amount = live_prop("velocity_amount", cast=float)
     is_playing = live_prop("is_playing", readonly=True)
     is_recording = live_prop("is_recording", readonly=True)
     is_triggered = live_prop("is_triggered", readonly=True)
     muted = live_prop("muted", cast=bool)
-    warp_markers = live_prop("warp_markers", readonly=True)
-    warping = live_prop("warping", cast=bool)
-    gain = live_prop("gain", cast=float)
+    warp_markers = _audio_only("warp_markers", readonly=True)
+    warping = _audio_only("warping", cast=bool)
+    gain = _audio_only("gain", cast=float)
     signature_numerator = live_prop("signature_numerator", cast=int)
     signature_denominator = live_prop("signature_denominator", cast=int)
     canonical_parent = live_prop("track", readonly=True)
@@ -674,6 +849,10 @@ class Clip(LiveObject):
     @property
     def color(self):
         return _COLOR_TABLE[self._color_index % len(_COLOR_TABLE)]
+
+    @color.setter
+    def color(self, value):
+        self._color_index = _nearest_color_index(value)
 
     @property
     def length(self):
@@ -722,19 +901,26 @@ class Clip(LiveObject):
             if float(duration) <= 0.0:
                 raise RuntimeError("Invalid duration %r" % (duration,))
             self._notes.append(MidiNote(pitch, start, duration, velocity, mute))
+        self._renumber()
+
+    def _renumber(self):
+        """Live's note ids run from 1 within the clip, in time order."""
         self._notes.sort(key=lambda n: (n.start_time, n.pitch))
+        for i, note in enumerate(self._notes):
+            note.note_id = i + 1
 
     def add_new_notes(self, specs):
         self._midi_only("add_new_notes")
         for s in specs:
             self._notes.append(MidiNote(s["pitch"], s["start_time"], s["duration"],
                                         s.get("velocity", 100), s.get("mute", False)))
-        self._notes.sort(key=lambda n: (n.start_time, n.pitch))
+        self._renumber()
 
     def remove_notes(self, from_time, from_pitch, time_span, pitch_span):
         self._midi_only("remove_notes")
         gone = set(id(n) for n in self._select(from_time, from_pitch, time_span, pitch_span))
         self._notes = [n for n in self._notes if id(n) not in gone]
+        self._renumber()
 
     def remove_notes_extended(self, from_pitch, pitch_span, from_time, time_span):
         self.remove_notes(from_time, from_pitch, time_span, pitch_span)
@@ -788,6 +974,7 @@ class Clip(LiveObject):
         other._name = self._name
         other._notes = [MidiNote(n.pitch, n.start_time, n.duration, n.velocity, n.mute)
                         for n in self._notes]
+        other._renumber()
         other._loop_start, other._loop_end = self._loop_start, self._loop_end
         other._start_marker, other._end_marker = self._start_marker, self._end_marker
         other._looping = self._looping
@@ -928,18 +1115,32 @@ _COLOR_TABLE = [
 ]
 
 
+
+def _nearest_color_index(value):
+    """Live snaps a written colour to the nearest swatch in its palette."""
+    rgb = int(value)
+    r, g, b = (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255
+    best, best_d = 0, None
+    for i, swatch in enumerate(_COLOR_TABLE):
+        sr, sg, sb = (swatch >> 16) & 255, (swatch >> 8) & 255, swatch & 255
+        d = (sr - r) ** 2 + (sg - g) ** 2 + (sb - b) ** 2
+        if best_d is None or d < best_d:
+            best, best_d = i, d
+    return best
+
 class Track(LiveObject):
     """Live.Track.Track. `kind` is "midi", "audio", "return" or "master";
     the two last have no clip slots."""
 
-    MONITOR_IN = 0
-    MONITOR_AUTO = 1
-    MONITOR_OFF = 2
-
+            
     def __init__(self, song, name, kind="midi", color_index=0):
         LiveObject.__init__(self)
         self._song = song
         self._name = name
+        # A track Live has not been told the name of shows its position:
+        # `name` is derived, not stored. `default_set()` and the tests that
+        # want a named track set it, which pins it.
+        self._named = bool(name) and kind in ("return", "master")
         self._kind = kind
         self._has_midi_input = kind == "midi"
         self._has_audio_input = kind == "audio"
@@ -958,7 +1159,7 @@ class Track(LiveObject):
         self._solo = False
         self._arm = False
         self._color_index = color_index
-        self._current_monitoring_state = self.MONITOR_AUTO
+        self._current_monitoring_state = MONITOR_AUTO
         self._available_input_routing_types = (
             [RoutingType("All Ins"), RoutingType("Computer Keyboard")]
             if kind == "midi" else
@@ -975,7 +1176,32 @@ class Track(LiveObject):
         self._input_meter_level = 0.0
         self._implicit_arm = False
 
-    name = live_prop("name", cast=str)
+    @property
+    def name(self):
+        """Live derives an unnamed track's name from where it sits.
+
+        Delete the first of four and the rest become 1-, 2-, 3-; an
+        explicitly named track keeps its name wherever it moves. Verified
+        against Live 12.4.6 on 2026-09-20: deleting track 0 of
+        `1-MIDI 2-MIDI 3-Audio 4-Audio 5-MIDI` gave
+        `1-MIDI 2-Audio 3-Audio 4-MIDI`."""
+        if self._named:
+            return self._name
+        return "%d-%s" % (self._position(), "MIDI" if self._kind == "midi" else "Audio")
+
+    @name.setter
+    def name(self, value):
+        text = "%s" % value
+        # Clearing the name gives the track Live's default back.
+        self._named = bool(text)
+        self._name = text
+
+    def _position(self):
+        for i, t in enumerate(self._song._tracks):
+            if t is self:
+                return i + 1
+        return len(self._song._tracks) + 1
+
     has_midi_input = live_prop("has_midi_input", readonly=True)
     has_audio_input = live_prop("has_audio_input", readonly=True)
     has_audio_output = live_prop("has_audio_output", readonly=True)
@@ -992,8 +1218,8 @@ class Track(LiveObject):
     solo = live_prop("solo", cast=bool)
     color_index = live_prop("color_index", cast=int)
     current_monitoring_state = live_prop("current_monitoring_state", cast=int)
-    available_input_routing_types = seq_prop("available_input_routing_types")
-    available_output_routing_types = seq_prop("available_output_routing_types")
+    available_input_routing_types = _routing_seq("available_input_routing_types")
+    available_output_routing_types = _routing_seq("available_output_routing_types")
     output_routing_type = live_prop("output_routing_type")
     playing_slot_index = live_prop("playing_slot_index", readonly=True)
     fired_slot_index = live_prop("fired_slot_index", readonly=True)
@@ -1020,8 +1246,15 @@ class Track(LiveObject):
     @arm.setter
     def arm(self, value):
         if not self._can_be_armed:
-            raise RuntimeError("Track '%s' cannot be armed" % self._name)
+            raise RuntimeError("Track '%s' cannot be armed" % self.name)
         self._arm = bool(value)
+        # Live's exclusive_arm is on in a new set: arming one track disarms
+        # the rest, which is why only the last track an instrument was
+        # loaded onto stays armed after a build.
+        if self._arm and self._song._exclusive_arm:
+            for other in self._song._tracks:
+                if other is not self:
+                    other._arm = False
 
     @property
     def input_routing_type(self):
@@ -1037,9 +1270,14 @@ class Track(LiveObject):
     def color(self):
         return _COLOR_TABLE[self._color_index % len(_COLOR_TABLE)]
 
+    @color.setter
+    def color(self, value):
+        """Live takes an RGB integer and snaps it to the nearest swatch."""
+        self._color_index = _nearest_color_index(value)
+
     @property
     def arrangement_clips(self):
-        return tuple(sorted(self._arrangement_clips, key=lambda c: c._start_time))
+        return Vector(sorted(self._arrangement_clips, key=lambda c: c._start_time))
 
     @property
     def canonical_parent(self):
@@ -1167,6 +1405,10 @@ class Scene(LiveObject):
     def color(self):
         return _COLOR_TABLE[self._color_index % len(_COLOR_TABLE)]
 
+    @color.setter
+    def color(self, value):
+        self._color_index = _nearest_color_index(value)
+
     @property
     def is_empty(self):
         i = self._song._scene_index(self)
@@ -1175,7 +1417,7 @@ class Scene(LiveObject):
     @property
     def clip_slots(self):
         i = self._song._scene_index(self)
-        return tuple(t._clip_slots[i] for t in self._song._tracks)
+        return Vector(t._clip_slots[i] for t in self._song._tracks)
 
     def fire(self, force_legato=False, can_select_scene_on_launch=True):
         i = self._song._scene_index(self)
@@ -1286,7 +1528,7 @@ class SongView(LiveObject):
 class ApplicationView(LiveObject):
     """Live.Application.Application.View: Session or Arranger on screen."""
 
-    VIEWS = ("Session", "Arranger", "Browser", "Detail", "Detail/Clip", "Detail/DeviceChain")
+    _VIEWS = ("Session", "Arranger", "Browser", "Detail", "Detail/Clip", "Detail/DeviceChain")
 
     def __init__(self):
         LiveObject.__init__(self)
@@ -1296,7 +1538,7 @@ class ApplicationView(LiveObject):
     focused_document_view = live_prop("focused_document_view", readonly=True)
 
     def show_view(self, name):
-        if name not in self.VIEWS:
+        if name not in self._VIEWS:
             raise RuntimeError("Unknown view '%s'" % name)
         if name in ("Session", "Arranger"):
             self._visible.discard("Session")
@@ -1382,7 +1624,7 @@ class Browser(LiveObject):
     user_library = _root("user_library")
     user_folders = _root("user_folders")
     current_project = _root("current_project")
-    hotswap_target = live_prop("hotswap_target", readonly=True)
+    hotswap_target = live_prop("hotswap_target")
 
     del _root
 
@@ -1426,10 +1668,16 @@ class Browser(LiveObject):
                 raise RuntimeError("Nowhere to load the sample")
             return
         device = loads(self._song)
-        if device._type == Device.TYPE_INSTRUMENT:
+        if device._type == TYPE_INSTRUMENT:
             if not track._has_midi_input:
                 raise RuntimeError("Cannot load an instrument on an audio track")
             self._song._replace_instrument(track, device)
+            # Live arms the track an instrument lands on, so it can be
+            # played straight away. Verified on 12.4.6, 2026-09-20:
+            # load_browser_item onto an unarmed track left arm True, and
+            # left every other track alone.
+            if track._can_be_armed:
+                track.arm = True
         else:
             track._devices.append(device)
         self._song._view.select_device(device)
@@ -1482,21 +1730,7 @@ class Application(LiveObject):
 class Song(LiveObject):
     """Live.Song.Song: the set. Built empty, or from `default_set()`."""
 
-    Q_NONE = 0
-    Q_8_BARS = 1
-    Q_4_BARS = 2
-    Q_2_BARS = 3
-    Q_BAR = 4
-    Q_HALF = 5
-    Q_HALF_TRIPLET = 6
-    Q_QUARTER = 7
-    Q_QUARTER_TRIPLET = 8
-    Q_EIGHTH = 9
-    Q_EIGHTH_TRIPLET = 10
-    Q_SIXTEENTH = 11
-    Q_SIXTEENTH_TRIPLET = 12
-    Q_THIRTYSECOND = 13
-
+                                                        
     def __init__(self, scenes=8, version=(12, 4, 6)):
         LiveObject.__init__(self)
         self._tracks = []
@@ -1520,12 +1754,14 @@ class Song(LiveObject):
         self._session_record = False
         self._session_automation_record = False
         self._metronome = False
-        self._clip_trigger_quantization = self.Q_BAR
+        self._clip_trigger_quantization = Q_BAR
         self._midi_recording_quantization = 0
         self._root_note = 0
         self._scale_name = "Major"
-        self._scale_mode = False
-        self._groove_amount = 1.0
+        # Live 12 ships with the global scale switched on (C Major):
+        # verified 2026-09-20 against a fresh 12.4.6 set.
+        self._scale_mode = True
+        self._groove_amount = 0.0
         self._file_path = ""
         self._name = ""
         self._nudge_down = False
@@ -1554,7 +1790,8 @@ class Song(LiveObject):
     # ── plain properties ──
     signature_numerator = live_prop("signature_numerator", cast=int)
     signature_denominator = live_prop("signature_denominator", cast=int)
-    is_playing = live_prop("is_playing", readonly=True)
+    # Live lets the transport be started by writing this.
+    is_playing = live_prop("is_playing", cast=bool)
     loop = live_prop("loop", cast=bool)
     loop_start = live_prop("loop_start", cast=float)
     loop_length = live_prop("loop_length", cast=float)
@@ -1570,15 +1807,15 @@ class Song(LiveObject):
     scale_name = live_prop("scale_name", cast=str)
     scale_mode = live_prop("scale_mode", cast=bool)
     groove_amount = live_prop("groove_amount", cast=float)
-    file_path = live_prop("file_path", readonly=True)
+    file_path = _audio_only("file_path", readonly=True)
     name = live_prop("name", readonly=True)
     nudge_down = live_prop("nudge_down", cast=bool)
     nudge_up = live_prop("nudge_up", cast=bool)
     punch_in = live_prop("punch_in", cast=bool)
     punch_out = live_prop("punch_out", cast=bool)
-    exclusive_arm = live_prop("exclusive_arm", cast=bool)
-    exclusive_solo = live_prop("exclusive_solo", cast=bool)
-    select_on_launch = live_prop("select_on_launch", cast=bool)
+    exclusive_arm = live_prop("exclusive_arm", readonly=True)
+    exclusive_solo = live_prop("exclusive_solo", readonly=True)
+    select_on_launch = live_prop("select_on_launch", readonly=True)
     can_undo = live_prop("can_undo", readonly=True)
     can_redo = live_prop("can_redo", readonly=True)
     master_track = live_prop("master_track", readonly=True)
@@ -1591,7 +1828,7 @@ class Song(LiveObject):
 
     @property
     def cue_points(self):
-        return tuple(sorted(self._cue_points, key=lambda c: c._time))
+        return Vector(sorted(self._cue_points, key=lambda c: c._time))
 
     @property
     def tempo(self):
@@ -1746,24 +1983,23 @@ class Song(LiveObject):
 
     def create_midi_track(self, index=-1):
         self._charge("Song.create_midi_track")
-        n = sum(1 for t in self._tracks if t._kind == "midi") + 1
-        self._insert_track(Track(self, "%d MIDI" % n, "midi", self._next_color()), index)
+        # No name: Live shows the position until someone sets one.
+        self._insert_track(Track(self, "", "midi", self._next_color()), index)
 
     def create_audio_track(self, index=-1):
         self._charge("Song.create_audio_track")
-        n = sum(1 for t in self._tracks if t._kind == "audio") + 1
-        self._insert_track(Track(self, "%d Audio" % n, "audio", self._next_color()), index)
+        self._insert_track(Track(self, "", "audio", self._next_color()), index)
 
     def create_return_track(self):
         self._charge("Song.create_return_track")
         if len(self._return_tracks) >= 12:
             raise RuntimeError("Live allows at most 12 return tracks")
         letter = chr(ord("A") + len(self._return_tracks))
-        track = Track(self, "%s Return" % letter, "return", self._next_color())
+        track = Track(self, "%s-Return" % letter, "return", self._next_color())
         self._return_tracks.append(track)
         # Every track gains a send.
         for t in self._tracks:
-            t._mixer_device._sends.append(MixerDevice._new_send(len(self._return_tracks) - 1))
+            t._mixer_device._sends.append(MixerDevice._new_send(len(self._return_tracks) - 1, track))
         self._touch()
 
     def delete_track(self, index):
@@ -1876,10 +2112,10 @@ class Song(LiveObject):
 
     def _replace_instrument(self, track, device):
         """Loading an instrument replaces the one there, as Live does."""
-        track._devices = [d for d in track._devices if d._type != Device.TYPE_INSTRUMENT]
+        track._devices = [d for d in track._devices if d._type != TYPE_INSTRUMENT]
         at = 0
         for i, d in enumerate(track._devices):
-            if d._type == Device.TYPE_MIDI_EFFECT:
+            if d._type == TYPE_MIDI_EFFECT:
                 at = i + 1
         track._devices.insert(at, device)
         device._canonical_parent = track
@@ -1920,7 +2156,7 @@ class Song(LiveObject):
 
 # ── A set to start from ─────────────────────────────────────────────────────
 
-def _instrument(name, class_name, params=(), device_type=Device.TYPE_INSTRUMENT):
+def _instrument(name, class_name, params=(), device_type=TYPE_INSTRUMENT):
     def make(song):
         return Device(name, class_name, [DeviceParameter(*p) for p in params], device_type)
     return make
@@ -1961,7 +2197,7 @@ _SYNTH_PARAMS = (
 def default_browser(song):
     """Live's browser roots with a small, realistic tree: a handful of
     instruments, drum kits, effects and a user folder with samples."""
-    def dev(name, class_name, params=(), dtype=Device.TYPE_INSTRUMENT, uri=None):
+    def dev(name, class_name, params=(), dtype=TYPE_INSTRUMENT, uri=None):
         uri = uri or "query:Synths#%s" % name.replace(" ", "%20")
         return BrowserItem(name, uri, is_device=True, loads=_instrument(name, class_name, params, dtype))
 
@@ -1993,17 +2229,17 @@ def default_browser(song):
         ]),
     ])
     audio_effects = BrowserItem("Audio Effects", "query:AudioFx", [
-        dev("EQ Eight", "Eq8", _EQ_PARAMS, Device.TYPE_AUDIO_EFFECT, "query:AudioFx#EQ%20Eight"),
-        dev("Reverb", "Reverb", _REVERB_PARAMS, Device.TYPE_AUDIO_EFFECT, "query:AudioFx#Reverb"),
-        dev("Delay", "Delay", _DELAY_PARAMS, Device.TYPE_AUDIO_EFFECT, "query:AudioFx#Delay"),
-        dev("Compressor", "Compressor2", (("Threshold", 0.8, 0.0, 1.0, display_db), ("Ratio", 0.3, 0.0, 1.0, lambda v: "%.1f : 1" % (1 + float(v) * 9))), Device.TYPE_AUDIO_EFFECT, "query:AudioFx#Compressor"),
-        dev("Auto Filter", "AutoFilter", (("Frequency", 0.7, 0.0, 1.0, display_hz(20.0, 20000.0)),), Device.TYPE_AUDIO_EFFECT, "query:AudioFx#Auto%20Filter"),
-        dev("Utility", "StereoGain", (("Gain", 0.5, 0.0, 1.0, lambda v: "%.1f dB" % ((float(v) - 0.5) * 70)),), Device.TYPE_AUDIO_EFFECT, "query:AudioFx#Utility"),
+        dev("EQ Eight", "Eq8", _EQ_PARAMS, TYPE_AUDIO_EFFECT, "query:AudioFx#EQ%20Eight"),
+        dev("Reverb", "Reverb", _REVERB_PARAMS, TYPE_AUDIO_EFFECT, "query:AudioFx#Reverb"),
+        dev("Delay", "Delay", _DELAY_PARAMS, TYPE_AUDIO_EFFECT, "query:AudioFx#Delay"),
+        dev("Compressor", "Compressor2", (("Threshold", 0.8, 0.0, 1.0, display_db), ("Ratio", 0.3, 0.0, 1.0, lambda v: "%.1f : 1" % (1 + float(v) * 9))), TYPE_AUDIO_EFFECT, "query:AudioFx#Compressor"),
+        dev("Auto Filter", "AutoFilter", (("Frequency", 0.7, 0.0, 1.0, display_hz(20.0, 20000.0)),), TYPE_AUDIO_EFFECT, "query:AudioFx#Auto%20Filter"),
+        dev("Utility", "StereoGain", (("Gain", 0.5, 0.0, 1.0, lambda v: "%.1f dB" % ((float(v) - 0.5) * 70)),), TYPE_AUDIO_EFFECT, "query:AudioFx#Utility"),
     ])
     midi_effects = BrowserItem("MIDI Effects", "query:MidiFx", [
-        dev("Arpeggiator", "MidiArpeggiator", (("Rate", 0.5, 0.0, 1.0, display_plain),), Device.TYPE_MIDI_EFFECT, "query:MidiFx#Arpeggiator"),
-        dev("Chord", "MidiChord", (), Device.TYPE_MIDI_EFFECT, "query:MidiFx#Chord"),
-        dev("Scale", "MidiScale", (), Device.TYPE_MIDI_EFFECT, "query:MidiFx#Scale"),
+        dev("Arpeggiator", "MidiArpeggiator", (("Rate", 0.5, 0.0, 1.0, display_plain),), TYPE_MIDI_EFFECT, "query:MidiFx#Arpeggiator"),
+        dev("Chord", "MidiChord", (), TYPE_MIDI_EFFECT, "query:MidiFx#Chord"),
+        dev("Scale", "MidiScale", (), TYPE_MIDI_EFFECT, "query:MidiFx#Scale"),
     ])
     samples = BrowserItem("Samples", "query:Samples", [
         BrowserItem("kick.wav", "userfolder:/Samples#kick.wav", loads="/Samples/kick.wav"),
@@ -2036,14 +2272,14 @@ def default_browser(song):
 
 def default_set(version=(12, 4, 6)):
     """What a new Live set is: two MIDI tracks, two audio tracks, eight
-    scenes, two returns (A Reverb, B Delay), a Master at 0 dB, 120 BPM."""
+    scenes, two returns (A-Reverb, B-Delay), a Master at 0 dB, 120 BPM."""
     song = Song(scenes=8, version=version)
     song.create_return_track()
-    song._return_tracks[0]._name = "A Reverb"
-    song._return_tracks[0]._devices.append(_instrument("Reverb", "Reverb", _REVERB_PARAMS, Device.TYPE_AUDIO_EFFECT)(song))
+    song._return_tracks[0]._name = "A-Reverb"
+    song._return_tracks[0]._devices.append(_instrument("Reverb", "Reverb", _REVERB_PARAMS, TYPE_AUDIO_EFFECT)(song))
     song.create_return_track()
-    song._return_tracks[1]._name = "B Delay"
-    song._return_tracks[1]._devices.append(_instrument("Delay", "Delay", _DELAY_PARAMS, Device.TYPE_AUDIO_EFFECT)(song))
+    song._return_tracks[1]._name = "B-Delay"
+    song._return_tracks[1]._devices.append(_instrument("Delay", "Delay", _DELAY_PARAMS, TYPE_AUDIO_EFFECT)(song))
     song.create_midi_track()
     song.create_midi_track()
     song.create_audio_track()
@@ -2061,12 +2297,12 @@ def live_module(song):
     live.Song = types.SimpleNamespace(
         Song=Song,
         Quantization=types.SimpleNamespace(
-            q_no_q=Song.Q_NONE, q_8_bars=Song.Q_8_BARS, q_4_bars=Song.Q_4_BARS,
-            q_2_bars=Song.Q_2_BARS, q_bar=Song.Q_BAR, q_half=Song.Q_HALF,
-            q_half_triplet=Song.Q_HALF_TRIPLET, q_quarter=Song.Q_QUARTER,
-            q_quarter_triplet=Song.Q_QUARTER_TRIPLET, q_eight=Song.Q_EIGHTH,
-            q_eight_triplet=Song.Q_EIGHTH_TRIPLET, q_sixtenth=Song.Q_SIXTEENTH,
-            q_sixtenth_triplet=Song.Q_SIXTEENTH_TRIPLET, q_thirtytwoth=Song.Q_THIRTYSECOND),
+            q_no_q=Q_NONE, q_8_bars=Q_8_BARS, q_4_bars=Q_4_BARS,
+            q_2_bars=Q_2_BARS, q_bar=Q_BAR, q_half=Q_HALF,
+            q_half_triplet=Q_HALF_TRIPLET, q_quarter=Q_QUARTER,
+            q_quarter_triplet=Q_QUARTER_TRIPLET, q_eight=Q_EIGHTH,
+            q_eight_triplet=Q_EIGHTH_TRIPLET, q_sixtenth=Q_SIXTEENTH,
+            q_sixtenth_triplet=Q_SIXTEENTH_TRIPLET, q_thirtytwoth=Q_THIRTYSECOND),
         RecordingQuantization=types.SimpleNamespace(rec_q_no_q=0, rec_q_quarter=1, rec_q_eight=2,
                                                    rec_q_eight_triplet=3, rec_q_eight_eight_triplet=4,
                                                    rec_q_sixtenth=5, rec_q_sixtenth_triplet=6,
@@ -2076,7 +2312,7 @@ def live_module(song):
     live.Track = types.SimpleNamespace(Track=Track, RoutingType=RoutingType)
     live.ClipSlot = types.SimpleNamespace(ClipSlot=ClipSlot)
     live.Device = types.SimpleNamespace(Device=Device, DeviceType=types.SimpleNamespace(
-        audio_effect=Device.TYPE_AUDIO_EFFECT, instrument=Device.TYPE_INSTRUMENT, midi_effect=Device.TYPE_MIDI_EFFECT))
+        audio_effect=TYPE_AUDIO_EFFECT, instrument=TYPE_INSTRUMENT, midi_effect=TYPE_MIDI_EFFECT))
     live.DeviceParameter = types.SimpleNamespace(DeviceParameter=DeviceParameter,
                                                  AutomationState=types.SimpleNamespace(none=0, playing=1, overridden=2))
     live.MixerDevice = types.SimpleNamespace(MixerDevice=MixerDevice)
@@ -2087,3 +2323,19 @@ def live_module(song):
     live.DrumPad = types.SimpleNamespace(DrumPad=DrumPad)
     live.Chain = types.SimpleNamespace(Chain=Chain)
     return live
+
+
+# Live's listener boilerplate, on every object that has it. Last, so every
+# property defined above is covered.
+for _cls in (Song, Track, ClipSlot, Clip, Device, RackDevice, Chain, DrumPad,
+             DeviceParameter, MixerDevice, Scene, CuePoint, Groove, GroovePool,
+             SongView, ApplicationView, Browser, BrowserItem, Application,
+             RoutingType, AutomationEnvelope):
+    with_listeners(_cls)
+del _cls
+
+
+# Live calls both of them `View`; the model needs two classes but only one
+# name, and `describe` reports `type(obj).__name__`.
+SongView.__name__ = "View"
+ApplicationView.__name__ = "View"
