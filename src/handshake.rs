@@ -119,6 +119,21 @@ impl ScriptInfoCache {
                 parsed.expected_version = expected.to_string();
                 parsed.up_to_date = parsed.script_version.as_deref() == Some(expected);
                 parsed.error = None;
+                // The command list has one home, and it is this side:
+                // `tools::ALL_REMOTE_COMMANDS`. When Live is running the
+                // script this binary embeds, the binary already knows what
+                // that script serves and says so, rather than trusting a
+                // list read back over the socket. The script still derives
+                // and sends its own (see `_served_commands` there), and that
+                // is what is used when the versions differ — the only case
+                // where this side cannot know. A test pins the two together
+                // against the embedded script, so they cannot disagree.
+                if parsed.up_to_date {
+                    parsed.capabilities = crate::tools::ALL_REMOTE_COMMANDS
+                        .iter()
+                        .map(|s| (*s).to_string())
+                        .collect();
+                }
                 parsed
             }
             Ok(other) => {
@@ -218,8 +233,13 @@ mod tests {
         assert!(msg.contains("loaded: not reachable"), "{msg}");
     }
 
+    /// When Live is running the script this binary embeds, the binary is the
+    /// authority on what that script serves: it uses `ALL_REMOTE_COMMANDS`
+    /// and does not depend on the list read back over the socket. The reply
+    /// below under-reports on purpose; the server knows better, and a unit
+    /// test in `tools` proves the embedded script really has those handlers.
     #[test]
-    fn current_script_reports_capabilities() {
+    fn a_matching_script_is_described_by_the_servers_own_command_list() {
         let cache = ScriptInfoCache::default();
         let expected = expected_remote_script_version();
         let info = cache.handshake(&Script(Ok(json!({
@@ -229,8 +249,45 @@ mod tests {
         assert!(info.up_to_date);
         assert_eq!(info.protocol_version, Some(1));
         assert_eq!(info.extra["live_version"], json!("12.1"));
+        assert_eq!(
+            info.capabilities.len(),
+            crate::tools::ALL_REMOTE_COMMANDS.len()
+        );
+        assert!(cache.has_capability("get_clip_notes"));
+        assert!(
+            cache.has_capability("delete_clip"),
+            "the server should trust its own list for the script it ships"
+        );
+    }
+
+    /// The one case where this side cannot know: a script that is not the one
+    /// the binary embeds. Then what it reports is all there is to go on, and
+    /// a command outside it is refused with the version that is loaded.
+    #[test]
+    fn a_different_script_is_taken_at_its_word() {
+        let cache = ScriptInfoCache::default();
+        let info = cache.handshake(&Script(Ok(json!({
+            "script_version": "1.0.0", "capabilities": ["get_clip_notes"]
+        }))));
+        assert!(!info.up_to_date);
+        assert_eq!(info.capabilities, vec!["get_clip_notes".to_string()]);
         assert!(cache.has_capability("get_clip_notes"));
         assert!(!cache.has_capability("delete_clip"));
+    }
+
+    /// A newer or hand-installed script that sends no list at all leaves the
+    /// server with nothing to go on, and every command says so plainly
+    /// rather than failing halfway through.
+    #[test]
+    fn a_script_that_reports_no_commands_refuses_clearly() {
+        let cache = ScriptInfoCache::default();
+        let info = cache.handshake(&Script(Ok(json!({"script_version": "9.9.9"}))));
+        assert!(!info.up_to_date);
+        assert!(info.capabilities.is_empty());
+        let bridge = Script(Ok(json!({"script_version": "9.9.9"})));
+        let msg = cache.require_capability(&bridge, "set_tempo").unwrap();
+        assert!(msg.contains("loaded: 9.9.9"), "{msg}");
+        assert!(msg.contains("install-script"), "{msg}");
     }
 
     #[test]

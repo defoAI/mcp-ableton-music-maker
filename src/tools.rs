@@ -8481,25 +8481,70 @@ impl ServerHandler for Server {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_command_the_server_sends_exists_in_the_remote_script() {
+    /// Every command name the script serves, read from its dispatch the same
+    /// way the script reads it back from itself.
+    fn commands_the_embedded_script_dispatches() -> std::collections::BTreeSet<String> {
         let src = crate::REMOTE_SCRIPT_SOURCE;
-        let start = src
-            .find("SCRIPT_CAPABILITIES = [")
-            .expect("capability list in script");
-        let end = src[start..].find(']').expect("list end") + start;
-        let listed: Vec<String> = src[start..end]
-            .split('"')
-            .skip(1)
-            .step_by(2)
-            .map(str::to_string)
-            .collect();
-        for cmd in ALL_REMOTE_COMMANDS {
-            assert!(
-                listed.contains(&cmd.to_string()),
-                "{cmd} is not advertised by the Remote Script"
-            );
+        let mut found = std::collections::BTreeSet::new();
+        // `command_type == "name"` — the dispatch chain and the two handlers
+        // that answer ahead of it.
+        for rest in src.split("command_type == \"").skip(1) {
+            if let Some(name) = rest.split('"').next() {
+                found.insert(name.to_string());
+            }
         }
+        // `command_type in ("a", "b")` — subscribe and unsubscribe.
+        for rest in src.split("command_type in (").skip(1) {
+            let Some(group) = rest.split(')').next() else {
+                continue;
+            };
+            for name in group.split('"').skip(1).step_by(2) {
+                found.insert(name.to_string());
+            }
+        }
+        // The script's own derivation is written with escaped regexes, so the
+        // literal forms above never match it; if that ever changed this set
+        // would gain junk and the equality below would catch it.
+        found
+    }
+
+    /// The command list has one home: `ALL_REMOTE_COMMANDS`. The Remote
+    /// Script declares nothing by hand — it reads its own dispatch back at
+    /// import — so the only way the two can disagree is a handler added
+    /// without a name here, or a name here without a handler. Both fail the
+    /// build, in both directions, against the script the binary embeds.
+    #[test]
+    fn the_servers_command_list_and_the_scripts_dispatch_are_the_same_set() {
+        let dispatched = commands_the_embedded_script_dispatches();
+        let served: std::collections::BTreeSet<String> = ALL_REMOTE_COMMANDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let missing_handler: Vec<_> = served.difference(&dispatched).collect();
+        let unreachable: Vec<_> = dispatched.difference(&served).collect();
+        assert!(
+            missing_handler.is_empty(),
+            "the server asks for commands the Remote Script has no handler for: {missing_handler:?}"
+        );
+        assert!(
+            unreachable.is_empty(),
+            "the Remote Script handles commands the server never asks for; delete them or add them to ALL_REMOTE_COMMANDS: {unreachable:?}"
+        );
+    }
+
+    /// The script derives its capability list; it must never go back to a
+    /// typed one, which is what drifted before.
+    #[test]
+    fn the_remote_script_declares_no_hand_written_capability_list() {
+        let src = crate::REMOTE_SCRIPT_SOURCE;
+        assert!(
+            !src.contains("SCRIPT_CAPABILITIES = ["),
+            "the Remote Script has a hand-typed capability list again; derive it from the dispatch"
+        );
+        assert!(
+            src.contains("SCRIPT_CAPABILITIES = _served_commands()"),
+            "the Remote Script no longer derives its capability list"
+        );
     }
 
     /// Clients show the model the input schema as one document; a `$ref`

@@ -37,7 +37,7 @@ Paths are relative to the repository root.
 | How many MCP tools there are | `src/tools.rs` — one `#[tool(name = …)]` per tool; the unit test `tool_count_and_schema_defaults` pins the count | `grep -c '#\[tool(name = ' src/tools.rs` |
 | Which tools are the artist's surface and which are advanced | `CORE_TOOLS` in `src/tools.rs` (decision 0006); every other tool is served as `adv_<name>`; `tests/artist.rs` pins it | `sed -n '/^pub const CORE_TOOLS/,/^\];/p' src/tools.rs` |
 | Which tools exist and what they do | The `#[tool]` doc comments in `src/tools.rs` — they *are* the descriptions the client shows | `cargo test` lists them; the README table is a copy |
-| Which Remote Script commands exist | `SCRIPT_CAPABILITIES` in `AbletonMusicMaker_Remote_Script/__init__.py`; `tools::ALL_REMOTE_COMMANDS` is the server's cross-check and a test fails if the two disagree | `grep -A40 'SCRIPT_CAPABILITIES = \[' AbletonMusicMaker_Remote_Script/__init__.py` |
+| Which Remote Script commands exist | `tools::ALL_REMOTE_COMMANDS` in `src/tools.rs` — the one place the list is written. The script declares nothing by hand: it reads its own dispatch back at import (`_served_commands`), and the test `the_servers_command_list_and_the_scripts_dispatch_are_the_same_set` fails the build if a name here has no handler, or a handler has no name here | `sed -n '/^pub const ALL_REMOTE_COMMANDS/,/^\];/p' src/tools.rs` |
 | The Remote Script version the server expects | `SCRIPT_VERSION` in the same file — the binary reads it out of the embedded source at startup (`handshake::expected_remote_script_version`) | `grep '^SCRIPT_VERSION' AbletonMusicMaker_Remote_Script/__init__.py` |
 | The wire protocol version | `PROTOCOL_VERSION` in the same file | |
 | The server version | `version` in `Cargo.toml`, surfaced as `MCP_VERSION` and in `--privacy-status` | `grep '^version' Cargo.toml` |
@@ -103,8 +103,8 @@ matches on them.
 | | Verified value | Source |
 |---|---|---|
 | MCP tools | **104** | `src/tools.rs` |
-| Remote Script commands | **98** | `SCRIPT_CAPABILITIES` |
-| Remote Script version | **1.31.0** | `SCRIPT_VERSION` |
+| Remote Script commands | **97** | `ALL_REMOTE_COMMANDS` |
+| Remote Script version | **1.32.0** | `SCRIPT_VERSION` |
 | Server version | **2.0.0** | `Cargo.toml` |
 | Image size limit | **50** MB | `docker/verify-image.sh` |
 | Port | **9877** | `DEFAULT_PORT` |

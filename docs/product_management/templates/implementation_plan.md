@@ -8,7 +8,7 @@
 {Brief description of how this will be implemented}
 
 ## Tasks
-- [ ] Remote Script handler (if any) — then `SCRIPT_CAPABILITIES`, `SCRIPT_VERSION`, `ALL_REMOTE_COMMANDS`
+- [ ] Remote Script handler (if any) — then `SCRIPT_VERSION` and `ALL_REMOTE_COMMANDS` (the script declares itself)
 - [ ] Tool body as a plain function, bound with `#[tool]`, run through `Server::run`
 - [ ] Tests
 - [ ] `docs/architecture/overview.md` and `docs/technical/feature-matrix.md` updated

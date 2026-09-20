@@ -81,7 +81,7 @@ Conventions specific to this product:
   the tool refuses and what error it returns.
 - **Every Remote Script change is a versioned change.** A story that adds or changes a
   command must say so in its **Remote Script compatibility** section and walk the checklist:
-  handler in the script, name in `SCRIPT_CAPABILITIES`, bump `SCRIPT_VERSION`, entry in
+  handler in the script, bump `SCRIPT_VERSION`, entry in
   `tools::ALL_REMOTE_COMMANDS`, then the tool body. The script stays compatible with Live's
   bundled Python: no f-strings, no type hints, no third-party imports.
 - **Any new data capture is a privacy change.** If a story records, uploads or stores

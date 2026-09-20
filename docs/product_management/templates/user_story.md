@@ -85,7 +85,7 @@
 
 - [ ] Handler added to `AbletonMusicMaker_Remote_Script/__init__.py` — no f-strings, no type
       hints, no third-party imports; Python 2.7 branches kept where the file already has them
-- [ ] Command name added to `SCRIPT_CAPABILITIES`
+- [ ] Command name added to `ALL_REMOTE_COMMANDS` (the script derives its own list)
 - [ ] `SCRIPT_VERSION` bumped
 - [ ] Command added to `tools::ALL_REMOTE_COMMANDS`
 - [ ] Tool body calls `require(live, "<command>")` before the bridge

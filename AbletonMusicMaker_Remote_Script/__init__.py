@@ -5,6 +5,7 @@ from _Framework.ControlSurface import ControlSurface
 import os
 import errno
 import math
+import re
 import socket
 import sys
 import json
@@ -62,7 +63,7 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.31.0"
+SCRIPT_VERSION = "1.32.0"
 PROTOCOL_VERSION = 2
 # Where client sockets are read. "main_thread_tick": sockets are non-blocking
 # and drained from the same tick the clock runs on, so a message waits one
@@ -148,106 +149,40 @@ class Done(object):
 # get_context. Set this to False to keep routine commands out of Log.txt.
 LOG_EVERY_COMMAND = False
 
-SCRIPT_CAPABILITIES = [
-    "get_session_info",
-    "get_track_info",
-    "get_script_info",
-    "get_clip_notes",
-    "get_device_parameters",
-    "get_session_snapshot",
-    "set_device_parameter",
-    "drain_passive_events",
-    "create_midi_track",
-    "create_audio_track",
-    "set_track_name",
-    "create_clip",
-    "create_audio_clip",
-    "add_notes_to_clip",
-    "clear_notes_from_clip",
-    "set_clip_name",
-    "set_arrangement_clip_name",
-    "delete_clip",
-    "set_tempo",
-    "load_browser_item",
-    "load_instrument_or_effect",
-    "fire_clip",
-    "stop_clip",
-    "start_playback",
-    "stop_playback",
-    "get_browser_tree",
-    "get_browser_items_at_path",
-    "switch_to_arrangement_view",
-    "set_current_song_time",
-    "get_arrangement_clips",
-    "duplicate_session_clip_to_arrangement",
-    "create_locator",
-    "set_track_mixer",
-    "set_send",
-    "get_returns",
-    "set_track_color",
-    "set_clip_color",
-    "get_drum_rack_pads",
-    "delete_arrangement_clip",
-    "delete_locator",
-    "search_browser",
-    "get_clip_info",
-    "set_clip_loop",
-    "set_clip_launch",
-    "get_track_meters",
-    "set_clip_automation",
-    "get_clip_automation",
-    "get_library_status",
-    "ensure_capture_track",
-    "start_capture",
-    "capture_status",
-    "stop_capture",
-    "list_captures",
-    "play_from",
-    "delete_track",
-    "back_to_arrangement",
-    "set_arrangement_loop",
-    "get_performance_state",
-    "set_launch_quantization",
-    "create_scene",
-    "fire_scene",
-    "stop_all_clips",
-    "set_crossfader",
-    "record_clip",
-    "schedule_cue",
-    "cancel_cue",
-    "set_scale",
-    "set_slot_stop_buttons",
-    "get_context",
-    "set_performance_mode",
-    "set_scene",
-    "start_live_capture",
-    "snapshot_mix",
-    "restore_mix",
-    "get_browser_index",
-    "capture_scene",
-    "duplicate_scene",
-    "get_grooves",
-    "set_clip_groove",
-    "set_device_parameters",
-    "place_clips",
-    "delete_arrangement_clips",
-    "duplicate_arrangement_clip",
-    "create_return_track",
-    "create_tracks",
-    "write_clips",
-    "arrangement_summary",
-    "start_arrangement_record",
-    "stop_arrangement_record",
-    "place_sample",
-    "list_sample_folders",
-    "delete_device",
-    "move_device",
-    "get_meter_scale",
-    "subscribe",
-    "unsubscribe",
-    "describe",
-    "run",
-]
+# Which commands this script serves. Nothing here is hand-maintained: the
+# names are read back from this file's own dispatch, so a handler that exists
+# is declared and a name with no handler cannot be. The server's
+# ALL_REMOTE_COMMANDS (src/tools.rs) is the source of truth for what may be
+# asked for; a Rust test compares it with the dispatch of the script the
+# binary embeds, so the two drifting apart fails the build rather than a
+# producer's session. If this file cannot be read back, the list is empty and
+# the server falls back to its own — which it may do, because it shipped this
+# script and checks its version.
+_COMMAND_EQ = re.compile(r'command_type\s*==\s*u?[\'"]([a-z_]+)[\'"]')
+_COMMAND_IN = re.compile(r'command_type\s+in\s+\(([^)]*)\)')
+_NAME_IN_GROUP = re.compile(r'[\'"]([a-z_]+)[\'"]')
+
+
+def _served_commands():
+    """The commands the dispatch answers, read from this file."""
+    try:
+        path = os.path.abspath(__file__)
+        if path[-4:-1] == ".py" and path[-1:] in ("c", "o"):
+            path = path[:-1]
+        handle = open(path, "r")
+        try:
+            source = handle.read()
+        finally:
+            handle.close()
+    except Exception:
+        return []
+    found = set(_COMMAND_EQ.findall(source))
+    for group in _COMMAND_IN.findall(source):
+        found.update(_NAME_IN_GROUP.findall(group))
+    return sorted(found)
+
+
+SCRIPT_CAPABILITIES = _served_commands()
 
 def create_instance(c_instance):
     """Create and return the AbletonMCP script instance"""
@@ -691,7 +626,7 @@ class AbletonMCP(ControlSurface):
         "delete_clip", "clear_notes_from_clip", "set_tempo", "fire_clip", "stop_clip",
         "start_playback", "stop_playback", "load_browser_item", "load_instrument_or_effect",
         "switch_to_arrangement_view", "set_current_song_time", "duplicate_session_clip_to_arrangement",
-        "map_rack_magnitude", "create_locator", "set_track_mixer", "set_send", "set_track_color",
+        "create_locator", "set_track_mixer", "set_send", "set_track_color",
         "set_clip_color", "delete_arrangement_clip", "delete_locator", "set_clip_loop",
         "set_clip_launch", "set_clip_automation", "ensure_capture_track", "start_capture",
         "stop_capture", "play_from", "delete_track", "back_to_arrangement", "set_arrangement_loop",
@@ -883,10 +818,6 @@ class AbletonMCP(ControlSurface):
             result = self._start_playback()
         elif command_type == "stop_playback":
             result = self._stop_playback()
-        elif command_type == "load_instrument_or_effect":
-            track_index = params.get("track_index", 0)
-            uri = params.get("uri", "")
-            result = self._load_instrument_or_effect(track_index, uri)
         elif command_type == "load_browser_item":
             track_index = params.get("track_index", 0)
             item_uri = params.get("item_uri", "")
@@ -903,16 +834,6 @@ class AbletonMCP(ControlSurface):
             destination_time = params.get("destination_time", 0.0)
             result = self._duplicate_session_clip_to_arrangement(
                 track_index, clip_index, destination_time)
-        elif command_type == "map_rack_magnitude":
-            track_index = params.get("track_index", 0)
-            device_index = params.get("device_index", 0)
-            macro_name = params.get("macro_name", "Magnitude")
-            result = self._map_rack_magnitude(
-                track_index, device_index, macro_name)
-        elif command_type == "inspect_rack":
-            track_index = params.get("track_index", 0)
-            device_index = params.get("device_index", 0)
-            result = self._inspect_rack(track_index, device_index)
         elif command_type == "create_locator":
             name = params.get("name", "")
             time_val = params.get("time", 0.0)
@@ -1066,17 +987,6 @@ class AbletonMCP(ControlSurface):
                 params.get("arrangement", False), params.get("target", {}),
                 params.get("points", []), params.get("mode", "linear"),
                 params.get("resolution", 0.25), params.get("clear", True))
-        elif command_type == "get_browser_item":
-            uri = params.get("uri", None)
-            path = params.get("path", None)
-            return self._get_browser_item(uri, path)
-        elif command_type == "get_browser_categories":
-            category_type = params.get("category_type", "all")
-            return self._get_browser_categories(category_type)
-        elif command_type == "get_browser_items":
-            path = params.get("path", "")
-            item_type = params.get("item_type", "all")
-            return self._get_browser_items(path, item_type)
         # Add the new browser commands
         elif command_type == "get_browser_tree":
             category_type = params.get("category_type", "all")
@@ -3789,104 +3699,6 @@ class AbletonMCP(ControlSurface):
 
     # ── Browser implementations ───────────────────────────────────────────────
 
-    def _get_browser_item(self, uri, path):
-        """Get a browser item by URI or path"""
-        try:
-            # Access the application's browser instance instead of creating a new one
-            app = self.application()
-            if not app:
-                raise RuntimeError("Could not access Live application")
-                
-            result = {
-                "uri": uri,
-                "path": path,
-                "found": False
-            }
-            
-            # Try to find by URI first if provided
-            if uri:
-                item = self._find_browser_item_by_uri(app.browser, uri)
-                if item:
-                    result["found"] = True
-                    result["item"] = {
-                        "name": item.name,
-                        "is_folder": item.is_folder,
-                        "is_device": item.is_device,
-                        "is_loadable": item.is_loadable,
-                        "uri": item.uri
-                    }
-                    return result
-            
-            # If URI not provided or not found, try by path
-            if path:
-                # Parse the path and navigate to the specified item
-                path_parts = path.split("/")
-                
-                # Determine the root based on the first part
-                current_item = None
-                if path_parts[0].lower() == "instruments":
-                    current_item = app.browser.instruments
-                elif path_parts[0].lower() == "sounds":
-                    current_item = app.browser.sounds
-                elif path_parts[0].lower() == "drums":
-                    current_item = app.browser.drums
-                elif path_parts[0].lower() == "audio_effects":
-                    current_item = app.browser.audio_effects
-                elif path_parts[0].lower() == "midi_effects":
-                    current_item = app.browser.midi_effects
-                else:
-                    # Default to instruments if not specified
-                    current_item = app.browser.instruments
-                    # Don't skip the first part in this case
-                    path_parts = ["instruments"] + path_parts
-                
-                # Navigate through the path
-                for i in range(1, len(path_parts)):
-                    part = path_parts[i]
-                    if not part:  # Skip empty parts
-                        continue
-                    
-                    found = False
-                    for child in current_item.children:
-                        if child.name.lower() == part.lower():
-                            current_item = child
-                            found = True
-                            break
-                    
-                    if not found:
-                        result["error"] = "Path part '{0}' not found".format(part)
-                        return result
-                
-                # Found the item
-                result["found"] = True
-                result["item"] = {
-                    "name": current_item.name,
-                    "is_folder": current_item.is_folder,
-                    "is_device": current_item.is_device,
-                    "is_loadable": current_item.is_loadable,
-                    "uri": current_item.uri
-                }
-            
-            return result
-        except Exception as e:
-            self.log_message("Error getting browser item: " + str(e))
-            self.log_message(traceback.format_exc())
-            raise   
-    
-    
-    
-    def _load_instrument_or_effect(self, track_index, uri):
-        """Load an instrument or effect onto a track by its browser URI.
-
-        The command dispatcher above calls this method, but it was never
-        defined — and "load_instrument_or_effect" was missing from the list of
-        main-thread commands as well, so the command fell through to the final
-        "Unknown command" branch. Loading a device is exactly what
-        _load_browser_item does, so delegate to it; the only difference is the
-        parameter name the MCP server uses ("uri" vs "item_uri").
-        """
-        return self._load_browser_item(track_index, uri)
-
     def _load_browser_item(self, track_index, item_uri, kind="track"):
         """Load a browser item onto a track (or a return, or the master) by its URI"""
         try:
@@ -4050,111 +3862,6 @@ class AbletonMCP(ControlSurface):
                 return hit[0], hit[1]
         return None, None
 
-    def _inspect_rack(self, track_index, device_index=0):
-        """Inspect a rack's nested devices and blend parameters."""
-        if track_index < 0 or track_index >= len(self._song.tracks):
-            raise IndexError("Track index out of range")
-        track = self._song.tracks[track_index]
-        if device_index < 0 or device_index >= len(track.devices):
-            raise IndexError("Device index out of range")
-        rack = track.devices[device_index]
-        if not getattr(rack, "can_have_chains", False):
-            raise ValueError("Device '{0}' is not a rack".format(rack.name))
-
-        devices_info = []
-        for chain_index, chain in enumerate(rack.chains):
-            for nested in chain.devices:
-                blend, blend_name = self._find_blend_parameter(nested)
-                param_names = []
-                try:
-                    param_names = [p.name for p in nested.parameters]
-                except Exception:
-                    pass
-                devices_info.append({
-                    "chain_index": chain_index,
-                    "name": nested.name,
-                    "class_name": nested.class_name,
-                    "blend_param": blend_name,
-                    "parameters": param_names,
-                })
-
-        return {
-            "track_index": track_index,
-            "device_index": device_index,
-            "rack_name": rack.name,
-            "has_macro_map": hasattr(rack, "macro_map"),
-            "has_rename_macro": hasattr(rack, "rename_macro"),
-            "macros_mapped": list(getattr(rack, "macros_mapped", [])),
-            "devices": devices_info,
-        }
-
-    def _map_rack_magnitude(self, track_index, device_index=0, macro_name="Magnitude"):
-        """Rename Macro 1 and map nested Dry/Wet (or Mix/Amount) params to it."""
-        if track_index < 0 or track_index >= len(self._song.tracks):
-            raise IndexError("Track index out of range")
-        track = self._song.tracks[track_index]
-        if device_index < 0 or device_index >= len(track.devices):
-            raise IndexError("Device index out of range")
-        rack = track.devices[device_index]
-        if not getattr(rack, "can_have_chains", False):
-            raise ValueError("Device '{0}' is not a rack".format(rack.name))
-        if not hasattr(rack, "macro_map"):
-            raise RuntimeError(
-                "RackDevice.macro_map is unavailable in this Live version")
-
-        # Ensure at least one macro is visible
-        try:
-            visible = int(getattr(rack, "visible_macro_count", 1) or 1)
-            while visible < 1 and hasattr(rack, "add_macro"):
-                rack.add_macro()
-                visible = int(rack.visible_macro_count)
-        except Exception as e:
-            self.log_message("Could not adjust visible macros: {0}".format(e))
-
-        if hasattr(rack, "rename_macro"):
-            rack.rename_macro(0, macro_name)
-        else:
-            # Fallback: Macro 1 is usually parameters[1] (0 = Device On)
-            try:
-                if len(rack.parameters) > 1:
-                    rack.parameters[1].name = macro_name
-            except Exception:
-                pass
-
-        mapped = []
-        skipped = []
-        for chain_index, chain in enumerate(rack.chains):
-            for nested in chain.devices:
-                blend, blend_name = self._find_blend_parameter(nested)
-                if not blend:
-                    skipped.append({
-                        "device": nested.name,
-                        "reason": "no Dry/Wet, Mix, or Amount parameter",
-                    })
-                    continue
-                try:
-                    rack.macro_map(0, blend)
-                    mapped.append({
-                        "device": nested.name,
-                        "parameter": blend_name,
-                        "chain_index": chain_index,
-                    })
-                except Exception as e:
-                    skipped.append({
-                        "device": nested.name,
-                        "parameter": blend_name,
-                        "reason": str(e),
-                    })
-
-        return {
-            "rack_name": rack.name,
-            "macro_name": macro_name,
-            "macro_index": 0,
-            "mapped": mapped,
-            "skipped": skipped,
-            "macros_mapped": list(getattr(rack, "macros_mapped", [])),
-        }
-    
     def _get_device_type(self, device):
         """Get the type of a device"""
         try:

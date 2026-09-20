@@ -92,10 +92,14 @@ docker/                verify-image.sh, Claude Desktop example config
   generic layer. `cargo run --example new_capability_no_reload` is the proof and the pattern.
   A new *command* is for what ops cannot express: work that must loop inside one tick, or that
   needs Live's main thread held across steps.
-- **Every tool checks its command against the script's capabilities** via `require(live, cmd)`.
-  Adding a Remote Script command means: handler in the script, name in `SCRIPT_CAPABILITIES`,
-  bump `SCRIPT_VERSION`, add it to `tools::ALL_REMOTE_COMMANDS` (a test cross-checks the list),
-  then the tool body.
+- **The command list has one home: `tools::ALL_REMOTE_COMMANDS` in `src/tools.rs`.** The
+  Remote Script declares nothing by hand — `_served_commands` reads its own dispatch back at
+  import — so there is no second list to keep in sync. Adding a Remote Script command means:
+  handler in the script, name in `ALL_REMOTE_COMMANDS`, bump `SCRIPT_VERSION`, then the tool
+  body. `the_servers_command_list_and_the_scripts_dispatch_are_the_same_set` fails the build
+  if a name here has no handler, or a handler has no name here. Every tool still checks its
+  command via `require(live, cmd)`; at handshake the server uses its own list when Live runs
+  the script version the binary embeds, and the script's derived list only when they differ.
 - **The Remote Script touches Live only from Live's main thread** (decision 0007). The
   socket is read *on* that thread, on Live's own 100 ms tick, not from a Python thread
   (`SOCKET_READER`, decision 0010); `_run_on_main` → `_dispatch` runs every command there. A

@@ -121,8 +121,10 @@ fn remote_script_binds_loopback_by_default() {
 fn the_scripts_request_path_cannot_run_arbitrary_python() {
     let script = include_str!("../AbletonMusicMaker_Remote_Script/__init__.py");
     let mut offenders = Vec::new();
-    // The configuration readers, by name: everything above the socket.
-    let config_readers = ["_configured_host", "_configured_reader"];
+    // The three functions that read a file, all of them at import time,
+    // before a socket exists: the two configuration files beside the script
+    // and the script reading its own dispatch back to declare it.
+    let import_time_readers = ["_configured_host", "_configured_reader", "_served_commands"];
     let mut current_fn = String::new();
     for (i, line) in script.lines().enumerate() {
         let code = line.split('#').next().unwrap_or("");
@@ -130,11 +132,21 @@ fn the_scripts_request_path_cannot_run_arbitrary_python() {
             current_fn = rest.split('(').next().unwrap_or("").trim().to_string();
         }
         for needle in ["eval(", "exec(", "compile(", "__import__", "getattr(__"] {
-            if code.contains(needle) {
-                offenders.push(format!("line {}: {needle} in {current_fn}", i + 1));
+            // Only the bare builtin counts: `re.compile` and `self.exec_x`
+            // are qualified names, not a way to run source.
+            for (at, _) in code.match_indices(needle) {
+                // Qualified (`re.compile`) or part of a longer identifier
+                // (`_my_eval(`) is not the builtin; anything else is.
+                let qualified = at > 0 && {
+                    let prev = code.as_bytes()[at - 1];
+                    prev == b'.' || prev == b'_' || prev.is_ascii_alphanumeric()
+                };
+                if !qualified {
+                    offenders.push(format!("line {}: {needle} in {current_fn}", i + 1));
+                }
             }
         }
-        if code.contains("open(") && !config_readers.contains(&current_fn.as_str()) {
+        if code.contains("open(") && !import_time_readers.contains(&current_fn.as_str()) {
             offenders.push(format!("line {}: open( in {current_fn}", i + 1));
         }
     }

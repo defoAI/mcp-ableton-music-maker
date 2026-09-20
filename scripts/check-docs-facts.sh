@@ -18,7 +18,9 @@ bad()  { printf '  FAIL  %s\n' "$1"; fail=1; }
 
 # Real values, read from where they live.
 tools="$(grep -c '#\[tool(name = ' src/tools.rs)"
-commands="$(sed -n '/^SCRIPT_CAPABILITIES = \[/,/^\]/p' "$SCRIPT" | grep -c '^\s*"')"
+# The command list lives in src/tools.rs; the script derives what it serves
+# from its own dispatch, so count the one place it is written down.
+commands="$(sed -n '/^pub const ALL_REMOTE_COMMANDS/,/^\];/p' src/tools.rs | grep -c '^    "')"
 script_version="$(sed -nE 's/^SCRIPT_VERSION *= *"([^"]+)".*/\1/p' "$SCRIPT")"
 crate_version="$(sed -nE 's/^version *= *"([^"]+)".*/\1/p' Cargo.toml | head -1)"
 size_limit="$(sed -nE 's/^MAX_SIZE_MB="\$\{MAX_SIZE_MB:-([0-9]+)\}"/\1/p' docker/verify-image.sh)"
@@ -39,12 +41,17 @@ grep -qE "\b$tools tools\b" README.md && pass "README says $tools tools" || bad 
 grep -qE "\b$tools tool\b" CLAUDE.md && pass "CLAUDE.md says $tools tool bodies" || bad "CLAUDE.md does not say '$tools tool'"
 grep -qE "\b$size_limit MB\b" README.md && pass "README says $size_limit MB" || bad "README does not say '$size_limit MB'"
 
-# Every command the server may send is one the script advertises, and vice versa
-# for the tool list — the unit test does this too, but this runs without cargo.
+# Every command the server may send has a handler in the script it embeds.
+# The unit test does this in both directions; this runs without cargo.
 missing="$(sed -n '/^pub const ALL_REMOTE_COMMANDS/,/^\];/p' src/tools.rs | grep -oE '"[a-z_]+"' | tr -d '"' \
-  | while read -r c; do grep -qE "^\s*\"$c\"," "$SCRIPT" || echo "$c"; done)"
-[ -z "$missing" ] && pass "every ALL_REMOTE_COMMANDS entry is in SCRIPT_CAPABILITIES" \
-  || bad "not advertised by the Remote Script: $(echo "$missing" | tr '\n' ' ')"
+  | while read -r c; do grep -q "command_type == \"$c\"" "$SCRIPT" || grep -q "command_type in (.*\"$c\"" "$SCRIPT" || echo "$c"; done)"
+[ -z "$missing" ] && pass "every ALL_REMOTE_COMMANDS entry has a handler in the script" \
+  || bad "no handler in the Remote Script: $(echo "$missing" | tr '\n' ' ')"
+
+# And the script declares nothing by hand: the list has one home.
+grep -q "SCRIPT_CAPABILITIES = \[" "$SCRIPT" \
+  && bad "the Remote Script has a hand-typed capability list again" \
+  || pass "the Remote Script derives its capability list"
 
 if [ "$fail" -ne 0 ]; then echo "docs fact check FAILED"; exit 1; fi
 echo "docs fact check passed"

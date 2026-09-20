@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Verified** | 2026-09-20 against `src/tools.rs`, `src/connection.rs`, the Remote Script's `SCRIPT_CAPABILITIES`, `Dockerfile` and `docker/verify-image.sh` |
+| **Verified** | 2026-09-20 against `src/tools.rs`, `src/connection.rs`, `tools::ALL_REMOTE_COMMANDS`, `Dockerfile` and `docker/verify-image.sh` |
 
 What the product does, at capability level. For *why* see
 [product-overview](../strategy/product-overview.md); for what is next see
