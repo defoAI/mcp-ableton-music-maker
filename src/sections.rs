@@ -205,11 +205,12 @@ pub fn make_section_body(live: &LiveState, p: &MakeSectionParams) -> ToolResult 
     if name.is_empty() {
         return Err("A section needs a name.".into());
     }
-    if song::is_setlist_scene(name) || name.contains(song::SEP) {
+    if song::is_reserved_scene(name) || name.contains(song::SEP) {
         return Err(format!(
-            "'{name}' cannot be a section name: \"{}\" is the phrase separator and \"{}\" marks the song.",
+            "'{name}' cannot be a section name: \"{}\" is the phrase separator, \"{}\" marks the song and \"{}\" marks the parked ideas.",
             song::SEP.trim(),
-            song::SETLIST_PREFIX
+            song::SETLIST_PREFIX,
+            song::STASH_PREFIX
         ));
     }
     if let Some(pb) = p.phrase_bars {
@@ -525,14 +526,15 @@ fn apply_change(
                 tools::create_clip_body(
                     live,
                     &CreateClipParams {
-                        track_index,
-                        clip_index: slot,
+                        track_index: Some(track_index),
+                        clip_index: Some(slot),
                         length,
                         name: format!("{section}/{track_name}"),
                         input: NotesInput {
                             notes: notes.clone(),
                             ..Default::default()
                         },
+                        ..Default::default()
                     },
                 )?;
             }
@@ -1105,6 +1107,12 @@ pub fn play_song_body(live: &LiveState, p: &PlaySongParams) -> ToolResult {
         text.push_str(w);
     }
     text.push_str("\nSay go to continue, next_section, back or jump_to <section> at any time; hold_section stops a counted section where it is.");
+    // #63: the drift line travels. get_context is called once per session,
+    // so a set the producer nudged since the overview was written would
+    // otherwise go unnoticed until the next one.
+    if let Some(said) = tools::drift_note(live, &state) {
+        text.push_str(&format!("\n{said}"));
+    }
     Ok(text)
 }
 

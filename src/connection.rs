@@ -189,6 +189,14 @@ pub struct LiveState {
     pub activity: Activity,
     pub performance: Mutex<Option<Performance>>,
     pub library: crate::library::Library,
+    /// What a device on this Live answered to, across songs and sessions.
+    pub devices: crate::devices::Devices,
+    /// This song's own memory: the overview, the notes and the digest.
+    pub songs: crate::memory::Songs,
+    /// Which Live this is, learned from whatever reply carries it first.
+    /// Every device fact is stamped with it, so an unknown one is never
+    /// written to disk.
+    pub live_version: Mutex<Option<String>>,
     /// What the server has learned about this Live's object model.
     pub lom: crate::lom::Lom,
     pub samples: crate::samples::Samples,
@@ -222,6 +230,9 @@ impl LiveState {
             activity,
             performance: Mutex::new(None),
             library: crate::library::Library::default(),
+            devices: crate::devices::Devices::default(),
+            songs: crate::memory::Songs::default(),
+            live_version: Mutex::new(None),
             lom: crate::lom::Lom::default(),
             samples: crate::samples::Samples::default(),
             round_trips: Mutex::new(std::collections::VecDeque::new()),
@@ -231,6 +242,42 @@ impl LiveState {
             meter_scale: Mutex::new(None),
             notes: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Which Live this is — the key every learned device fact is stamped
+    /// with. `"unknown"` until a reply carries it, and nothing is written to
+    /// disk under that key.
+    pub fn live_version(&self) -> String {
+        if let Some(v) = self
+            .live_version
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            return v;
+        }
+        // The handshake carries it as `live.version`, so the common path
+        // costs nothing extra.
+        self.script
+            .get()
+            .and_then(|i| {
+                i.extra
+                    .get("live")
+                    .and_then(|l| l.get("version"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| crate::devices::UNKNOWN_VERSION.to_string())
+    }
+
+    /// Remember the Live version a reply carried (`get_context`, `describe`).
+    pub fn note_live_version(&self, version: &str) {
+        let version = version.trim();
+        if version.is_empty() || version == crate::devices::UNKNOWN_VERSION {
+            return;
+        }
+        *self.live_version.lock().unwrap_or_else(|e| e.into_inner()) = Some(version.to_string());
     }
 
     pub fn send_command(&self, command_type: &str, params: Option<Value>) -> LiveResult<Value> {

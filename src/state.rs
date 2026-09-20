@@ -37,3 +37,15 @@ pub fn library_dir() -> PathBuf {
 pub fn sets_dir() -> PathBuf {
     state_dir().join("sets")
 }
+
+/// One `<live-version>.json` per Live install: what a device answered to;
+/// see [`crate::devices`].
+pub fn devices_dir() -> PathBuf {
+    state_dir().join("devices")
+}
+
+/// One `<song-key>.json` per song: the overview and the notes; see
+/// [`crate::memory`]. Off with `ABLETON_MCP_SONG_MEMORY=false`.
+pub fn songs_dir() -> PathBuf {
+    state_dir().join("songs")
+}

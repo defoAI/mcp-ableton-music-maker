@@ -25,8 +25,9 @@ fn sample_response(notes: Value, name: &str, length: f64) -> Value {
 
 fn clip(track_index: i64, clip_index: i64) -> ClipParams {
     ClipParams {
-        track_index,
-        clip_index,
+        track_index: Some(track_index),
+        clip_index: Some(clip_index),
+        ..Default::default()
     }
 }
 
@@ -57,14 +58,15 @@ async fn add(
     notes: Vec<Note>,
 ) -> rmcp::model::CallToolResult {
     let params = AddNotesParams {
-        track_index: track,
-        clip_index: slot,
+        track_index: Some(track),
+        clip_index: Some(slot),
         clear: false,
         propagate_to_arrangement: false,
         input: mcp_ableton_music_maker::notes::NotesInput {
             notes,
             ..Default::default()
         },
+        ..Default::default()
     };
     server
         .run(
@@ -271,4 +273,177 @@ async fn missing_capability_is_reported_without_touching_live() {
     assert!(text.contains("loaded: 0.9.0"));
     assert!(text.contains("ableton-music-maker-install-script"));
     assert!(bridge.sent().is_empty(), "no command reaches Live");
+}
+
+// ── Names instead of numbers (#66) ──────────────────────────────────────────
+
+/// A fake Live whose tracks and clips have the names a producer gave them.
+fn named_bridge() -> Arc<FakeBridge> {
+    let b = FakeBridge::responding(json!({}));
+    b.script(
+        "get_performance_state",
+        vec![json!({
+            "is_playing": false, "tempo": 120.0, "signature_numerator": 4,
+            "signature_denominator": 4, "beat": 0.0, "bar": 1, "beat_in_bar": 1,
+            "clip_trigger_quantization": 4,
+            "tracks": [
+                {"index": 0, "name": "Pad", "playing_slot_index": -1, "slots_with_clips": [0]},
+                {"index": 1, "name": "Voices", "playing_slot_index": -1, "slots_with_clips": [0, 2]}
+            ],
+            "scenes": [], "cues": [], "events": []
+        })],
+    );
+    b.script(
+        "get_track_info",
+        vec![
+            json!({"index": 1, "kind": "track", "name": "Voices", "clip_slots": [
+                {"index": 0, "has_clip": true, "clip": {"name": "Verse", "length": 4.0}},
+                {"index": 1, "has_clip": false, "clip": null},
+                {"index": 2, "has_clip": true, "clip": {"name": "Drop", "length": 8.0}}
+            ]}),
+        ],
+    );
+    b
+}
+
+/// #66: one "put material on a track" move. `add_sample` already took a
+/// name; `create_clip` and `add_notes_to_clip` beside it must too.
+#[tokio::test]
+async fn create_clip_takes_a_track_name_and_a_slot() {
+    let b = named_bridge();
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::CREATE_CLIP,
+            tools::CreateClipParams {
+                track: Some(json!("Voices")),
+                clip: Some(json!(1)),
+                length: 8.0,
+                name: "Bridge".into(),
+                ..Default::default()
+            },
+            tools::create_clip_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let sent = b.last("create_clip").expect("create_clip was sent");
+    assert_eq!(sent["track_index"], 1);
+    assert_eq!(sent["clip_index"], 1);
+    assert_eq!(sent["length"], 8.0);
+}
+
+/// A clip by its name, on a track by its name — and the slot it resolves to
+/// is the one Live reported, not a guess.
+#[tokio::test]
+async fn add_notes_to_clip_takes_a_track_name_and_a_clip_name() {
+    let b = named_bridge();
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::ADD_NOTES_TO_CLIP,
+            AddNotesParams {
+                track: Some(json!("Voices")),
+                clip: Some(json!("Drop")),
+                input: mcp_ableton_music_maker::notes::NotesInput {
+                    notes_csv: "36,0,1,100".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            tools::add_notes_to_clip_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let sent = b.last("add_notes_to_clip").expect("notes were written");
+    assert_eq!(sent["track_index"], 1);
+    assert_eq!(sent["clip_index"], 2, "'Drop' is slot 2, not slot 0");
+}
+
+/// A clip name that matches nothing never becomes slot 0.
+#[tokio::test]
+async fn an_unknown_clip_name_lists_what_the_track_holds_and_writes_nothing() {
+    let b = named_bridge();
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::ADD_NOTES_TO_CLIP,
+            AddNotesParams {
+                track: Some(json!("Voices")),
+                clip: Some(json!("Chorus")),
+                input: mcp_ableton_music_maker::notes::NotesInput {
+                    notes_csv: "36,0,1,100".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            tools::add_notes_to_clip_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    let text = text_of(&r);
+    assert!(text.contains("no clip named 'Chorus'"), "{text}");
+    assert!(text.contains("'Verse' (slot 0)"), "{text}");
+    assert!(text.contains("'Drop' (slot 2)"), "{text}");
+    assert!(!b.commands().contains(&"add_notes_to_clip".to_string()));
+}
+
+/// Two clips with one name is the producer's business, not the server's: it
+/// names both and changes nothing.
+#[tokio::test]
+async fn an_ambiguous_clip_name_names_every_candidate_with_its_slot() {
+    let b = FakeBridge::responding(json!({}));
+    b.script(
+        "get_track_info",
+        vec![
+            json!({"index": 0, "kind": "track", "name": "Pad", "clip_slots": [
+                {"index": 0, "has_clip": true, "clip": {"name": "Idea", "length": 4.0}},
+                {"index": 3, "has_clip": true, "clip": {"name": "Idea", "length": 4.0}}
+            ]}),
+        ],
+    );
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::DELETE_CLIP,
+            ClipParams {
+                track_index: Some(0),
+                clip: Some(json!("Idea")),
+                ..Default::default()
+            },
+            tools::delete_clip_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    let text = text_of(&r);
+    assert!(text.contains("matches 2 clips"), "{text}");
+    assert!(
+        text.contains("(slot 0)") && text.contains("(slot 3)"),
+        "{text}"
+    );
+    assert!(!b.commands().contains(&"delete_clip".to_string()));
+}
+
+/// The index forms are what `build_song` documents and `batch` payloads
+/// send: they keep working, and cost no extra round trip.
+#[tokio::test]
+async fn the_index_forms_still_work_and_ask_live_nothing_extra() {
+    let b = named_bridge();
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::CREATE_CLIP,
+            tools::CreateClipParams {
+                track_index: Some(1),
+                clip_index: Some(1),
+                length: 4.0,
+                ..Default::default()
+            },
+            tools::create_clip_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    assert_eq!(b.commands(), vec!["create_clip"]);
+    let sent = b.last("create_clip").unwrap();
+    assert_eq!(sent["track_index"], 1);
+    assert_eq!(sent["clip_index"], 1);
 }

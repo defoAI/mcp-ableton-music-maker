@@ -16,7 +16,7 @@ START with get_context: one call returns the set (tempo, key, position), every t
 
 UNITS: faders and levels are in dB (0 dB is unity), and meter readings are post-fader on Live's own meter scale; positions in the arrangement are Live's 1-based bars; note times inside a clip are beats. Live's API cannot save the set: the producer presses Cmd+S in Live, and that is said once here, not in every reply.
 
-MAKING MUSIC: build_song builds a whole set from one document: key, tempo, sections (scene rows with phrase lengths), tracks (instrument as plain words, searched for you, or a browser URI), Session clips with notes in compact forms (step strings per pitch, notes_csv lines, patterns, loop_every tiling), `slots` for copies in several rows, Arrangement placements and locators. It validates everything before the first command reaches Live; dry_run previews. Afterwards: create_clip and add_notes_to_clip (same note forms), add_sample (audio from the producer's own folders or Live's browser into a section or at a bar, warped and looped to whole bars; search_browser category \"samples\" finds one, adv_sample_folders adds a folder), set_key, set_tempo, load_instrument_or_effect (words or URI; kind return/master for effects), create_return, set_track_mixer (volume_db), set_send, shape_sound (cutoff, attack, reverb … as words, or any parameter by name), feel (swing, humanize, groove, retime, a variation; undo: true), arrange (place, repeat, move, delete, shorten, list — in bars). Tracks and sections are addressed by name.
+MAKING MUSIC: build_song builds a whole set from one document: key, tempo, sections (scene rows with phrase lengths), tracks (instrument as plain words, searched for you, or a browser URI), Session clips with notes in compact forms (step strings per pitch, notes_csv lines, patterns, loop_every tiling), `slots` for copies in several rows, Arrangement placements and locators. It validates everything before the first command reaches Live; dry_run previews. Afterwards: create_clip and add_notes_to_clip (same note forms), add_sample (audio from the producer's own folders or Live's browser into a section or at a bar, warped and looped to whole bars; search_browser category \"samples\" finds one, adv_sample_folders adds a folder), set_key, set_tempo, load_instrument_or_effect (words or URI; kind return/master for effects), create_return, set_track_mixer (volume_db), set_send, shape_sound (cutoff, attack, reverb … as words, or any parameter by name), feel (swing, humanize, groove, retime, a variation; undo: true), arrange (place, repeat, move, delete, shorten, list — in bars). Tracks, clips, sections and bars go by name: a track by name, index, \"master\" or a return's letter; a clip by name or slot; a bar by number or locator name; indices work too.
 
 HEARING IT: capture_mix records N bars of the master through a Capture track and reports peak, RMS per bar, silent bars, clipping and stereo width; clear_captures removes that track when you are done. Nothing leaves the machine.
 
@@ -26,12 +26,14 @@ PERFORMING: start_performance (1-bar launch quantization, disarms tracks, sets t
 
 RULES: Live's bar numbers are 1-based. Every launch lands on the next bar. A section launch stops tracks without a clip in that row (unless keep_track_playing). A fresh Live 12 set sits in its default C Major scale: set_key first. Live arms new MIDI tracks by itself: an armed track with an empty slot records on a scene launch.
 
-DEVICES: anything you load you can read back and undo. adv_get_device_parameters, adv_set_device_parameter and adv_edit_devices (remove, move, bypass, enable) take the same address as load_instrument_or_effect — a name, an index, \"master\", or a return's letter — and speak Live's own display strings (\"200 Hz\", \"Low Cut 48 dB\").
+DEVICES: anything you load you can read back and undo. adv_get_device_parameters, adv_set_device_parameter and adv_edit_devices (remove, move, bypass, enable) address a track the same way and speak Live's display strings (\"200 Hz\", \"Low Cut 48 dB\").
+
+MEMORY: get_context opens with what this song remembers — the overview (the model of the track: what it is for, the plan, what each track is for, what was decided, what is next), the roles read out of the track names, the last note, and what is in the stash. Read it before the first change and keep it current with remember(overview: {…}); named keys merge. remember(about, note) keeps one thing about the song, a track or a section; remember(about, role) writes a role into the track's name, and that role then addresses the track. stash parks a clip or a sample in a Stash: row where it can still be heard; a Stash: row is never a section. The overview and notes are a local file (adv_song_memory shows and deletes it); roles and the stash are in the producer's own set.
 
 THE SURFACE: the tools without a prefix are the artist's set and cover the whole workflow; the adv_ tools are the raw layer of scenes, clips, cues, meters, snapshots and the browser underneath, for when the artist's set has no word for it.";
 
 /// The short form appended to every get_context result.
-pub const FOOTER: &str = "Workflow: build_song (key, tempo, sections, tracks with instrument words, clips as step strings, notes_csv or patterns) → add_sample for audio → shape_sound and feel → arrange in bars → hear it with capture_mix → play_song, then go / hold_section / next_section / back / jump_to steer the sections; end_performance stops. Faders and levels in dB, positions in bars. Live's Save is yours (Cmd+S); the API cannot save.";
+pub const FOOTER: &str = "Read the memory above before the first change, and keep it current with remember. Workflow: build_song (key, tempo, sections, tracks with instrument words, clips as step strings, notes_csv or patterns) → add_sample for audio → shape_sound and feel → arrange in bars → hear it with capture_mix → play_song, then go / hold_section / next_section / back / jump_to steer the sections; end_performance stops. Faders and levels in dB, positions in bars. Live's Save is yours (Cmd+S); the API cannot save.";
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
@@ -227,6 +229,11 @@ pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
     for sc in scenes {
         if crate::song::is_setlist_scene(s(sc, "name")) {
             setlist = Some(s(sc, "name"));
+            continue;
+        }
+        // A Stash: row is not a section and not the setlist: it is not
+        // listed, counted or named here at all.
+        if crate::song::is_stash_scene(s(sc, "name")) {
             continue;
         }
         let (base, suffix) = crate::song::parse_section_name(s(sc, "name"));
@@ -499,10 +506,19 @@ mod tests {
             "set_song",
             "play_song",
             "jump_to",
+            "remember",
+            "stash",
         ] {
             assert!(INSTRUCTIONS.contains(word), "{word}");
         }
-        assert!(INSTRUCTIONS.len() < 5000);
+        // The budget a client renders at initialize. It was 5,000 bytes
+        // until the MEMORY paragraph, and it was raised once, deliberately,
+        // for that paragraph alone: it is the one that decides whether the
+        // song memory is used at all. An instruction nobody reads is worth
+        // nothing, and an overview nobody writes is worth less. Anything
+        // else that wants room here takes it from prose that has stopped
+        // earning its place, not from another raise.
+        assert!(INSTRUCTIONS.len() < 5900, "{}", INSTRUCTIONS.len());
         assert_eq!(ranges(&[5, 6, 7, 9]), "5–7, 9");
     }
 }

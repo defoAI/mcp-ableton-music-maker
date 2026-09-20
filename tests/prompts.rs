@@ -124,6 +124,10 @@ const NOT_TOOLS: &[(&str, &str)] = &[
     ("dry_run", "build_song's preview parameter"),
     ("notes_csv", "one of the compact clip forms"),
     ("next_bar", "a value of `at:` on the steering verbs"),
+    // The overview's own keys, as `remember(overview: {…})` takes them.
+    // `memory::KNOWN_KEYS` is where they are defined.
+    ("what_it_is", "a key of remember's overview object"),
+    ("decided", "a key of remember's overview object"),
 ];
 
 #[test]

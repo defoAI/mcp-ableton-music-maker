@@ -266,9 +266,10 @@ pub fn create_return_body(live: &LiveState, p: &CreateReturnParams) -> ToolResul
         let loaded = tools::load_instrument_or_effect_body(
             live,
             &tools::LoadInstrumentParams {
-                track_index: index,
+                track_index: Some(index),
                 uri: effect.clone(),
                 kind: "return".into(),
+                ..Default::default()
             },
         )?;
         text.push_str(&format!("; {}", loaded.trim_end_matches('.')));
@@ -353,27 +354,27 @@ pub struct ArrangeParams {
     /// Track name or index (delete and list: every track when omitted)
     #[serde(default)]
     pub track: Option<Value>,
-    /// place: the Session slot; repeat/move: the Arrangement clip's position as `list` shows it
+    /// place: the Session clip by name, or its slot; repeat/move: the Arrangement clip by name, or its position as `list` shows it
     #[serde(default)]
-    pub clip: Option<i64>,
-    /// place/move: the bar to land on (Live's 1-based bars); repeat: where the copies start (default: right after the clip)
+    pub clip: Option<Value>,
+    /// place/move: the bar to land on — a number (Live's 1-based bars) or a locator's name; repeat: where the copies start (default: right after the clip)
     #[serde(default)]
-    pub at_bar: Option<f64>,
-    /// place: keep placing copies every `every_bars` up to this bar (exclusive)
+    pub at_bar: Option<Value>,
+    /// place: keep placing copies every `every_bars` up to this bar (exclusive) — a number or a locator's name
     #[serde(default)]
-    pub until_bar: Option<f64>,
+    pub until_bar: Option<Value>,
     /// place: bars between copies (default: the clip's length)
     #[serde(default)]
     pub every_bars: Option<f64>,
     /// place/repeat: how many copies (default 1)
     #[serde(default)]
     pub times: Option<i64>,
-    /// delete: from this bar (inclusive)
+    /// delete: from this bar (inclusive) — a number or a locator's name
     #[serde(default)]
-    pub from_bar: Option<f64>,
-    /// delete: up to this bar (exclusive); shorten: the bar the arrangement ends on
+    pub from_bar: Option<Value>,
+    /// delete: up to this bar (exclusive); shorten: the bar the arrangement ends on — a number or a locator's name
     #[serde(default)]
-    pub to_bar: Option<f64>,
+    pub to_bar: Option<Value>,
 }
 
 fn beat_of(state: &PerfState, bar: f64) -> Result<f64, String> {
@@ -397,6 +398,12 @@ fn fmt(v: f64) -> String {
     }
 }
 
+/// A bar as this module prints one — whole when it is whole. Shared so a
+/// locator listing reads the same as an `arrange list`.
+pub fn fmt_bar(v: f64) -> String {
+    fmt(v)
+}
+
 fn arrangement_clips(live: &LiveState, track_index: i64) -> Result<Vec<Value>, String> {
     require(live, "get_arrangement_clips")?;
     let r = live
@@ -411,6 +418,73 @@ fn arrangement_clips(live: &LiveState, track_index: i64) -> Result<Vec<Value>, S
         .unwrap_or_default())
 }
 
+/// The Arrangement clip `repeat` and `move` mean: its position as `list`
+/// prints it, or its name. The copies of one Session clip share a name, so a
+/// name that matches several is an error naming each with its bars — never a
+/// guess at which copy was meant.
+fn arrangement_clip_index(
+    clips: &[Value],
+    which: &Value,
+    state: &PerfState,
+    track: &str,
+) -> Result<i64, String> {
+    let bars_of = |c: &Value| {
+        let s = c.get("start_time").and_then(Value::as_f64).unwrap_or(0.0);
+        let e = c.get("end_time").and_then(Value::as_f64).unwrap_or(0.0);
+        format!("bars {}–{}", fmt(bar_of(state, s)), fmt(bar_of(state, e)))
+    };
+    let given = match which {
+        Value::Number(n) => return Ok(n.as_i64().unwrap_or(0)),
+        Value::String(s) => s.trim().to_string(),
+        other => return Err(format!("a clip is a name or a position, not {other}")),
+    };
+    if let Ok(i) = given.parse::<i64>() {
+        return Ok(i);
+    }
+    let want = given.to_lowercase();
+    for exact in [true, false] {
+        let hits: Vec<(usize, &Value)> = clips
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                let name = get_display(c, "name", "").to_lowercase();
+                if exact {
+                    name == want
+                } else {
+                    name.contains(&want)
+                }
+            })
+            .collect();
+        match hits.len() {
+            0 => continue,
+            1 => return Ok(hits[0].0 as i64),
+            _ => {
+                return Err(format!(
+                    "'{given}' matches {} Arrangement clips on '{track}': {}. Say the position instead.",
+                    hits.len(),
+                    hits.iter()
+                        .map(|(i, c)| format!("{i} ({})", bars_of(c)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
+        }
+    }
+    Err(format!(
+        "no Arrangement clip named '{given}' on '{track}'; it has {}.",
+        if clips.is_empty() {
+            "none".to_string()
+        } else {
+            clips
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("{i} '{}' {}", get_display(c, "name", "clip"), bars_of(c)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    ))
+}
+
 pub fn arrange_body(live: &LiveState, p: &ArrangeParams) -> ToolResult {
     let action = p.action.trim().to_lowercase();
     let state = read_perf_state(live)?;
@@ -418,15 +492,34 @@ pub fn arrange_body(live: &LiveState, p: &ArrangeParams) -> ToolResult {
         Some(w) => vec![state.track_by(w)?.clone()],
         None => state.tracks.clone(),
     };
+    // Every bar this call names, resolved once: a number is Live's bar, a
+    // word is a locator the producer already dropped in the Arrangement.
+    let bar = |which: &Option<Value>| {
+        crate::tools::resolve_bar(live, state.beats_per_bar(), which.as_ref())
+    };
+    let at_bar = bar(&p.at_bar)?;
+    let until_bar = bar(&p.until_bar)?;
+    let from_bar = bar(&p.from_bar)?;
+    let to_bar = bar(&p.to_bar)?;
     match action.as_str() {
         "place" => {
             require(live, "place_clips")?;
             let track = single(&p.track, &tracks, "place")?;
-            let slot = p.clip.ok_or("place needs `clip` (the Session slot)")?;
+            let on = crate::tools::TrackTarget {
+                index: track.index,
+                kind: "track".into(),
+                name: track.name.clone(),
+            };
+            let which = p
+                .clip
+                .as_ref()
+                .filter(|c| !c.is_null())
+                .ok_or("place needs `clip` (the Session clip's name, or its slot)")?;
+            let slot = crate::tools::resolve_clip_slot(live, &on, Some(which), None)?;
             if !track.slots_with_clips.contains(&slot) {
                 return Err(format!("slot {slot} on '{}' holds no clip", track.name));
             }
-            let at = beat_of(&state, p.at_bar.ok_or("place needs `at_bar`")?)?;
+            let at = beat_of(&state, at_bar.ok_or("place needs `at_bar`")?)?;
             let length = clip_length(live, track.index, slot)?;
             let step = match p.every_bars {
                 Some(b) if b > 0.0 => b * state.beats_per_bar(),
@@ -434,7 +527,7 @@ pub fn arrange_body(live: &LiveState, p: &ArrangeParams) -> ToolResult {
                 None => length,
             };
             let mut times: Vec<f64> = Vec::new();
-            match (p.until_bar, p.times) {
+            match (until_bar, p.times) {
                 (Some(until), _) => {
                     let end = beat_of(&state, until)?;
                     let mut t = at;
@@ -492,10 +585,11 @@ pub fn arrange_body(live: &LiveState, p: &ArrangeParams) -> ToolResult {
         "repeat" | "move" => {
             require(live, "duplicate_arrangement_clip")?;
             let track = single(&p.track, &tracks, &action)?;
-            let ci = p.clip.ok_or_else(|| {
-                format!("{action} needs `clip` (the Arrangement clip's position as list shows it)")
+            let which = p.clip.as_ref().filter(|c| !c.is_null()).ok_or_else(|| {
+                format!("{action} needs `clip` (the Arrangement clip's name, or its position as list shows it)")
             })?;
             let clips = arrangement_clips(live, track.index)?;
+            let ci = arrangement_clip_index(&clips, which, &state, &track.name)?;
             let clip = clips.get(ci as usize).ok_or_else(|| {
                 format!(
                     "'{}' has {} Arrangement clip{}; no position {ci}",
@@ -515,7 +609,7 @@ pub fn arrange_body(live: &LiveState, p: &ArrangeParams) -> ToolResult {
             let length = (end - start).max(0.0);
             let name = get_display(clip, "name", "clip");
             if action == "move" {
-                let to = beat_of(&state, p.at_bar.ok_or("move needs `at_bar`")?)?;
+                let to = beat_of(&state, at_bar.ok_or("move needs `at_bar`")?)?;
                 live.send_command(
                     "duplicate_arrangement_clip",
                     Some(json!({"track_index": track.index, "clip_index": ci, "times": [to]})),
@@ -536,7 +630,7 @@ pub fn arrange_body(live: &LiveState, p: &ArrangeParams) -> ToolResult {
                 ));
             }
             let n = p.times.unwrap_or(1).clamp(1, 256);
-            let first = match p.at_bar {
+            let first = match at_bar {
                 Some(b) => beat_of(&state, b)?,
                 None => end,
             };
@@ -564,20 +658,19 @@ pub fn arrange_body(live: &LiveState, p: &ArrangeParams) -> ToolResult {
         "delete" | "shorten" => {
             require(live, "delete_arrangement_clips")?;
             let (from, to) = if action == "shorten" {
-                let end = p
-                    .to_bar
+                let end = to_bar
                     .ok_or("shorten needs `to_bar` (the bar the arrangement should end on)")?;
                 (beat_of(&state, end)?, f64::INFINITY)
             } else {
-                let from = match p.from_bar {
+                let from = match from_bar {
                     Some(b) => beat_of(&state, b)?,
                     None => 0.0,
                 };
-                let to = match p.to_bar {
+                let to = match to_bar {
                     Some(b) => beat_of(&state, b)?,
                     None => f64::INFINITY,
                 };
-                if p.from_bar.is_none() && p.to_bar.is_none() && p.track.is_none() {
+                if from_bar.is_none() && to_bar.is_none() && p.track.is_none() {
                     return Err(
                         "delete on every track needs from_bar and/or to_bar; say which bars."
                             .into(),

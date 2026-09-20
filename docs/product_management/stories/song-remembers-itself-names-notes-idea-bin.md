@@ -10,7 +10,7 @@ we parked —
 ## Details
 | Field | Value |
 |-------|-------|
-| Status | `Ready` |
+| Status | `Done` — built and green against the fake Live; the real-Live pass (`ABLETON_TARGET=live`) and the manual Verification steps are still outstanding, see #63 |
 | Priority | P1 — the producer's session of 2026-09-20 (#50) lost every non-Live fact at the end of the conversation; #46 is the same loss by crash. Nothing else on the list makes a second session cheaper |
 | Size | L — three tools, four core tools' addressing, the instructions, four prompts, a new suite |
 | Tracker | [#63](https://github.com/defoAI/mcp-ableton-music-maker/issues/63) |

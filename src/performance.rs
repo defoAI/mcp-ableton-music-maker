@@ -287,6 +287,21 @@ impl PerfState {
                 self.tracks
                     .iter()
                     .find(|t| t.name.to_lowercase() == want)
+                    // A role is a suffix on the track's name (`Sitar
+                    // [lead]`), so the role addresses the track everywhere a
+                    // name does — including here.
+                    .or_else(|| {
+                        self.tracks.iter().find(|t| {
+                            crate::memory::split_role(&t.name)
+                                .1
+                                .is_some_and(|r| r.to_lowercase() == want)
+                        })
+                    })
+                    .or_else(|| {
+                        self.tracks
+                            .iter()
+                            .find(|t| crate::memory::split_role(&t.name).0.to_lowercase() == want)
+                    })
                     .ok_or_else(|| {
                         format!(
                             "no track named '{s}'; tracks: {}",
@@ -1578,7 +1593,7 @@ pub fn state_text_with(
     let rows: Vec<&SceneState> = state
         .scenes
         .iter()
-        .filter(|s| !crate::song::is_setlist_scene(&s.name))
+        .filter(|s| !crate::song::is_reserved_scene(&s.name))
         .collect();
     let named: Vec<String> = rows
         .iter()

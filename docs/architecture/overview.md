@@ -193,6 +193,16 @@ script is loaded and up to date. Both are for CI and the Mac app.
   `get_track_info`, `get_drum_rack_pads`, `delete_device`, `move_device`) carries the `kind`
   the script resolves with `_resolve_track`. So anything that can be loaded can be read,
   corrected and removed.
+- **So is everything else that takes a track.** `resolve_track_target` is the one resolver:
+  every core tool that addresses a track runs through it, and `tests/artist.rs` fails the
+  build when a core tool takes `track_index` without `track`. Beside it,
+  `tools::resolve_clip_slot` turns a Session clip's name into its slot (read off
+  `get_track_info`) and `tools::resolve_bar` turns a locator's name into a bar — the locators
+  are read through the generic ops layer (`song.cue_points`), so no command was added for it.
+  Two rules hold all three: an **ambiguous** name lists every candidate and changes nothing,
+  and a name that matches nothing is an error listing what does exist — it never falls back
+  to an index, because reading "Drop" as slot 0 is how the wrong clip gets overwritten. The
+  index forms stay, because `build_song` documents them and `batch` payloads send them.
 - **A parameter carries what Live shows.** The Live Object Model has no `value_string`; it has
   `str_for_value(value)` and, for a quantized parameter, `value_items`. The script reads both
   in `_serialize_parameter` — the display string, the range as display strings, the labels of
@@ -202,10 +212,49 @@ script is loaded and up to date. Both are for CI and the Mac app.
   with the list rather than silently written. The strings cost Live three calls per parameter,
   so they are read for the device a person asked about and left out of the snapshot and the
   rack-chain walk.
+- **The song remembers itself** (`src/memory.rs`). What Live can hold, Live holds — measured,
+  not assumed: a `describe` sweep of a real Live 12.4.6 shows the only writable text in Live's
+  object model is a `name`. So a track's **role** is a suffix on its name (`Sitar [lead]`) and a
+  parked idea is a clip in a `Stash:` scene row — the same trick as the `Setlist:` scene, kept by
+  Live's own Save, travelling in the `.als`, working with no server at all. `is_reserved_scene`
+  is what keeps both rows out of the sections: a `Stash:` row is never listed, launched, counted
+  or played. Only what has nowhere to go in Live is written down: the **overview** (the agent's
+  model of the track, capped at 8 KB), the **notes**, and a per-session **digest**, in
+  `state_dir()/songs/<key>.json`, keyed on `song.file_path` read through the generic ops layer —
+  no command, no `SCRIPT_VERSION` bump. A set that was never saved is filed provisionally and
+  the first Cmd+S renames the file and says so once.
+  **Retrieval is not a call**: the whole overview rides back in the `get_context` header, the
+  call an agent makes first anyway, because a "load my memory" call is one an agent can fail to
+  make and the turn it skips it on is the first turn of a session. That header is derived from
+  the `get_context` payload already in hand — `get_context` stays one round trip for the set,
+  plus the single op that reads the set's identity. Full on the first call of a session and
+  after any change, one line after that: a server rule, so the agent decides nothing and a
+  repeat call stops spending the cap on something unchanged. The staleness check cannot ride
+  there alone for the same reason, so the drift line also travels on `capture_mix` and
+  `play_song` — and it costs nothing when there is no overview to be stale.
+  `reset_set` forgets the file: the plan it held described tracks and clips that call deletes.
+  Notes are **never repointed by guess** — a rename is reattached only when exactly one unspoken
+  track is named like the missing subject, and anything less certain is reported and left alone.
 - **The sound vocabulary** (`src/sound.rs`) is a table, not a guess: a word is resolved at call
   time against the device's rack macros by name, then candidate parameter names per Live
   instrument, then aliases and the word itself; `shape_sound` writes several words through one
   `set_device_parameters`, and a cue ramp takes a word the same way.
+- **What that table cannot reach, the server learns** (`src/devices.rs`). `sound::vocabulary`
+  keys on the device *class*, and a preset is not a class: "Vinyl Drawbs" is a rack whose
+  macros were named by whoever made it, and no compiled table can know it has no cutoff. But
+  the failure already produces the answer — `shape_sound` reads the real parameter names off
+  the device to print them — and every write is read back with Live's display string. That is
+  kept, keyed on the **device** (name and class) and the **Live version**, never on a song,
+  under `state_dir()/devices/<live-version>.json` beside the browser index and behind the same
+  `ABLETON_MCP_LIBRARY_INDEX=false`. Nothing extra is asked of Live: these are the reads that
+  already happened. Two rules make it safe to keep. Every row is **stamped** — Live version,
+  device name and class, the day — and a Live whose version is not known yet stays in memory,
+  because an unstamped measurement does not ship. And a stored value is a **hint, never
+  truth**: the names are re-read on every use, and an observed value → display pair is only
+  ever reported. A macro that ran the other way round (`devices::backwards`) is *said*, with
+  both measurements, rather than silently inverted — a server that quietly flips a number is
+  one the producer cannot reconcile with what Live shows them.
+  `adv_device_vocabulary` shows all of it and deletes it, and asks Live nothing.
 - **A write is read back.** The script re-reads the parameter after setting it and sends
   `asked`, `landed`, `is_enabled`, `is_quantized` and `automation_state` beside the value
   (`_landing`). `landing` in `src/tools.rs` turns that into one of three answers: a clean

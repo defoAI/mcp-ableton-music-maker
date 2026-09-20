@@ -1915,7 +1915,14 @@ class Song(LiveObject):
     scale_name = live_prop("scale_name", cast=str)
     scale_mode = live_prop("scale_mode", cast=bool)
     groove_amount = live_prop("groove_amount", cast=float)
-    file_path = _audio_only("file_path", readonly=True)
+    # Song.file_path is Live's path to the open Set, read-only, and empty
+    # when the Set has never been saved (Cycling '74 LOM reference, Song >
+    # file_path). It had the Clip helper `_audio_only` on it, whose getter
+    # reads `self._is_midi_clip`, so every read raised
+    # `AttributeError: 'Song' object has no attribute '_is_midi_clip'`
+    # (measured against this model, 2026-09-20). `_file_path` is the
+    # backing, so a test can be a saved Set or an unsaved one.
+    file_path = live_prop("file_path", readonly=True)
     name = live_prop("name", readonly=True)
     nudge_down = live_prop("nudge_down", cast=bool)
     nudge_up = live_prop("nudge_up", cast=bool)
