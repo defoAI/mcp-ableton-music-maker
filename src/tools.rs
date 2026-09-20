@@ -1667,6 +1667,7 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
     // reads as success while a word was dropped is how a partial change is
     // reported as a whole one.
     let mut lines: Vec<String> = Vec::new();
+    let mut applied = 0usize;
     for (word, param, via, _) in &resolved {
         let after = written
             .iter()
@@ -1675,15 +1676,27 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
             .and_then(crate::sound::Param::from_value)
             .map(|q| q.display())
             .unwrap_or_else(|| "?".into());
-        lines.push(format!(
-            "  applied  {}'{}' {} → {new_display}  ({word})",
-            match via {
-                crate::sound::Via::Macro => "macro ",
-                _ => "",
-            },
-            param.name,
-            param.display()
-        ));
+        // A word Live ignored is skipped, not applied: the same rule as
+        // adv_set_device_parameter, one layer up.
+        match after.map(|a| landing(a, &param.name, &new_display)) {
+            Some(Err(reason)) => lines.push(format!("  skipped  {word} — {reason}")),
+            landed => {
+                applied += 1;
+                lines.push(format!(
+                    "  applied  {}'{}' {} → {new_display}  ({word}){}",
+                    match via {
+                        crate::sound::Via::Macro => "macro ",
+                        _ => "",
+                    },
+                    param.name,
+                    param.display(),
+                    match landed {
+                        Some(Ok(Some(note))) => note,
+                        _ => String::new(),
+                    }
+                ));
+            }
+        }
     }
     for word in &unresolved {
         lines.push(format!(
@@ -1700,12 +1713,11 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
         } else {
             format!(", {class}")
         },
-        if unresolved.is_empty() {
+        if applied == resolved.len() + unresolved.len() {
             String::new()
         } else {
             format!(
-                " — {} of {} applied",
-                resolved.len(),
+                " — {applied} of {} applied",
                 resolved.len() + unresolved.len()
             )
         },
@@ -1786,6 +1798,54 @@ fn resolve_sound_ramps(
     Ok(out)
 }
 
+/// What Live did with a parameter write, read off the reply the script sends
+/// back: `asked`, `landed`, `is_enabled`, `is_quantized`, `automation_state`.
+///
+/// `Err` is a write that did nothing — the step counted as done and was not.
+/// `Ok(Some(note))` is a write that moved but not to the number asked for:
+/// a quantized parameter snapping to its nearest step, which is a success
+/// the producer should see rather than discover by ear. `Ok(None)` is a
+/// clean landing, and also what an older script gets, since it sends no
+/// `landed` and nothing may be assumed about what it did.
+fn landing(r: &Value, name: &str, shown_after: &str) -> Result<Option<String>, String> {
+    if r.get("landed").and_then(Value::as_bool) != Some(false) {
+        return Ok(None);
+    }
+    let asked = short_num(r.get("asked"));
+    let now = if shown_after.is_empty() {
+        short_num(r.get("value"))
+    } else {
+        shown_after.to_string()
+    };
+    if r.get("is_quantized").and_then(Value::as_bool) == Some(true) {
+        let moved =
+            r.get("old_value").and_then(Value::as_f64) != r.get("value").and_then(Value::as_f64);
+        return Ok(Some(format!(
+            " {name} takes steps: {asked} is nearest {now}{}.",
+            if moved {
+                ""
+            } else {
+                ", the step it was already on"
+            }
+        )));
+    }
+    if r.get("is_enabled").and_then(Value::as_bool) == Some(false) {
+        return Err(format!(
+            "'{name}' did not move; it is still {now}. Live has it switched off (is_enabled false): a rack macro owns it, or its device has that parameter disabled. Move the macro that maps to it, or enable it in Live."
+        ));
+    }
+    if let Some(state) = r.get("automation_state").and_then(Value::as_i64) {
+        if state != 0 {
+            return Err(format!(
+                "'{name}' did not move; it is still {now}. It is automated (automation_state {state}), and the envelope overwrites a manual write on the next playback tick. Clear or bypass the envelope in Live, or write the envelope itself with adv_set_clip_automation."
+            ));
+        }
+    }
+    Err(format!(
+        "'{name}' did not move; Live left it at {now} after being asked for {asked}. Nothing in the reply says why: check in Live whether the parameter is mapped, frozen or owned by a chain."
+    ))
+}
+
 pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams) -> ToolResult {
     require(live, "set_device_parameter")?;
     let (target, device_index) = resolve_device(
@@ -1848,11 +1908,15 @@ pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams)
         short_num(r.get("min")),
         short_num(r.get("max"))
     );
+    let name = get_display(&r, "name", "parameter");
+    // A write Live ignored is an error, not a success line with the same
+    // number on both sides of the arrow.
+    let note = landing(&r, &name, &after)?;
     Ok(format!(
-        "{} · {} · {}: {} → {} ({raw}).",
+        "{} · {} · {}: {} → {} ({raw}).{}",
         target.label(&get_display(&r, "track_name", "")),
         get_display(&r, "device", "device"),
-        get_display(&r, "name", "parameter"),
+        name,
         if before.is_empty() {
             short_num(r.get("old_value"))
         } else {
@@ -1862,7 +1926,8 @@ pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams)
             short_num(r.get("value"))
         } else {
             after
-        }
+        },
+        note.unwrap_or_default()
     ))
 }
 

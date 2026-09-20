@@ -9,6 +9,7 @@ mod common;
 use common::{is_error, server_with, text_of, FakeBridge};
 use mcp_ableton_music_maker::performance::CueParams;
 use mcp_ableton_music_maker::tools::{self, SetDeviceParameterParams, ShapeSoundParams};
+use rmcp::model::CallToolResult;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -168,6 +169,150 @@ async fn a_batch_summary_counts_the_steps_that_only_half_applied() {
     assert!(
         t.contains("Skipped:\n  1. shape_sound: skipped  attack — no macro on this device says it"),
         "the skipped lines are pulled up under the summary: {t}"
+    );
+}
+
+/// The Beat Repeat case from the producer's session: two writes to
+/// Variation in a row, both answered "Set Variation 0.0 → 0.0", both counted
+/// as steps that happened.
+fn beat_repeat(landing: Value) -> Arc<FakeBridge> {
+    let b = FakeBridge::responding(json!({}));
+    b.script("get_performance_state", vec![state()]);
+    b.script(
+        "get_track_info",
+        vec![json!({"index": 1, "name": "Bass", "devices": [
+        {"index": 0, "name": "Beat Repeat", "class_name": "BeatRepeat", "type": "audio_effect"}]})],
+    );
+    b.script("get_device_parameters", vec![json!({"track_index": 1, "device": {"index": 0, "name": "Beat Repeat", "class_name": "BeatRepeat", "parameters": [
+        param(0, "Device On", 1.0, 0.0, 1.0, None),
+        param(1, "Variation", 0.0, 0.0, 1.0, None)]}})]);
+    let mut reply = json!({"track_index": 1, "kind": "track", "track_name": "Bass",
+        "device_index": 0, "device": "Beat Repeat", "parameter_index": 1,
+        "name": "Variation", "old_value": 0.0, "value": 0.0, "min": 0.0, "max": 1.0});
+    for (k, v) in landing.as_object().expect("an object").clone() {
+        reply[k] = v;
+    }
+    b.script("set_device_parameter", vec![reply]);
+    b
+}
+
+async fn set_variation(b: Arc<FakeBridge>) -> CallToolResult {
+    server_with(b)
+        .run(
+            &tools::SET_DEVICE_PARAMETER,
+            SetDeviceParameterParams {
+                track: Some(json!("Bass")),
+                parameter: Some("Variation".into()),
+                value: json!(0.35),
+                ..Default::default()
+            },
+            tools::set_device_parameter_body,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_write_live_ignored_is_an_error_naming_the_reason() {
+    // Switched off: a rack macro owns it, or the device disabled it.
+    let r = set_variation(beat_repeat(
+        json!({"asked": 0.35, "landed": false, "is_enabled": false, "is_quantized": false}),
+    ))
+    .await;
+    let t = text_of(&r);
+    assert!(
+        is_error(&r),
+        "a step that did not happen is not a step: {t}"
+    );
+    assert!(
+        t.contains("'Variation' did not move") && t.contains("is_enabled false"),
+        "{t}"
+    );
+
+    // Automated: the envelope overwrites the write on the next playback tick.
+    let r = set_variation(beat_repeat(json!({"asked": 0.35, "landed": false,
+        "is_enabled": true, "is_quantized": false, "automation_state": 1})))
+    .await;
+    let t = text_of(&r);
+    assert!(is_error(&r), "{t}");
+    assert!(
+        t.contains("automated (automation_state 1)") && t.contains("envelope"),
+        "{t}"
+    );
+
+    // Nothing in the reply says why: still an error, and it says that too.
+    let r = set_variation(beat_repeat(
+        json!({"asked": 0.35, "landed": false, "is_enabled": true, "is_quantized": false}),
+    ))
+    .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    assert!(
+        text_of(&r).contains("Nothing in the reply says why"),
+        "{}",
+        text_of(&r)
+    );
+
+    // An older script sends no `landed`: nothing may be assumed, so the
+    // before-and-after echo stands as it did.
+    let r = set_variation(beat_repeat(json!({}))).await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+}
+
+#[tokio::test]
+async fn a_quantized_write_that_snapped_says_which_step_it_landed_on() {
+    // Beat Repeat's Grid asked for 0.25 and given step 0, reported as a
+    // success with no hint that it had snapped.
+    let b = beat_repeat(json!({"asked": 0.25, "landed": false, "is_enabled": true,
+        "is_quantized": true, "old_value": 0.0, "value": 0.125,
+        "display": "1/16", "old_display": "1/32"}));
+    let r = set_variation(b).await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "a snap is a success, not a failure: {t}");
+    assert!(
+        t.contains("Variation takes steps: 0.25 is nearest 1/16."),
+        "the producer sees the snap instead of hearing it later: {t}"
+    );
+
+    // It snapped to the step it was already on: that is worth saying too.
+    let b = beat_repeat(json!({"asked": 0.25, "landed": false, "is_enabled": true,
+        "is_quantized": true, "old_value": 0.0, "value": 0.0, "display": "1/32"}));
+    let t = text_of(&set_variation(b).await);
+    assert!(t.contains("the step it was already on"), "{t}");
+}
+
+#[tokio::test]
+async fn shape_sound_skips_a_word_whose_parameter_refused_to_move() {
+    let b = bridge();
+    // Cutoff lands; Res is switched off and does not.
+    b.script("set_device_parameters", vec![json!({"track_index": 0, "device_index": 0,
+        "device": "Evolving Pad", "class_name": "InstrumentGroupDevice", "parameters": [
+        {"index": 2, "name": "Cutoff", "old_value": 79.0, "value": 47.0, "min": 0.0, "max": 127.0,
+         "display": "37 %", "asked": 47.0, "landed": true, "is_enabled": true, "is_quantized": false},
+        {"index": 3, "name": "Res", "old_value": 25.4, "value": 25.4, "min": 0.0, "max": 127.0,
+         "display": "20 %", "asked": 38.1, "landed": false, "is_enabled": false, "is_quantized": false}]})]);
+    let r = server_with(b)
+        .run(
+            &tools::SHAPE_SOUND,
+            ShapeSoundParams {
+                track: json!("Pad"),
+                cutoff: Some(json!("-25%")),
+                resonance: Some(json!("+10%")),
+                ..Default::default()
+            },
+            tools::shape_sound_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(
+        t.starts_with("Pad (rack 'Evolving Pad', InstrumentGroupDevice) — 1 of 2 applied:\n"),
+        "the header counts what landed, not what was sent: {t}"
+    );
+    assert!(
+        t.contains("  applied  macro 'Cutoff' 62 % → 37 %  (cutoff)"),
+        "{t}"
+    );
+    assert!(
+        t.contains("  skipped  resonance — 'Res' did not move") && t.contains("is_enabled false"),
+        "{t}"
     );
 }
 

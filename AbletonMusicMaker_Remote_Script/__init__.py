@@ -63,7 +63,7 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.32.1"
+SCRIPT_VERSION = "1.33.0"
 PROTOCOL_VERSION = 2
 # Where client sockets are read. "main_thread_tick": sockets are non-blocking
 # and drained from the same tick the clock runs on, so a message waits one
@@ -6776,6 +6776,30 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting session snapshot: " + str(e))
             raise
 
+    def _landing(self, param, asked, clamped):
+        """What Live did with a write, read back off the parameter itself.
+
+        Live has three reasons to ignore or move a write, and a caller that
+        is never told which one counts a step that did not happen as a step
+        that did: the parameter is switched off right now (a rack macro owns
+        it, or its device disabled it), an envelope automates it and will
+        overwrite a manual write on the next playback tick, or it is
+        quantized and snaps to its nearest step.
+        """
+        lo, hi = float(param.min), float(param.max)
+        tol = max(1e-6, abs(hi - lo) * 1e-6)
+        entry = {
+            "asked": float(asked),
+            "landed": bool(abs(float(param.value) - float(clamped)) <= tol),
+            "is_enabled": bool(getattr(param, "is_enabled", True)),
+            "is_quantized": bool(getattr(param, "is_quantized", False)),
+        }
+        try:
+            entry["automation_state"] = int(param.automation_state)
+        except Exception:
+            pass
+        return entry
+
     def _set_device_parameter(self, track_index, device_index, parameter_index,
                               value=None, kind="track", value_display=None):
         """One parameter, on a track, a return or the master. `value_display`
@@ -6809,7 +6833,8 @@ class AbletonMCP(ControlSurface):
                 raise ValueError("'%s' takes %s to %s (%s to %s); %s is outside that" % (
                     param.name, lo, hi, self._param_display(param, lo),
                     self._param_display(param, hi), target))
-            param.value = max(lo, min(hi, target))
+            clamped = max(lo, min(hi, target))
+            param.value = clamped
             out = {
                 "track_index": track_index if kind != "master" else 0,
                 "kind": kind,
@@ -6832,6 +6857,7 @@ class AbletonMCP(ControlSurface):
             items = self._param_items(param)
             if items:
                 out["items"] = items
+            out.update(self._landing(param, target, clamped))
             return out
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
@@ -6864,6 +6890,7 @@ class AbletonMCP(ControlSurface):
                     new = self._value_from_display(param, display_wanted)
                 else:
                     new = float(item.get("value", old))
+                asked = new
                 new = max(float(param.min), min(float(param.max), new))
                 param.value = new
                 entry = {"index": pi, "name": "%s" % param.name, "old_value": old,
@@ -6877,6 +6904,7 @@ class AbletonMCP(ControlSurface):
                 items = self._param_items(param)
                 if items:
                     entry["items"] = items
+                entry.update(self._landing(param, asked, new))
                 out.append(entry)
             return {"track_index": track_index if kind != "master" else 0, "kind": kind,
                     "track_name": "%s" % track.name,

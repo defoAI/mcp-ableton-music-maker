@@ -195,6 +195,13 @@ script is loaded and up to date. Both are for CI and the Mac app.
   time against the device's rack macros by name, then candidate parameter names per Live
   instrument, then aliases and the word itself; `shape_sound` writes several words through one
   `set_device_parameters`, and a cue ramp takes a word the same way.
+- **A write is read back.** The script re-reads the parameter after setting it and sends
+  `asked`, `landed`, `is_enabled`, `is_quantized` and `automation_state` beside the value
+  (`_landing`). `landing` in `src/tools.rs` turns that into one of three answers: a clean
+  landing, a note that a quantized parameter snapped to its nearest step, or an error naming
+  why nothing moved. A parameter Live ignored is never counted as a step that happened —
+  in `adv_set_device_parameter` or in one of `shape_sound`'s per-word lines. A script that
+  sends no `landed` gets the plain before-and-after echo, since nothing may be assumed of it.
 - **Set memory is on request.** `export_set` (`src/sets.rs`) reads one session snapshot and one
   context into a rebuildable document under `state_dir()/sets/` and nothing else creates that
   folder; `import_set` rebuilds through `build_song`, `set_scale` and `set_song`. The Live set

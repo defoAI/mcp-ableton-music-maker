@@ -115,6 +115,33 @@ def check_display_strings(script):
     print("a parameter carries its display, its range and its labels")
 
 
+def check_landing(script):
+    """A write Live ignored must be distinguishable from one it took."""
+    drive = Param("Drive", 0.5, -36.0, 36.0, lambda v: "%.2f dB" % v)
+    drive.value = 3.0
+    got = script._landing(drive, 3.0, 3.0)
+    assert got["landed"] and got["asked"] == 3.0 and got["is_enabled"], got
+
+    # Live left it where it was: the caller has to be told.
+    stuck = Param("Variation", 0.0, 0.0, 1.0, lambda v: "%.0f %%" % (v * 100))
+    stuck.is_enabled = False
+    got = script._landing(stuck, 0.35, 0.35)
+    assert not got["landed"] and not got["is_enabled"], got
+
+    # A quantized parameter snapping to its nearest step is not a failure,
+    # but it is not what was asked for either.
+    grid = Param("Grid", 0.0, 0.0, 1.0, lambda v: "1/%d" % (8 * (int(v * 8) + 1)),
+                 ["1/8", "1/16", "1/32"])
+    got = script._landing(grid, 0.25, 0.25)
+    assert not got["landed"] and got["is_quantized"], got
+
+    automated = Param("Freq", 0.3, 0.0, 1.0, lambda v: "%.2f" % v)
+    automated.automation_state = 1
+    got = script._landing(automated, 0.8, 0.8)
+    assert not got["landed"] and got["automation_state"] == 1, got
+    print("a write that did not land says so, and why")
+
+
 def check_meter_curve(script):
     # Measured on Live 12.4.6: a -12.0 dBFS file read 0.76314, and every 12 dB
     # of fader moved the value by 0.15789 — the meter is linear in dB.
@@ -185,6 +212,7 @@ def main():
     namespace = load()
     script = namespace["AbletonMCP"].__new__(namespace["AbletonMCP"])
     check_display_strings(script)
+    check_landing(script)
     check_meter_curve(script)
     check_create_tracks(script, namespace["Done"])
     print("\nall Remote Script helper checks passed (script %s)" % namespace["SCRIPT_VERSION"])
