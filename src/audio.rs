@@ -284,6 +284,34 @@ pub struct Measurements {
     pub clipped_samples: usize,
     /// −1…1 for stereo; `None` for mono.
     pub stereo_correlation: Option<f64>,
+    /// Peak minus RMS: how much dynamic range is left in the take.
+    pub crest_db: f64,
+    /// Energy share per octave band, 31 Hz … 16 kHz, each 0–1, summing to 1.
+    pub octaves: Vec<f64>,
+    /// Energy below 200 Hz against energy above 4 kHz, in dB.
+    pub lf_hf_db: f64,
+    /// Seconds of silence at the head — a capture that starts before the
+    /// playhead arrives is not a mix observation.
+    pub leading_silence_s: f64,
+}
+
+/// The centre frequency of each octave band the reading reports.
+pub const OCTAVE_CENTERS: [f64; 10] = [
+    31.25, 62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+];
+
+/// A short label per band: "31", "63", "125", … "16k".
+pub fn octave_labels() -> Vec<String> {
+    OCTAVE_CENTERS
+        .iter()
+        .map(|hz| {
+            if *hz >= 1000.0 {
+                format!("{}k", (hz / 1000.0).round() as i64)
+            } else {
+                format!("{}", hz.round() as i64)
+            }
+        })
+        .collect()
 }
 
 fn dbfs(x: f64) -> f64 {
@@ -340,6 +368,18 @@ pub fn measure(audio: &Audio, seconds_per_bar: f64) -> Measurements {
         start = end;
     }
 
+    // Silence at the head: the first sample above −60 dBFS, in seconds.
+    let mut leading = frames;
+    'lead: for i in 0..frames {
+        for ch in &audio.channels {
+            if (ch[i] as f64).abs() > 0.001 {
+                leading = i;
+                break 'lead;
+            }
+        }
+    }
+    let leading_silence_s = leading as f64 / audio.sample_rate.max(1) as f64;
+
     let stereo_correlation = if n >= 2 && frames > 1 {
         let (l, r) = (&audio.channels[0], &audio.channels[1]);
         let ml = l.iter().map(|&x| x as f64).sum::<f64>() / frames as f64;
@@ -361,24 +401,105 @@ pub fn measure(audio: &Audio, seconds_per_bar: f64) -> Measurements {
         None
     };
 
+    let peak_dbfs = (dbfs(peak) * 10.0).round() / 10.0;
+    let rms_dbfs = (dbfs(rms) * 10.0).round() / 10.0;
+    let energy = octave_energy(audio);
+    let sum: f64 = energy.iter().sum();
+    let octaves: Vec<f64> = if sum > 0.0 {
+        energy.iter().map(|e| e / sum).collect()
+    } else {
+        vec![0.0; OCTAVE_CENTERS.len()]
+    };
+    // Below 200 Hz against above 4 kHz: the ratio a producer hears as "the
+    // low end is masking everything", in dB.
+    let low: f64 = energy[0] + energy[1] + energy[2];
+    let high: f64 = energy[7] + energy[8] + energy[9];
+    let lf_hf_db = if low <= 0.0 && high <= 0.0 {
+        0.0
+    } else {
+        let ratio = (low.max(1e-12)) / (high.max(1e-12));
+        ((10.0 * ratio.log10()).clamp(-60.0, 60.0) * 10.0).round() / 10.0
+    };
     Measurements {
         duration_s: (audio.duration_s() * 100.0).round() / 100.0,
         sample_rate: audio.sample_rate,
         channels: n,
-        peak_dbfs: (dbfs(peak) * 10.0).round() / 10.0,
-        rms_dbfs: (dbfs(rms) * 10.0).round() / 10.0,
+        peak_dbfs,
+        rms_dbfs,
         rms_per_bar,
         silent_bars: silent,
         clipped_samples: clipped,
         stereo_correlation,
+        crest_db: ((peak_dbfs - rms_dbfs) * 10.0).round() / 10.0,
+        octaves,
+        lf_hf_db,
+        leading_silence_s: (leading_silence_s * 1000.0).round() / 1000.0,
     }
 }
 
 /// One short sentence a producer can act on, from the numbers.
 pub fn reading(m: &Measurements) -> String {
+    // Nothing to read: say that, rather than describing the spectrum and the
+    // crest factor of silence.
+    if m.peak_dbfs <= -60.0 {
+        return "silent from end to end — nothing was playing".to_string();
+    }
     let mut notes = Vec::new();
+    // Spectral balance first: peak and RMS never caught a mix whose energy is
+    // all under 120 Hz, and that is the question a producer is asking.
+    let labels = octave_labels();
+    if let Some((i, share)) = m
+        .octaves
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, s)| (i, *s))
+    {
+        let below_250: f64 = m.octaves.iter().take(3).sum();
+        if below_250 >= 0.7 {
+            notes.push(format!(
+                "{:.0} % of the energy is below 250 Hz — the low end is masking everything above it",
+                below_250 * 100.0
+            ));
+        } else if share >= 0.45 {
+            notes.push(format!(
+                "{:.0} % of the energy sits in one octave around {} Hz",
+                share * 100.0,
+                labels[i]
+            ));
+        } else if m.lf_hf_db >= 24.0 {
+            notes.push(format!(
+                "low end is {:.0} dB above the top end — bass-heavy",
+                m.lf_hf_db
+            ));
+        } else if m.lf_hf_db <= -6.0 {
+            notes.push(format!(
+                "top end is {:.0} dB above the low end — thin",
+                -m.lf_hf_db
+            ));
+        } else {
+            notes.push("spectral balance is even".into());
+        }
+    }
+    if m.crest_db < 6.0 {
+        notes.push(format!(
+            "crest {:.1} dB — squashed, little dynamic range left",
+            m.crest_db
+        ));
+    } else if m.crest_db > 20.0 {
+        notes.push(format!("crest {:.1} dB — very peaky", m.crest_db));
+    }
+    if m.leading_silence_s > 0.05 {
+        notes.push(format!(
+            "the take begins with {:.2} s of silence",
+            m.leading_silence_s
+        ));
+    }
     let bars = &m.rms_per_bar;
-    if bars.len() >= 2 {
+    if m.leading_silence_s > 0.05 {
+        // A take that starts early says nothing about the music; do not
+        // compare its halves.
+    } else if bars.len() >= 2 {
         let half = bars.len() / 2;
         let mean = |s: &[f64]| s.iter().sum::<f64>() / s.len() as f64;
         let diff = mean(&bars[half..]) - mean(&bars[..half]);
@@ -570,6 +691,71 @@ mod tests {
         std::fs::write(&junk, b"not audio at all, really").unwrap();
         assert!(read_file(&junk).unwrap_err().contains("not a WAV or AIFF"));
     }
+
+    #[test]
+    fn the_spectrum_and_the_crest_are_measured_not_guessed() {
+        let rate = 44100;
+        // A 60 Hz tone: the energy belongs in the 63 Hz octave, and peak and
+        // RMS alone would call this mix "even".
+        let low = Audio {
+            sample_rate: rate,
+            channels: vec![sine(60.0, 0.5, 1.0, rate)],
+        };
+        let m = measure(&low, 1.0);
+        let loudest = m
+            .octaves
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(octave_labels()[loudest], "63", "{:?}", m.octaves);
+        assert!(m.lf_hf_db > 30.0, "all the energy is at the bottom: {m:?}");
+        assert!(reading(&m).contains("below 250 Hz"), "{}", reading(&m));
+        // A sine's crest factor is 3 dB; a square wave's is 0.
+        assert!((m.crest_db - 3.0).abs() < 0.5, "{}", m.crest_db);
+        let square: Vec<f32> = (0..rate as usize)
+            .map(|i| if (i / 100) % 2 == 0 { 0.5 } else { -0.5 })
+            .collect();
+        let flat = Audio {
+            sample_rate: rate,
+            channels: vec![square],
+        };
+        let m = measure(&flat, 1.0);
+        assert!(m.crest_db < 1.0, "{}", m.crest_db);
+        assert!(reading(&m).contains("squashed"), "{}", reading(&m));
+
+        // A 10 kHz tone lands at the top and reads as thin.
+        let high = Audio {
+            sample_rate: rate,
+            channels: vec![sine(10000.0, 0.5, 1.0, rate)],
+        };
+        let m = measure(&high, 1.0);
+        assert!(m.lf_hf_db < -30.0, "{:?}", m.octaves);
+    }
+
+    #[test]
+    fn silence_at_the_head_is_measured_and_never_narrated_as_music() {
+        let rate = 8000;
+        let mut ch = vec![0.0f32; rate as usize]; // one second of nothing
+        ch.extend(sine(200.0, 0.5, 1.0, rate));
+        let audio = Audio {
+            sample_rate: rate,
+            channels: vec![ch],
+        };
+        let m = measure(&audio, 1.0);
+        assert!(
+            (m.leading_silence_s - 1.0).abs() < 0.01,
+            "{}",
+            m.leading_silence_s
+        );
+        let text = reading(&m);
+        assert!(text.contains("begins with 1.00 s of silence"), "{text}");
+        assert!(
+            !text.contains("louder than bars"),
+            "a take that starts early says nothing about the music: {text}"
+        );
+    }
 }
 
 /// Energy share of three bands over the whole recording: low (< 200 Hz),
@@ -582,42 +768,58 @@ pub struct Bands {
     pub high: f64,
 }
 
-pub fn band_balance(audio: &Audio) -> Bands {
+/// Energy per octave band, 31 Hz … 16 kHz, from one plain radix-2 FFT pass
+/// over 4096-sample windows of the mono mix. Not normalized — `measure`
+/// turns it into shares, and `band_balance` sums it into three.
+pub fn octave_energy(audio: &Audio) -> [f64; OCTAVE_CENTERS.len()] {
     const N: usize = 4096;
+    let mut bands = [0.0f64; OCTAVE_CENTERS.len()];
     let frames = audio.frames();
     let chans = audio.channels.len().max(1) as f32;
-    let mut low = 0.0f64;
-    let mut mid = 0.0f64;
-    let mut high = 0.0f64;
     let bin_hz = audio.sample_rate as f64 / N as f64;
     let mut re = vec![0.0f64; N];
     let mut im = vec![0.0f64; N];
+    let root2 = std::f64::consts::SQRT_2;
     let mut start = 0;
     while start + N <= frames.max(N) && start < frames {
         for i in 0..N {
-            let mut s = 0.0f32;
+            let mut sample = 0.0f32;
             for ch in &audio.channels {
-                s += ch.get(start + i).copied().unwrap_or(0.0);
+                sample += ch.get(start + i).copied().unwrap_or(0.0);
             }
             // Hann window
             let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / N as f64).cos();
-            re[i] = (s / chans) as f64 * w;
+            re[i] = (sample / chans) as f64 * w;
             im[i] = 0.0;
         }
         fft(&mut re, &mut im);
         for k in 1..N / 2 {
             let e = re[k] * re[k] + im[k] * im[k];
             let hz = k as f64 * bin_hz;
-            if hz < 200.0 {
-                low += e;
-            } else if hz > 4000.0 {
-                high += e;
-            } else {
-                mid += e;
+            for (b, centre) in OCTAVE_CENTERS.iter().enumerate() {
+                let lo = centre / root2;
+                let hi = centre * root2;
+                // the lowest band keeps everything under it, the highest
+                // everything over it, so no energy is dropped
+                let below = b == 0 && hz < lo;
+                let above = b == OCTAVE_CENTERS.len() - 1 && hz >= hi;
+                if (hz >= lo && hz < hi) || below || above {
+                    bands[b] += e;
+                    break;
+                }
             }
         }
         start += N;
     }
+    bands
+}
+
+/// Energy share of three bands: low (< 200 Hz), mid, high (> 4 kHz).
+pub fn band_balance(audio: &Audio) -> Bands {
+    let e = octave_energy(audio);
+    let low: f64 = e[0] + e[1] + e[2];
+    let high: f64 = e[7] + e[8] + e[9];
+    let mid: f64 = e[3] + e[4] + e[5] + e[6];
     let total = low + mid + high;
     if total <= 0.0 {
         return Bands {

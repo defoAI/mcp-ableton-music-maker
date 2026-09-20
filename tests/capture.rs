@@ -205,3 +205,174 @@ async fn measure_capture_rereads_a_slot() {
         .await;
     assert!(is_error(&r) && text_of(&r).contains("holds no capture"));
 }
+
+// ── A capture is the bars you asked for, or it is an error ──────────────────
+
+/// A take whose first `silent_seconds` are digital silence: what Live gives
+/// back when recording starts before the playhead reaches the bar.
+fn write_wav_with_silent_head(path: &Path, seconds: f64, silent_seconds: f64) {
+    let rate = 8000u32;
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(path, spec).unwrap();
+    let frames = (seconds * rate as f64) as usize;
+    let silent = (silent_seconds * rate as f64) as usize;
+    for i in 0..frames {
+        let amp = if i < silent { 0.0 } else { 0.4 };
+        let s = (amp
+            * (2.0 * std::f32::consts::PI * 110.0 * i as f32 / rate as f32).sin()
+            * 32767.0) as i16;
+        w.write_sample(s).unwrap();
+        w.write_sample(s).unwrap();
+    }
+    w.finalize().unwrap();
+}
+
+#[tokio::test]
+async fn a_take_that_starts_early_is_discarded_and_recorded_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("early.wav");
+    let good = dir.path().join("clean.wav");
+    write_wav_with_silent_head(&bad, 4.0, 1.8); // the playhead had not arrived
+    write_wav_with_silent_head(&good, 4.0, 0.0);
+    let bridge = capture_bridge(&bad);
+    bridge.script(
+        "start_capture",
+        vec![
+            json!({"slot": 0, "record_length": 8.0, "preroll_beats": 4.0, "tempo": 120.0,
+                    "confirmed_at": 126.10, "begin_beat": 124.0, "launch_quantization": "q_bar"}),
+        ],
+    );
+    // Two takes: the first opens with silence, the second is clean.
+    bridge.script("capture_status", vec![
+        json!({"slot": 0, "has_clip": true, "is_recording": false, "name": "drop", "length": 8.0, "file_path": bad.to_str().unwrap()}),
+        json!({"slot": 0, "has_clip": true, "is_recording": false, "name": "drop", "length": 8.0, "file_path": good.to_str().unwrap()}),
+    ]);
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::CAPTURE_MIX,
+            CaptureMixParams {
+                start_bar: Some(33.0),
+                start: None,
+                bars: 2,
+                name: "drop".into(),
+            },
+            tools::capture_mix_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    let cmds = bridge.commands();
+    assert_eq!(
+        cmds.iter().filter(|c| *c == "start_capture").count(),
+        2,
+        "the bad take was recorded again: {cmds:?}"
+    );
+    assert!(
+        cmds.contains(&"delete_clip".to_string()),
+        "the bad take was cleared out of the slot: {cmds:?}"
+    );
+    assert!(
+        t.contains("The first take's opening 1.80 s was silent"),
+        "the retry is reported, not hidden: {t}"
+    );
+    assert!(
+        t.contains("Playhead confirmed at beat 126.10 before recording began."),
+        "{t}"
+    );
+    assert!(
+        !t.contains("louder than bars"),
+        "silence is never narrated as a musical difference: {t}"
+    );
+}
+
+#[tokio::test]
+async fn two_bad_takes_are_an_error_with_no_measurements() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("early-again.wav");
+    write_wav_with_silent_head(&bad, 4.0, 2.1);
+    let bridge = capture_bridge(&bad);
+    bridge.script(
+        "capture_status",
+        vec![json!({"slot": 0, "has_clip": true, "is_recording": false, "name": "drop", "length": 8.0, "file_path": bad.to_str().unwrap()})],
+    );
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::CAPTURE_MIX,
+            CaptureMixParams {
+                start_bar: Some(33.0),
+                start: None,
+                bars: 2,
+                name: "drop".into(),
+            },
+            tools::capture_mix_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(is_error(&r), "{t}");
+    assert!(
+        t.contains("both takes began before the playhead reached"),
+        "{t}"
+    );
+    assert!(
+        !t.contains("peak") && !t.contains("RMS"),
+        "no measurement is offered for an invalid take: {t}"
+    );
+    assert_eq!(
+        bridge
+            .commands()
+            .iter()
+            .filter(|c| *c == "delete_clip")
+            .count(),
+        2,
+        "both bad takes were cleared"
+    );
+}
+
+#[tokio::test]
+async fn the_reading_names_a_spectral_problem() {
+    // A 110 Hz tone: all the energy is at the bottom, which peak and RMS
+    // alone never said.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bass-heavy.wav");
+    write_wav(&file, 4.0, 0.4, 0.4);
+    let bridge = capture_bridge(&file);
+    bridge.script("capture_status", vec![
+        json!({"slot": 0, "has_clip": true, "is_recording": false, "name": "low", "length": 8.0, "file_path": file.to_str().unwrap()}),
+    ]);
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::CAPTURE_MIX,
+            CaptureMixParams {
+                start_bar: Some(1.0),
+                start: None,
+                bars: 2,
+                name: "low".into(),
+            },
+            tools::capture_mix_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    assert!(t.contains("crest "), "crest factor is reported: {t}");
+    assert!(
+        t.contains("LF/HF "),
+        "the low-to-high ratio is reported: {t}"
+    );
+    assert!(t.contains("bands "), "the octave bands are reported: {t}");
+    assert!(
+        t.contains("below 250 Hz"),
+        "the reading names the low end: {t}"
+    );
+    assert!(
+        t.contains("access grant"),
+        "the reply says the folder may need a grant: {t}"
+    );
+}

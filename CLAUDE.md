@@ -15,6 +15,7 @@ Rust MCP server that lets Claude drive Ableton Live. Two processes:
 
 ```bash
 cargo test                                   # 17 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, stdio
+python3 scripts/check-script-helpers.py      # the Remote Script's pure helpers, against a stub Live
 cd app && npm run dev                        # the Mac app against this checkout (Tauri 2)
 cargo clippy --all-targets -- -D warnings    # CI runs this
 cargo fmt --all
@@ -33,14 +34,14 @@ No Rust toolchain on the machine? Build inside `rust:1-slim-bookworm` with the r
 ```
 src/connection.rs      LiveBridge trait, AbletonConnection (TCP), RealBridge (reconnecting), LiveError
 src/handshake.rs       get_script_info handshake, ScriptInfoCache, per-command capability check
-src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 101 tool bodies and their #[tool] bindings, run() wrapper
+src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 102 tool bodies and their #[tool] bindings, run() wrapper
 src/activity.rs        the local activity log: one JSON line per tool call, payloads off by default
 src/state.rs           state_dir / activity_dir / sessions_dir — the only places the server writes
 src/install.rs         installer logic (Library.cfg discovery, install with .bak)
 src/app.rs             startup handshake, heartbeat, stdio serve, shutdown, --status, --check
 app/                   the Mac companion app (Tauri 2): src-tauri/ links this crate, src/ is the UI; src-tauri/src/listen/ is the process tap of Live (Objective-C + Rust, decision 0008)
 src/notes.rs           compact note forms (csv, step strings, patterns, tiling) → plain Note objects
-src/audio.rs           WAV/AIFF reader and the capture measurements (peak, RMS per bar, silence, clipping)
+src/audio.rs           WAV/AIFF reader and the capture measurements (peak, RMS per bar, crest, octave bands, leading silence, clipping)
 src/performance.rs     performance state, bar arithmetic, cue resolution (bars → beats, silence check), readout text
 src/context.rs         get_context readout and the MCP instructions every client receives at initialize
 src/library.rs         the server's copy of Live's browser: paged from the script, on disk under state_dir, searched locally

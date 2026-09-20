@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Verified** | 2026-09-19 against `src/`, `app/src-tauri/src/`, the Remote Script, `Dockerfile`, `docker/verify-image.sh` and `.github/workflows/ci.yml` |
+| **Verified** | 2026-09-20 against `src/`, `app/src-tauri/src/`, the Remote Script, `Dockerfile`, `docker/verify-image.sh` and `.github/workflows/ci.yml` |
 
 How the system actually works. This is the one document with a hard freshness duty: it is
 read while someone changes the code it describes, so **a change in `src/` or the Remote
@@ -72,10 +72,21 @@ script is loaded and up to date. Both are for CI and the Mac app.
   through `run_named` (a name → params → body table) or directly; they never bypass
   `require`, and the activity line for the one tool call lists every command that went out.
 - **Capture** (`capture_mix`) is the only path out of Live: the script records the master
-  through a Resampling track as a fixed-length Session clip (fired on the tick after the
-  playhead lands, the same two-phase pattern as locators), the server polls until the clip
+  through a Resampling track as a fixed-length Session clip, the server polls until the clip
   has a file, stops the transport (a `Drop` guard stops it on any early exit), and
   `src/audio.rs` reads the WAV or AIFF Live wrote and measures it. Nothing is copied.
+  - **The playhead is confirmed before the fire.** The seek and the transport are
+    asynchronous, so the script seeks to a whole bar before the asked bar, starts playing,
+    and only fires once its own tick reads a playhead inside that preroll and still before
+    the start — with bar quantization, so the take begins exactly on the bar. It reports
+    `confirmed_at`.
+  - **And the take is checked afterwards.** The server measures the leading silence
+    (`audio::measure`); more than an eighth of a bar means the playhead had not arrived, so
+    the clip is deleted and the take recorded again. A second bad take is an error with no
+    measurements: a capture that starts early is not a mix observation.
+  - **What it measures** is peak, RMS, crest factor, RMS per bar, ten octave bands
+    (31 Hz–16 kHz), the low-to-high ratio, clipping and stereo correlation — one FFT pass
+    shared by `band_balance` and the octave shares.
 - **Performance** (`start_performance`, `cue`, `get_performance_state`, …) is the one place
   the script acts on its own clock. Claude plans, Live executes: `cue` resolves bar numbers to
   beats and names to indices against a fresh `get_performance_state` (`src/performance.rs`,
@@ -124,6 +135,32 @@ script is loaded and up to date. Both are for CI and the Mac app.
   for the current and last bar and the master's peak per scene row; they travel as `levels` on
   the `clock` envelope and the state, `run_blocking` renders the 🔊 line under the ⏱ line, and
   a jump into a row that ran more than 3 dB hotter warns before the mix clips.
+- **A meter reading is dB, and the curve was measured, not guessed.**
+  `output_meter_left/right/level` is Live's *meter scale*: **linear in dB**, 0.0 reading −70 dB
+  and 1.0 reading +6 dB, so 0 dBFS sits at 0.921. It is neither linear amplitude (20·log10 of
+  it is not dB — a 12 dB fader move used to read as about 2 dB) nor the fader taper (which
+  would read it as 6.3 dB). Measured on Live 12.4.6 against a −12.0 dBFS file at seven fader
+  positions over 42 dB: a straight-line fit gave `dB = 76·v − 70` with zero residuals, and the
+  reading now matches the file to 0.1 dB. `get_meter_scale` hands the law to the server, which
+  caches it per session (`song::MeterScale`) and converts every raw meter it renders; the same
+  law is `song::meter_db`, so a script that predates the command still reads in real dB. Every
+  meter readout says post-fader.
+- **A device is addressed the way the loader takes it** (`kind: track | return | master`).
+  `tools::resolve_track_target` turns a name, an index, `"master"` or a return's name or
+  letter into that pair, `resolve_device_index` turns a device name into its chain index, and
+  every device-facing command (`get_device_parameters`, `set_device_parameter(s)`,
+  `get_track_info`, `get_drum_rack_pads`, `delete_device`, `move_device`) carries the `kind`
+  the script resolves with `_resolve_track`. So anything that can be loaded can be read,
+  corrected and removed.
+- **A parameter carries what Live shows.** The Live Object Model has no `value_string`; it has
+  `str_for_value(value)` and, for a quantized parameter, `value_items`. The script reads both
+  in `_serialize_parameter` — the display string, the range as display strings, the labels of
+  a chooser — and the server renders them as a table. A value may be set by its display
+  string (`"200 Hz"`, `"Low Cut 48 dB"`): the script bisects `str_for_value` for a continuous
+  parameter and matches the label exactly for a quantized one, so a wrong label is refused
+  with the list rather than silently written. The strings cost Live three calls per parameter,
+  so they are read for the device a person asked about and left out of the snapshot and the
+  rack-chain walk.
 - **The sound vocabulary** (`src/sound.rs`) is a table, not a guess: a word is resolved at call
   time against the device's rack macros by name, then candidate parameter names per Live
   instrument, then aliases and the word itself; `shape_sound` writes several words through one

@@ -525,13 +525,78 @@ pub fn song_line(song: &Song, cur: &Cursor) -> String {
     line
 }
 
-/// Live's 0–1 output meter as dB (20·log10), floored at −80.
-pub fn meter_db(v: f64) -> f64 {
-    if v <= 0.0001 {
-        -80.0
-    } else {
-        20.0 * v.log10()
+/// Live's meter units as dB, through the curve Live itself draws the meters
+/// against — the fader taper, read out of Live by `get_meter_scale`. A meter
+/// value is not linear amplitude, so 20·log10 of it is not dB: that is why a
+/// 12 dB fader move used to read as about 2 dB.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MeterScale {
+    /// (meter value, dB), ascending by value.
+    pub points: Vec<(f64, f64)>,
+}
+
+impl MeterScale {
+    pub fn from_value(v: &serde_json::Value) -> Self {
+        let points = v
+            .get("points")
+            .and_then(|p| p.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| {
+                        let pair = p.as_array()?;
+                        Some((pair.first()?.as_f64()?, pair.get(1)?.as_f64()?))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Self { points }
     }
+
+    /// True when the Remote Script gave no curve; [`meter_db`] — the same law,
+    /// measured — answers instead, so a reading is always real dB.
+    pub fn is_empty(&self) -> bool {
+        self.points.len() < 2
+    }
+
+    /// A meter reading as dB, interpolated on Live's own curve.
+    pub fn db(&self, v: f64) -> f64 {
+        if v <= 0.0 {
+            return -80.0;
+        }
+        if self.is_empty() {
+            return meter_db(v);
+        }
+        let first = self.points[0];
+        if v <= first.0 {
+            return first.1;
+        }
+        for pair in self.points.windows(2) {
+            let (x0, y0) = pair[0];
+            let (x1, y1) = pair[1];
+            if v <= x1 {
+                if x1 - x0 <= 0.0 {
+                    return y1;
+                }
+                return y0 + (y1 - y0) * (v - x0) / (x1 - x0);
+            }
+        }
+        self.points[self.points.len() - 1].1
+    }
+}
+
+/// Live's meter units as dB. The meters are linear in dB: 0.0 reads −70 dB
+/// and 1.0 reads +6 dB, measured on Live 12.4.6 against a file of known level
+/// over 42 dB (a straight-line fit with zero residuals). This is the law the
+/// Remote Script hands over in `get_meter_scale`; it is here as well so a
+/// script that predates that command still reads in real dB.
+pub const METER_FLOOR_DB: f64 = -70.0;
+pub const METER_TOP_DB: f64 = 6.0;
+
+pub fn meter_db(v: f64) -> f64 {
+    if v <= 0.0 {
+        return -80.0;
+    }
+    ((METER_TOP_DB - METER_FLOOR_DB) * v + METER_FLOOR_DB).clamp(-80.0, METER_TOP_DB)
 }
 
 /// `−4.0 dB` with a real minus sign.
@@ -798,10 +863,49 @@ mod tests {
     }
 
     #[test]
+    fn lives_own_curve_converts_a_meter_reading() {
+        // Live draws its meters against the fader taper: a 12 dB fader move
+        // must read as 12 dB, which 20·log10 of the meter value does not.
+        let scale = MeterScale::from_value(&json!({"points": [
+            [0.0, -80.0], [0.4, -30.0], [0.7, -12.0], [0.85, 0.0], [1.0, 6.0]]}));
+        assert!(!scale.is_empty());
+        assert!((scale.db(0.85) - 0.0).abs() < 1e-9, "unity");
+        assert!((scale.db(1.0) - 6.0).abs() < 1e-9, "the top");
+        assert!((scale.db(0.55) - (-21.0)).abs() < 1e-9, "interpolated");
+        assert_eq!(scale.db(0.0), -80.0, "the floor");
+        let unity = scale.db(0.85);
+        let cut = scale.db(0.7);
+        assert!(
+            (unity - cut - 12.0).abs() < 1e-9,
+            "a 12 dB move reads as 12 dB"
+        );
+        // Without a curve the old formula is the fallback, and the caller
+        // says "meter units" rather than dB.
+        let none = MeterScale::default();
+        // With no curve from the script the same measured law answers, so a
+        // reading is still real dB.
+        assert!(none.is_empty());
+        assert!((none.db(0.5) - (-32.0)).abs() < 1e-9, "{}", none.db(0.5));
+    }
+
+    #[test]
     fn meters_read_as_db() {
-        assert_eq!(fmt_db(meter_db(1.0), 1), "0.0");
-        assert_eq!(fmt_db(meter_db(0.5), 1), "−6.0");
+        // Measured on Live 12.4.6: a -12.0 dBFS file read 0.76314, and every
+        // 12 dB of fader moved the value by 0.15789 — dB = 76·v − 70.
+        assert_eq!(fmt_db(meter_db(1.0), 1), "6.0");
         assert_eq!(fmt_db(meter_db(0.0), 1), "−80.0");
+        assert_eq!(fmt_db(meter_db(0.76314), 1), "−12.0");
+        assert_eq!(fmt_db(meter_db(0.60524), 1), "−24.0");
+        assert_eq!(fmt_db(meter_db(0.84209), 1), "−6.0");
+        assert_eq!(fmt_db(meter_db(0.28945), 1), "−48.0");
+        // 0 dBFS, full scale, sits at 0.921 — not at 1.0.
+        assert!((meter_db(0.92105)).abs() < 0.01, "{}", meter_db(0.92105));
+        // A 12 dB fader move must move the reading by 12 dB.
+        assert!(
+            ((meter_db(0.76314) - meter_db(0.60524)) - 12.0).abs() < 0.01,
+            "{}",
+            meter_db(0.76314) - meter_db(0.60524)
+        );
         assert_eq!(fmt_db(-6.4, 0), "−6");
         assert_eq!(fmt_db(-0.04, 1), "0.0");
     }

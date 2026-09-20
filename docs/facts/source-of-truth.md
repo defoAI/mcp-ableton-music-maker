@@ -93,7 +93,7 @@ Paths are relative to the repository root.
 
 ---
 
-## Verified snapshot — 2026-09-19
+## Verified snapshot — 2026-09-20
 
 Read the sources above rather than trusting this block. It is dated so a reader can see at a
 glance whether it has gone stale, and `scripts/check-docs-facts.sh` fails CI when the bold
@@ -102,13 +102,13 @@ matches on them.
 
 | | Verified value | Source |
 |---|---|---|
-| MCP tools | **101** | `src/tools.rs` |
-| Remote Script commands | **91** | `SCRIPT_CAPABILITIES` |
-| Remote Script version | **1.26.0** | `SCRIPT_VERSION` |
+| MCP tools | **102** | `src/tools.rs` |
+| Remote Script commands | **94** | `SCRIPT_CAPABILITIES` |
+| Remote Script version | **1.27.2** | `SCRIPT_VERSION` |
 | Server version | **2.0.0** | `Cargo.toml` |
 | Image size limit | **50** MB | `docker/verify-image.sh` |
 | Port | **9877** | `DEFAULT_PORT` |
-| Timeouts | 190 s `create_tracks` · 65 s `create_audio_clip` and `place_sample` and `write_clips` · 25 s `search_browser` · 15 s modifying commands · 10 s reads · 5 s connect | `src/connection.rs` |
+| Timeouts | 190 s `create_tracks` · 65 s `create_audio_clip` and `place_sample` and `write_clips` · 25 s `search_browser` · 15 s modifying commands (`delete_device` and `move_device` among them) · 10 s reads · 5 s connect | `src/connection.rs` |
 | Uploads | **none** — no code path exists | `tests/local_only.rs`, CI dependency gate |
 | Activity log | on by default, payloads off; `ABLETON_MCP_ACTIVITY=false` / `ABLETON_MCP_ACTIVITY_PAYLOADS=true` | `tests/activity.rs` |
 | Transport | stdio only | `src/app.rs` |

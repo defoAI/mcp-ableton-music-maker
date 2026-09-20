@@ -195,6 +195,11 @@ pub struct LiveState {
     /// that already had something in it, so the next performance of this
     /// session does not ask again. `replace` is never kept here.
     pub record_answer: Mutex<Option<String>>,
+    /// Live's own meter curve, read once per session (`get_meter_scale`).
+    pub meter_scale: Mutex<Option<crate::song::MeterScale>>,
+    /// Lines a guard added on the way in — a stale performance it ended, say —
+    /// for the reply of whichever tool was being called.
+    pub notes: Mutex<Vec<String>>,
 }
 
 impl LiveState {
@@ -215,6 +220,8 @@ impl LiveState {
             last_clock: Mutex::new(None),
             vary_undo: Mutex::new(std::collections::HashMap::new()),
             record_answer: Mutex::new(None),
+            meter_scale: Mutex::new(None),
+            notes: Mutex::new(Vec::new()),
         }
     }
 
@@ -280,6 +287,8 @@ const MODIFYING_COMMANDS: &[&str] = &[
     "fire_clip",
     "stop_clip",
     "set_device_parameter",
+    "delete_device",
+    "move_device",
     "start_playback",
     "stop_playback",
     "load_browser_item",

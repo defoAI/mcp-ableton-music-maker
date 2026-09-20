@@ -113,6 +113,9 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "stop_arrangement_record",
     "place_sample",
     "list_sample_folders",
+    "delete_device",
+    "move_device",
+    "get_meter_scale",
 ];
 
 pub type ToolResult = Result<String, String>;
@@ -340,6 +343,14 @@ params!(TrackParams {
     /// The index of the track
     track_index: i64,
 });
+params!(TrackInfoParams {
+    /// The track: a name, an index, "master", or a return's name or letter
+    track: Option<Value>,
+    /// "track" (default), "return" or "master" — with a numeric track
+    kind: Option<String>,
+    /// The track by index, when `track` is not given
+    track_index: Option<i64>,
+});
 params!(ClipParams {
     /// The index of the track containing the clip
     track_index: i64,
@@ -347,26 +358,60 @@ params!(ClipParams {
     clip_index: i64,
 });
 params!(DeviceParams {
-    /// Track that owns the device
-    track_index: i64,
-    /// Index into the track's device chain
-    device_index: i64,
+    /// The track that owns the device: a name, an index, "master", or a
+    /// return's name or letter ("A")
+    track: Option<Value>,
+    /// "track" (default), "return" or "master" — with a numeric track
+    kind: Option<String>,
+    /// The track by index, when `track` is not given
+    track_index: Option<i64>,
+    /// The device by name (a substring is enough) or index
+    device: Option<Value>,
+    /// Index into the track's device chain (default: the first device)
+    device_index: Option<i64>,
 });
 params!(SetDeviceParameterParams {
-    /// Track that owns the device
-    track_index: i64,
-    /// Index into the track's device chain
-    device_index: i64,
+    /// The track that owns the device: a name, an index, "master", or a
+    /// return's name or letter ("A")
+    track: Option<Value>,
+    /// "track" (default), "return" or "master" — with a numeric track
+    kind: Option<String>,
+    /// The track by index, when `track` is not given
+    track_index: Option<i64>,
+    /// The device by name (a substring is enough) or index
+    device: Option<Value>,
+    /// Index into the track's device chain (default: the first device)
+    device_index: Option<i64>,
     /// Index into device.parameters (or give `parameter` by name)
     parameter_index: Option<i64>,
     /// The parameter by name: an exact name, or a substring of one ("Cutoff", "atk")
     parameter: Option<String>,
-    /// New parameter value (Live parameter units)
-    value: f64,
+    /// The new value: what Live shows ("3 dB", "200 Hz", "Low Cut 48 dB") or
+    /// the raw number between the parameter's min and max
+    value: Value = "Value::default",
+});
+params!(EditDevicesParams {
+    /// The track whose chain changes: a name, an index, "master", or a
+    /// return's name or letter ("A")
+    track: Option<Value>,
+    /// "track" (default), "return" or "master" — with a numeric track
+    kind: Option<String>,
+    /// The track by index, when `track` is not given
+    track_index: Option<i64>,
+    /// The device by name (a substring is enough) or index
+    device: Option<Value>,
+    /// The device by index, when `device` is not given
+    device_index: Option<i64>,
+    /// "remove", "move" (with to_index), "bypass" or "enable"
+    action: String = "String::new",
+    /// With "move": where in the chain it should end up (0 is first)
+    to_index: Option<i64>,
 });
 params!(ShapeSoundParams {
-    /// Track name or index
+    /// The track: a name, an index, "master", or a return's name or letter
     track: Value,
+    /// "track" (default), "return" or "master" — with a numeric track
+    kind: Option<String>,
     /// The device, by name (a substring) or index; default: the first instrument, rack or drum rack on the track
     device: Option<Value>,
     /// Any parameter by its own name (or a substring of it): {"LP Mod Amt 2": 0.5, "Glide Time": "+10%"}
@@ -595,7 +640,12 @@ params!(SetColorParams {
     kind: String = "track_kind",
 });
 params!(DrumRackPadsParams {
-    /// Track that holds the Drum Rack
+    /// The track that holds the Drum Rack: a name, an index, "master", or a
+    /// return's name or letter
+    track: Option<Value>,
+    /// "track" (default), "return" or "master" — with a numeric track
+    kind: Option<String>,
+    /// Track that holds the Drum Rack, by index
     track_index: i64,
     /// Which device, if the track has more than one Drum Rack (default: the first)
     device_index: Option<i64>,
@@ -852,6 +902,11 @@ params!(BuildSongParams {
     /// Locators to set
     #[serde(default)]
     locators: Vec<SongLocator>,
+    /// What to do about tracks, clips and placements the set already has:
+    /// "converge" (default — reuse them, so re-running the same document
+    /// after a failure finishes it instead of duplicating it), "add" (build
+    /// another copy) or "fail"
+    on_existing: String = "String::new",
     /// Validate and describe the plan without touching Live (default false)
     dry_run: bool = "bool::default",
 });
@@ -898,6 +953,7 @@ pub const GET_TRACK_INFO: ToolSpec = ToolSpec::new("get_track_info");
 pub const GET_CLIP_NOTES: ToolSpec = ToolSpec::new("get_clip_notes");
 pub const GET_DEVICE_PARAMETERS: ToolSpec = ToolSpec::new("get_device_parameters");
 pub const SET_DEVICE_PARAMETER: ToolSpec = ToolSpec::new("set_device_parameter");
+pub const EDIT_DEVICES: ToolSpec = ToolSpec::new("edit_devices");
 pub const GET_SESSION_SNAPSHOT: ToolSpec = ToolSpec::new("get_session_snapshot");
 pub const CREATE_MIDI_TRACK: ToolSpec = ToolSpec::new("create_midi_track");
 pub const CREATE_AUDIO_TRACK: ToolSpec = ToolSpec::new("create_audio_track");
@@ -1024,11 +1080,12 @@ pub fn get_remote_script_info_body(live: &LiveState, _p: &Empty) -> ToolResult {
     serde_json::to_string_pretty(&info).map_err(|e| format!("Could not serialise script info: {e}"))
 }
 
-pub fn get_track_info_body(live: &LiveState, p: &TrackParams) -> ToolResult {
+pub fn get_track_info_body(live: &LiveState, p: &TrackInfoParams) -> ToolResult {
     require(live, "get_track_info")?;
+    let target = resolve_track_target(live, p.track.as_ref(), p.kind.as_deref(), p.track_index)?;
     live.send_command(
         "get_track_info",
-        Some(json!({"track_index": p.track_index})),
+        Some(json!({"track_index": target.index, "kind": target.kind})),
     )
     .map(|r| pretty(&r))
     .map_err(|e| live_err("get track info", e))
@@ -1044,27 +1101,388 @@ pub fn get_clip_notes_body(live: &LiveState, p: &ClipParams) -> ToolResult {
     .map_err(|e| live_err("get clip notes", e))
 }
 
+/// A track, a return or the master, addressed the way `load_instrument_or_effect`
+/// has always taken it. Every device-facing tool resolves through this, so
+/// anything the loader can reach can be read and corrected afterwards.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TrackTarget {
+    pub index: i64,
+    pub kind: String,
+    pub name: String,
+}
+
+impl TrackTarget {
+    pub(crate) fn at(kind: &str, index: i64) -> Self {
+        Self {
+            index,
+            kind: kind.to_string(),
+            name: String::new(),
+        }
+    }
+
+    /// What the reply calls it, preferring the name Live sent back.
+    fn label(&self, from_live: &str) -> String {
+        if !from_live.is_empty() && from_live != "?" {
+            return from_live.to_string();
+        }
+        if !self.name.is_empty() {
+            return self.name.clone();
+        }
+        match self.kind.as_str() {
+            "master" => "Master".into(),
+            "return" => format!("return {}", self.index),
+            _ => format!("track {}", self.index),
+        }
+    }
+
+    /// How the tool names it when it has to ask again.
+    pub(crate) fn as_argument(&self) -> String {
+        match self.kind.as_str() {
+            "master" => "\"master\"".into(),
+            _ if !self.name.is_empty() => format!("\"{}\"", self.name),
+            _ => self.index.to_string(),
+        }
+    }
+}
+
+/// "master" → the master; a return's name or letter → that return; a track's
+/// name or index → that track. `kind` disambiguates a numeric index.
+pub(crate) fn resolve_track_target(
+    live: &LiveState,
+    which: Option<&Value>,
+    kind: Option<&str>,
+    track_index: Option<i64>,
+) -> Result<TrackTarget, String> {
+    let given = kind.map(|k| k.trim().to_lowercase()).unwrap_or_default();
+    if !given.is_empty() && given != "track" {
+        if !matches!(given.as_str(), "return" | "master") {
+            return Err(format!(
+                "kind must be track, return or master, not '{given}'"
+            ));
+        }
+        let index = which
+            .and_then(Value::as_i64)
+            .or(track_index)
+            .unwrap_or(0)
+            .max(0);
+        return Ok(TrackTarget::at(
+            &given,
+            if given == "master" { 0 } else { index },
+        ));
+    }
+    match which {
+        None | Some(Value::Null) => match track_index {
+            Some(i) => Ok(TrackTarget::at("track", i)),
+            None => Err(
+                "give track (a name, an index, \"master\", or a return's name or letter)".into(),
+            ),
+        },
+        Some(Value::Number(n)) => Ok(TrackTarget::at("track", n.as_i64().unwrap_or(0))),
+        Some(Value::String(s)) => resolve_track_name(live, s),
+        Some(other) => Err(format!("a track is a name or an index, not {other}")),
+    }
+}
+
+/// A name from the producer: a track, a return (by name or by Live's letter),
+/// or the master.
+fn resolve_track_name(live: &LiveState, given: &str) -> Result<TrackTarget, String> {
+    let want = given.trim().to_lowercase();
+    if want.is_empty() {
+        return Err("give a track name, an index, \"master\", or a return".into());
+    }
+    if let Ok(i) = want.parse::<i64>() {
+        return Ok(TrackTarget::at("track", i));
+    }
+    if matches!(
+        want.as_str(),
+        "master" | "main" | "master track" | "main track"
+    ) {
+        return Ok(TrackTarget {
+            index: 0,
+            kind: "master".into(),
+            name: "Master".into(),
+        });
+    }
+    let state = read_perf_state(live)?;
+    if let Some(t) = state.tracks.iter().find(|t| t.name.to_lowercase() == want) {
+        return Ok(TrackTarget {
+            index: t.index,
+            kind: "track".into(),
+            name: t.name.clone(),
+        });
+    }
+    let mut returns: Vec<(i64, String, String)> = Vec::new();
+    if live.script.has_capability("get_returns") {
+        if let Ok(r) = live.send_command("get_returns", None) {
+            for (i, ret) in r
+                .get("returns")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .enumerate()
+            {
+                let index = ret.get("index").and_then(Value::as_i64).unwrap_or(i as i64);
+                let name = get_display(ret, "name", "");
+                let letter = get_display(ret, "letter", "").to_lowercase();
+                returns.push((index, name, letter));
+            }
+        }
+    }
+    for (index, name, letter) in &returns {
+        let lower = name.to_lowercase();
+        if lower == want
+            || (!letter.is_empty() && (want == *letter || want == format!("return {letter}")))
+        {
+            return Ok(TrackTarget {
+                index: *index,
+                kind: "return".into(),
+                name: name.clone(),
+            });
+        }
+    }
+    if let Some(t) = state
+        .tracks
+        .iter()
+        .find(|t| t.name.to_lowercase().contains(&want))
+    {
+        return Ok(TrackTarget {
+            index: t.index,
+            kind: "track".into(),
+            name: t.name.clone(),
+        });
+    }
+    for (index, name, _) in &returns {
+        if name.to_lowercase().contains(&want) {
+            return Ok(TrackTarget {
+                index: *index,
+                kind: "return".into(),
+                name: name.clone(),
+            });
+        }
+    }
+    Err(format!(
+        "no track named '{given}'; tracks: {}{}{}. The master is \"master\".",
+        state
+            .tracks
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        if returns.is_empty() {
+            ""
+        } else {
+            "; returns: "
+        },
+        returns
+            .iter()
+            .map(|(_, n, l)| format!("{n} ({})", l.to_uppercase()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+/// The devices on a track, a return or the master.
+fn track_devices(live: &LiveState, target: &TrackTarget) -> Result<(String, Vec<Value>), String> {
+    require(live, "get_track_info")?;
+    let info = live
+        .send_command(
+            "get_track_info",
+            Some(json!({"track_index": target.index, "kind": target.kind})),
+        )
+        .map_err(|e| live_err("read the track's devices", e))?;
+    let devices = info
+        .get("devices")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok((get_display(&info, "name", ""), devices))
+}
+
+/// A device by name (a substring is enough) or by index.
+fn resolve_device_index(
+    live: &LiveState,
+    target: &TrackTarget,
+    which: Option<&Value>,
+    device_index: Option<i64>,
+) -> Result<i64, String> {
+    let name = match which {
+        None | Some(Value::Null) => return Ok(device_index.unwrap_or(0)),
+        Some(Value::Number(n)) => return Ok(n.as_i64().unwrap_or(0)),
+        Some(Value::String(s)) => match s.trim().parse::<i64>() {
+            Ok(i) => return Ok(i),
+            Err(_) => s.trim().to_lowercase(),
+        },
+        Some(other) => return Err(format!("a device is a name or an index, not {other}")),
+    };
+    let (track_name, devices) = track_devices(live, target)?;
+    let named = |d: &Value| get_display(d, "name", "").to_lowercase();
+    let found = devices
+        .iter()
+        .find(|d| named(d) == name)
+        .or_else(|| devices.iter().find(|d| named(d).contains(&name)));
+    match found {
+        Some(d) => Ok(d.get("index").and_then(Value::as_i64).unwrap_or(0)),
+        None if devices.is_empty() => Err(format!("{} has no devices", target.label(&track_name))),
+        None => Err(format!(
+            "no device matching '{name}' on {}; its devices: {}",
+            target.label(&track_name),
+            devices
+                .iter()
+                .map(|d| get_display(d, "name", "?"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// Both halves of a device address, resolved in as few round trips as the
+/// caller's words allow.
+fn resolve_device(
+    live: &LiveState,
+    track: Option<&Value>,
+    kind: Option<&str>,
+    track_index: Option<i64>,
+    device: Option<&Value>,
+    device_index: Option<i64>,
+) -> Result<(TrackTarget, i64), String> {
+    let target = resolve_track_target(live, track, kind, track_index)?;
+    let di = resolve_device_index(live, &target, device, device_index)?;
+    Ok((target, di))
+}
+
 pub fn get_device_parameters_body(live: &LiveState, p: &DeviceParams) -> ToolResult {
     require(live, "get_device_parameters")?;
-    live.send_command(
-        "get_device_parameters",
-        Some(json!({"track_index": p.track_index, "device_index": p.device_index})),
-    )
-    .map(|r| pretty(&r))
-    .map_err(|e| live_err("get device parameters", e))
+    let (target, device_index) = resolve_device(
+        live,
+        p.track.as_ref(),
+        p.kind.as_deref(),
+        p.track_index,
+        p.device.as_ref(),
+        p.device_index,
+    )?;
+    let r = live
+        .send_command(
+            "get_device_parameters",
+            Some(json!({"track_index": target.index, "kind": target.kind, "device_index": device_index})),
+        )
+        .map_err(|e| live_err("get device parameters", e))?;
+    Ok(render_device(&target, &r))
+}
+
+/// The readout: an aligned table of what Live shows, not the raw JSON. A
+/// model that reads "Low Cut 48 dB" does not have to guess what 1 means.
+fn render_device(target: &TrackTarget, r: &Value) -> String {
+    let d = r.get("device").cloned().unwrap_or(Value::Null);
+    let params: Vec<crate::sound::Param> = d
+        .get("parameters")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(crate::sound::Param::from_value)
+                .collect()
+        })
+        .unwrap_or_default();
+    let where_ = target.label(&get_display(r, "track_name", ""));
+    let class = get_display(&d, "class_name", "");
+    let mut out = format!(
+        "{where_} · device {} '{}'{} — {} parameter{}\n",
+        get_display(&d, "index", "?"),
+        get_display(&d, "name", "device"),
+        if class.is_empty() {
+            String::new()
+        } else {
+            format!(" ({class})")
+        },
+        params.len(),
+        if params.len() == 1 { "" } else { "s" }
+    );
+    if params.is_empty() {
+        out.push_str("This device exposes no parameters.\n");
+        return out;
+    }
+    let name_w = params
+        .iter()
+        .map(|q| q.name.chars().count())
+        .max()
+        .unwrap_or(4)
+        .clamp(4, 28);
+    let now_w = params
+        .iter()
+        .map(|q| q.display().chars().count())
+        .max()
+        .unwrap_or(5)
+        .clamp(5, 22);
+    out.push_str(&format!(
+        "  idx  {:<name_w$}  {:<now_w$}  range\n",
+        "name", "now"
+    ));
+    for q in &params {
+        out.push_str(&format!(
+            "  {:>3}  {:<name_w$}  {:<now_w$}  {}{}\n",
+            q.index,
+            ellipsis(&q.name, name_w),
+            ellipsis(&q.display(), now_w),
+            q.range_text(),
+            if q.enabled {
+                ""
+            } else {
+                "  (not directly settable)"
+            }
+        ));
+    }
+    if let Some(chains) = d.get("chains").and_then(Value::as_array) {
+        let inner: Vec<String> = chains
+            .iter()
+            .map(|c| {
+                format!(
+                    "{} ({})",
+                    get_display(c, "name", "chain"),
+                    c.get("devices")
+                        .and_then(Value::as_array)
+                        .map(|ds| ds
+                            .iter()
+                            .map(|x| get_display(x, "name", "?"))
+                            .collect::<Vec<_>>()
+                            .join(", "))
+                        .unwrap_or_default()
+                )
+            })
+            .collect();
+        if !inner.is_empty() {
+            out.push_str(&format!("Chains: {}.\n", inner.join(" · ")));
+        }
+    }
+    out.push_str(&format!(
+        "Set one by what it reads: adv_set_device_parameter {{\"track\": {}, \"device\": \"{}\", \"parameter\": \"{}\", \"value\": \"{}\"}} — the raw number works too.",
+        target.as_argument(),
+        get_display(&d, "name", "device"),
+        params.first().map(|q| q.name.clone()).unwrap_or_default(),
+        params.first().map(|q| q.display()).unwrap_or_default()
+    ));
+    out
+}
+
+fn ellipsis(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 /// One device's parameters, as [`crate::sound::Param`]s, with its name and class.
 fn device_params(
     live: &LiveState,
-    track_index: i64,
+    target: &TrackTarget,
     device_index: i64,
-) -> Result<(String, String, Vec<crate::sound::Param>), String> {
+) -> Result<(String, String, String, Vec<crate::sound::Param>), String> {
     require(live, "get_device_parameters")?;
     let r = live
         .send_command(
             "get_device_parameters",
-            Some(json!({"track_index": track_index, "device_index": device_index})),
+            Some(json!({"track_index": target.index, "kind": target.kind, "device_index": device_index})),
         )
         .map_err(|e| live_err("read the device's parameters", e))?;
     let d = r.get("device").cloned().unwrap_or(Value::Null);
@@ -1078,6 +1496,7 @@ fn device_params(
         })
         .unwrap_or_default();
     Ok((
+        get_display(&r, "track_name", ""),
         get_display(&d, "name", "device"),
         get_display(&d, "class_name", ""),
         params,
@@ -1088,22 +1507,14 @@ fn device_params(
 /// the first instrument, rack or drum rack on the track.
 fn pick_device(
     live: &LiveState,
-    track_index: i64,
+    target: &TrackTarget,
     which: Option<&Value>,
 ) -> Result<(i64, String), String> {
-    require(live, "get_track_info")?;
-    let info = live
-        .send_command("get_track_info", Some(json!({"track_index": track_index})))
-        .map_err(|e| live_err("read the track's devices", e))?;
-    let devices: Vec<Value> = info
-        .get("devices")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let (track_name, devices) = track_devices(live, target)?;
     if devices.is_empty() {
         return Err(format!(
-            "'{}' has no devices to shape",
-            get_display(&info, "name", "the track")
+            "{} has no devices to shape",
+            target.label(&track_name)
         ));
     }
     let names: Vec<String> = devices
@@ -1149,6 +1560,21 @@ fn pick_device(
     ))
 }
 
+/// The parameter names a reply can carry: enough to steer by, then a pointer
+/// to the full list. An EQ Eight has 84 of them.
+fn name_list(params: &[crate::sound::Param]) -> String {
+    let shown: Vec<String> = params.iter().take(24).map(|q| q.name.clone()).collect();
+    if params.len() > shown.len() {
+        format!(
+            "{}, … ({} in all — adv_get_device_parameters lists them)",
+            shown.join(", "),
+            params.len()
+        )
+    } else {
+        shown.join(", ")
+    }
+}
+
 pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
     require(live, "set_device_parameters")?;
     let given: Vec<(&str, &Value)> = [
@@ -1174,10 +1600,10 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
             crate::sound::WORDS.join(", ")
         ));
     }
-    let state = read_perf_state(live)?;
-    let track = state.track_by(&p.track)?;
-    let (di, dname) = pick_device(live, track.index, p.device.as_ref())?;
-    let (_, class, params) = device_params(live, track.index, di)?;
+    let target = resolve_track_target(live, Some(&p.track), p.kind.as_deref(), None)?;
+    let (di, dname) = pick_device(live, &target, p.device.as_ref())?;
+    let (track_name, _, class, params) = device_params(live, &target, di)?;
+    let track_name = target.label(&track_name);
     let rack = crate::sound::is_rack(&class);
     let mut values: Vec<Value> = Vec::new();
     let mut resolved: Vec<(String, crate::sound::Param, crate::sound::Via, f64)> = Vec::new();
@@ -1202,35 +1628,24 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
             None => {
                 return Err(format!(
                     "no parameter named '{name}' on '{dname}'; its parameters: {}",
-                    params
-                        .iter()
-                        .map(|q| q.name.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    name_list(&params)
                 ))
             }
         }
     }
-    let param_names = || -> String {
-        params
-            .iter()
-            .map(|q| q.name.clone())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    let param_names = || -> String { name_list(&params) };
     if resolved.is_empty() {
         return Err(format!(
-            "{} ('{dname}', {class}) is not in the vocabulary for {}; its parameters by name are: {}. set_device_parameter takes a name substring: {{\"track_index\": {}, \"device_index\": {di}, \"parameter\": \"<name>\", \"value\": …}}.",
-            track.name,
+            "{track_name} ('{dname}', {class}) is not in the vocabulary for {}; its parameters by name are: {}. adv_set_device_parameter takes a name substring: {{\"track\": {}, \"device\": \"{dname}\", \"parameter\": \"<name>\", \"value\": …}}.",
             unresolved.join(", "),
             param_names(),
-            track.index
+            target.as_argument(),
         ));
     }
     let r = live
         .send_command(
             "set_device_parameters",
-            Some(json!({"track_index": track.index, "device_index": di, "values": values})),
+            Some(json!({"track_index": target.index, "kind": target.kind, "device_index": di, "values": values})),
         )
         .map_err(|e| live_err("set the parameters", e))?;
     let written: Vec<Value> = r
@@ -1238,7 +1653,10 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut moves: Vec<String> = Vec::new();
+    // Every word asked for gets a line, applied or skipped: a reply that
+    // reads as success while a word was dropped is how a partial change is
+    // reported as a whole one.
+    let mut lines: Vec<String> = Vec::new();
     for (word, param, via, _) in &resolved {
         let after = written
             .iter()
@@ -1247,8 +1665,8 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
             .and_then(crate::sound::Param::from_value)
             .map(|q| q.display())
             .unwrap_or_else(|| "?".into());
-        moves.push(format!(
-            "{}'{}' {} → {new_display}",
+        lines.push(format!(
+            "  applied  {}'{}' {} → {new_display}  ({word})",
             match via {
                 crate::sound::Via::Macro => "macro ",
                 _ => "",
@@ -1256,25 +1674,42 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
             param.name,
             param.display()
         ));
-        let _ = word;
+    }
+    for word in &unresolved {
+        lines.push(format!(
+            "  skipped  {word} — no {} on this device says it",
+            if rack { "macro" } else { "parameter" }
+        ));
     }
     let vocab = crate::sound::vocabulary(&class, &params);
     let mut text = format!(
-        "{} ({}'{dname}'{}): {}.",
-        track.name,
+        "{track_name} ({}'{dname}'{}){}:\n{}",
         if rack { "rack " } else { "" },
         if class.is_empty() {
             String::new()
         } else {
             format!(", {class}")
         },
-        moves.join(", ")
+        if unresolved.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " — {} of {} applied",
+                resolved.len(),
+                resolved.len() + unresolved.len()
+            )
+        },
+        lines.join("\n")
     );
     if !unresolved.is_empty() {
         text.push_str(&format!(
-            "\nNot found on this device: {}{}. set_device_parameter takes a name substring; the parameters are: {}.",
+            "\nFor {}: {}adv_set_device_parameter takes a name substring; the parameters are: {}.",
             unresolved.join(", "),
-            if rack { " (no macro says it; a rack's own chain devices are reached through their macros)" } else { "" },
+            if rack {
+                "a rack's own chain devices are reached through their macros, or "
+            } else {
+                ""
+            },
             param_names()
         ));
     }
@@ -1289,7 +1724,7 @@ pub fn shape_sound_body(live: &LiveState, p: &ShapeSoundParams) -> ToolResult {
             .collect::<Vec<_>>()
             .join(", "),
         vocab.first().map(|(w, _)| w.as_str()).unwrap_or("cutoff"),
-        track.name
+        track_name
     ));
     Ok(text)
 }
@@ -1322,10 +1757,11 @@ fn resolve_sound_ramps(
         if !(0.0..=1.0).contains(&to) {
             return Err(format!("step {n}: to must be between 0 and 1, got {to}"));
         }
-        let (di, dname) = pick_device(live, track.index, ramp.get("device"))
+        let on_track = TrackTarget::at("track", track.index);
+        let (di, dname) = pick_device(live, &on_track, ramp.get("device"))
             .map_err(|e| format!("step {n}: {e}"))?;
-        let (_, class, params) =
-            device_params(live, track.index, di).map_err(|e| format!("step {n}: {e}"))?;
+        let (_, _, class, params) =
+            device_params(live, &on_track, di).map_err(|e| format!("step {n}: {e}"))?;
         let (param, _) = crate::sound::resolve(word, &class, &params).ok_or_else(|| {
             format!(
                 "step {n}: '{word}' is not in the vocabulary for '{dname}' ({class}); its parameters: {}",
@@ -1342,20 +1778,24 @@ fn resolve_sound_ramps(
 
 pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams) -> ToolResult {
     require(live, "set_device_parameter")?;
+    let (target, device_index) = resolve_device(
+        live,
+        p.track.as_ref(),
+        p.kind.as_deref(),
+        p.track_index,
+        p.device.as_ref(),
+        p.device_index,
+    )?;
     let parameter_index = match (p.parameter_index, p.parameter.as_deref()) {
         (Some(i), _) => i,
         (None, Some(name)) => {
-            let (dname, _, params) = device_params(live, p.track_index, p.device_index)?;
+            let (_, dname, _, params) = device_params(live, &target, device_index)?;
             crate::sound::by_name(name, &params)
                 .map(|q| q.index)
                 .ok_or_else(|| {
                     format!(
                         "no parameter named '{name}' on '{dname}'; its parameters: {}",
-                        params
-                            .iter()
-                            .map(|q| q.name.clone())
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        name_list(&params)
                     )
                 })?
         }
@@ -1363,23 +1803,176 @@ pub fn set_device_parameter_body(live: &LiveState, p: &SetDeviceParameterParams)
             return Err("give parameter_index, or parameter (a name or a substring of one)".into())
         }
     };
+    // A value may be what Live shows ("3 dB", "Low Cut 48 dB") or the raw
+    // number; the script resolves a display string through Live's own strings.
+    let mut args = json!({
+        "track_index": target.index,
+        "kind": target.kind,
+        "device_index": device_index,
+        "parameter_index": parameter_index,
+    });
+    match &p.value {
+        Value::String(text) if text.trim().is_empty() => {
+            return Err("give value: what Live shows (\"200 Hz\") or the raw number".into())
+        }
+        Value::String(text) => {
+            args["value_display"] = json!(text.trim());
+        }
+        Value::Number(n) => {
+            args["value"] = json!(n.as_f64().unwrap_or_default());
+        }
+        Value::Null => {
+            return Err("give value: what Live shows (\"200 Hz\") or the raw number".into())
+        }
+        other => return Err(format!("value must be a number or a string, not {other}")),
+    }
     let r = live
-        .send_command(
-            "set_device_parameter",
-            Some(json!({
-                "track_index": p.track_index,
-                "device_index": p.device_index,
-                "parameter_index": parameter_index,
-                "value": p.value,
-            })),
-        )
+        .send_command("set_device_parameter", Some(args))
         .map_err(|e| live_err("set device parameter", e))?;
+    let before = get_display(&r, "old_display", "");
+    let after = get_display(&r, "display", "");
+    let raw = format!(
+        "raw {} → {} of {} … {}",
+        short_num(r.get("old_value")),
+        short_num(r.get("value")),
+        short_num(r.get("min")),
+        short_num(r.get("max"))
+    );
     Ok(format!(
-        "Set {} {} → {}",
+        "{} · {} · {}: {} → {} ({raw}).",
+        target.label(&get_display(&r, "track_name", "")),
+        get_display(&r, "device", "device"),
         get_display(&r, "name", "parameter"),
-        get_display(&r, "old_value", "?"),
-        get_display(&r, "value", "?")
+        if before.is_empty() {
+            short_num(r.get("old_value"))
+        } else {
+            before
+        },
+        if after.is_empty() {
+            short_num(r.get("value"))
+        } else {
+            after
+        }
     ))
+}
+
+/// `0.542`, `-36`: a number a person reads, from whatever Live sent.
+fn short_num(v: Option<&Value>) -> String {
+    match v.and_then(Value::as_f64) {
+        Some(n) => {
+            let s = format!("{n:.3}");
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        }
+        None => "?".into(),
+    }
+}
+
+/// Remove, move, bypass or re-enable a device — on a track, a return or the
+/// master. Without this a wrong load is permanent for the rest of the session.
+pub fn edit_devices_body(live: &LiveState, p: &EditDevicesParams) -> ToolResult {
+    let action = p.action.trim().to_lowercase();
+    let (target, device_index) = resolve_device(
+        live,
+        p.track.as_ref(),
+        p.kind.as_deref(),
+        p.track_index,
+        p.device.as_ref(),
+        p.device_index,
+    )?;
+    match action.as_str() {
+        "remove" | "delete" => {
+            require(live, "delete_device")?;
+            let r = live
+                .send_command(
+                    "delete_device",
+                    Some(json!({"track_index": target.index, "kind": target.kind, "device_index": device_index})),
+                )
+                .map_err(|e| live_err("remove the device", e))?;
+            Ok(format!(
+                "Removed '{}' (was device {device_index}) from {}. {} Cmd-Z in Live puts it back.",
+                get_display(&r, "deleted", "the device"),
+                target.label(&get_display(&r, "track_name", "")),
+                chain_line(&r)
+            ))
+        }
+        "move" => {
+            require(live, "move_device")?;
+            let to = p.to_index.ok_or(
+                "move needs to_index: where in the chain the device should end up (0 is first)",
+            )?;
+            let r = live
+                .send_command(
+                    "move_device",
+                    Some(json!({"track_index": target.index, "kind": target.kind, "device_index": device_index, "to_index": to})),
+                )
+                .map_err(|e| live_err("move the device", e))?;
+            Ok(format!(
+                "Moved '{}' on {} from {device_index} to {}. {}",
+                get_display(&r, "moved", "the device"),
+                target.label(&get_display(&r, "track_name", "")),
+                get_display(&r, "to_index", "?"),
+                chain_line(&r)
+            ))
+        }
+        "bypass" | "off" | "disable" | "enable" | "on" => {
+            let off = matches!(action.as_str(), "bypass" | "off" | "disable");
+            require(live, "set_device_parameter")?;
+            let (track_name, dname, _, params) = device_params(live, &target, device_index)?;
+            let switch = params
+                .iter()
+                .find(|q| q.name.eq_ignore_ascii_case("Device On"))
+                .ok_or_else(|| {
+                    format!("'{dname}' has no Device On switch, so it cannot be bypassed")
+                })?;
+            let value = if off { switch.min } else { switch.max };
+            live.send_command(
+                "set_device_parameter",
+                Some(json!({
+                    "track_index": target.index, "kind": target.kind,
+                    "device_index": device_index, "parameter_index": switch.index,
+                    "value": value,
+                })),
+            )
+            .map_err(|e| live_err("switch the device", e))?;
+            Ok(format!(
+                "{} '{dname}' on {} (device {device_index}) — {}.{}",
+                if off { "Bypassed" } else { "Enabled" },
+                target.label(&track_name),
+                if off {
+                    "still in the chain, not processing"
+                } else {
+                    "processing again"
+                },
+                if off {
+                    format!(
+                        " Turn it back on with {{\"track\": {}, \"device\": \"{dname}\", \"action\": \"enable\"}}.",
+                        target.as_argument()
+                    )
+                } else {
+                    String::new()
+                }
+            ))
+        }
+        "" => Err("action must be remove, move (with to_index), bypass or enable".into()),
+        other => Err(format!(
+            "action must be remove, move (with to_index), bypass or enable, not '{other}'"
+        )),
+    }
+}
+
+/// "Chain: EQ Eight, Glue Compressor, Limiter." from a device reply.
+fn chain_line(r: &Value) -> String {
+    match r.get("devices").and_then(Value::as_array) {
+        Some(d) if !d.is_empty() => format!(
+            "Chain: {}.",
+            d.iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Some(_) => "The chain is empty now.".into(),
+        None => String::new(),
+    }
 }
 
 pub fn get_session_snapshot_body(live: &LiveState, p: &SnapshotParams) -> ToolResult {
@@ -2525,11 +3118,17 @@ pub fn set_color_body(live: &LiveState, p: &SetColorParams) -> ToolResult {
 
 pub fn get_drum_rack_pads_body(live: &LiveState, p: &DrumRackPadsParams) -> ToolResult {
     require(live, "get_drum_rack_pads")?;
+    let target = resolve_track_target(
+        live,
+        p.track.as_ref(),
+        p.kind.as_deref(),
+        Some(p.track_index),
+    )?;
     let r = live
         .send_command(
             "get_drum_rack_pads",
             Some(
-                json!({"track_index": p.track_index, "device_index": p.device_index.unwrap_or(-1)}),
+                json!({"track_index": target.index, "kind": target.kind, "device_index": p.device_index.unwrap_or(-1)}),
             ),
         )
         .map_err(|e| live_err("read the drum rack pads", e))?;
@@ -3064,7 +3663,39 @@ fn meter_peak(t: &Value) -> f64 {
         .fold(0.0, f64::max)
 }
 
-fn meters_text(r: &Value) -> String {
+/// Live's own meter curve, asked for once per session. An older script (or a
+/// Live that will not answer) leaves it empty and the readouts say "meter
+/// units" instead of pretending the number is dB.
+pub(crate) fn meter_scale(live: &LiveState) -> crate::song::MeterScale {
+    {
+        let cached = live.meter_scale.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(scale) = cached.as_ref() {
+            return scale.clone();
+        }
+    }
+    let scale = if live.script.has_capability("get_meter_scale") {
+        live.send_command("get_meter_scale", None)
+            .map(|r| crate::song::MeterScale::from_value(&r))
+            .unwrap_or_default()
+    } else {
+        crate::song::MeterScale::default()
+    };
+    *live.meter_scale.lock().unwrap_or_else(|e| e.into_inner()) = Some(scale.clone());
+    scale
+}
+
+/// One meter reading as dB on Live's meter scale.
+fn meter_text(scale: &crate::song::MeterScale, v: f64) -> String {
+    format!("{} dB", crate::song::fmt_db(scale.db(v), 1))
+}
+
+/// The line every meter readout ends with, so nobody has to guess what the
+/// number is or where it was measured.
+fn meter_footer(_scale: &crate::song::MeterScale) -> &'static str {
+    "Peaks are post-fader, in dB on Live's meter scale (−70 dB at the bottom, 0 dB is full scale, +6 dB the top)."
+}
+
+fn meters_text(r: &Value, scale: &crate::song::MeterScale) -> String {
     let mut out = String::new();
     for (label, key) in [("tracks", "tracks"), ("returns", "returns")] {
         if let Some(list) = r.get(key).and_then(Value::as_array) {
@@ -3074,10 +3705,10 @@ fn meters_text(r: &Value) -> String {
             out.push_str(&format!("{label}:\n"));
             for t in list {
                 out.push_str(&format!(
-                    "  {} '{}': {:.2}{}\n",
+                    "  {} '{}': {}{}\n",
                     get_display(t, "index", "?"),
                     get_display(t, "name", "?"),
-                    meter_peak(t),
+                    meter_text(scale, meter_peak(t)),
                     if t.get("mute").and_then(Value::as_bool) == Some(true) {
                         " (muted)"
                     } else {
@@ -3088,11 +3719,10 @@ fn meters_text(r: &Value) -> String {
         }
     }
     if let Some(m) = r.get("master") {
-        out.push_str(&format!(
-            "master: {} dB\n",
-            crate::song::fmt_db(crate::song::meter_db(meter_peak(m)), 1)
-        ));
+        out.push_str(&format!("master: {}\n", meter_text(scale, meter_peak(m))));
     }
+    out.push_str(meter_footer(scale));
+    out.push('\n');
     out
 }
 
@@ -3105,20 +3735,24 @@ pub fn get_track_meters_body(live: &LiveState, _p: &Empty) -> ToolResult {
         .get("is_playing")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let scale = meter_scale(live);
     Ok(format!(
-        "Levels right now ({}; peaks in dB from Live's meters, 0 dB is the top):\n{}",
+        "Levels right now ({}):\n{}",
         if playing {
             "playing"
         } else {
             "stopped — levels are only meaningful while playing; use play_and_measure"
         },
-        meters_text(&r)
+        meters_text(&r, &scale)
     ))
 }
 
 /// Play a stretch of the set, sample the meters while it plays, and report
 /// each track's peak. Nothing in the set changes.
 pub fn play_and_measure_body(live: &LiveState, p: &PlayAndMeasureParams) -> ToolResult {
+    // Live's meter curve first, while nothing is playing: it is read once per
+    // session and must not interrupt the measurement.
+    let scale = meter_scale(live);
     guard_performance(
         live,
         "play_and_measure",
@@ -3187,7 +3821,7 @@ pub fn play_and_measure_body(live: &LiveState, p: &PlayAndMeasureParams) -> Tool
         ));
     }
     let mut out = format!(
-        "Played {seconds:.1} s{} and took {readings} readings. Peak per track (dB, 0 dB is the top):\n",
+        "Played {seconds:.1} s{} and took {readings} readings. Peak per track:\n",
         match p.start_time {
             Some(t) if live.script.has_capability("play_from") => format!(" from beat {t}"),
             Some(t) => format!(" from the start marker (this Remote Script cannot play from beat {t}; reinstall it)"),
@@ -3197,17 +3831,15 @@ pub fn play_and_measure_body(live: &LiveState, p: &PlayAndMeasureParams) -> Tool
     let mut silent = Vec::new();
     for (id, (name, peak)) in &peaks {
         let id = id.trim_start_matches("zz ");
-        out.push_str(&format!(
-            "  {id} '{name}': {} dB\n",
-            crate::song::fmt_db(crate::song::meter_db(*peak), 1)
-        ));
+        out.push_str(&format!("  {id} '{name}': {}\n", meter_text(&scale, *peak)));
         if *peak < 0.01 && id.starts_with("track") {
             silent.push(name.clone());
         }
     }
+    out.push_str(meter_footer(&scale));
     if !silent.is_empty() {
         out.push_str(&format!(
-            "Silent during this stretch: {}.",
+            "\nSilent during this stretch: {}.",
             silent.join(", ")
         ));
     }
@@ -3323,12 +3955,10 @@ fn capture_text(
 ) -> String {
     let bars_txt: Vec<String> = m.rms_per_bar.iter().map(|v| format!("{v:.1}")).collect();
     let mut out = format!(
-        "Captured '{name}' (Capture track, slot {slot}) — {bars} bars at {tempo:.0} BPM, {:.1} s, {}\n{path}\npeak {:.1} dBFS · RMS {:.1} dBFS{}\nRMS per bar: {}\nReading: {}.\n",
+        "Captured '{name}' (Capture track, slot {slot}) — {bars} bars at {tempo:.0} BPM, {:.1} s, {}\n{path}\n{}RMS per bar: {}\nReading: {}.\n",
         m.duration_s,
         match m.channels { 1 => "mono".to_string(), 2 => "stereo".to_string(), n => format!("{n} channels") },
-        m.peak_dbfs,
-        m.rms_dbfs,
-        m.stereo_correlation.map(|c| format!(" · stereo correlation {c:.2}")).unwrap_or_default(),
+        analysis_text(m),
         bars_txt.join(" "),
         crate::audio::reading(m)
     );
@@ -3336,41 +3966,51 @@ fn capture_text(
         out.push_str("This set is unsaved, so Live recorded into a temporary project folder; the file moves when you save the set.\n");
     }
     out.push_str(&format!(
-        "Play it in Live by firing Capture slot {slot}. Nothing else in the set changed."
+        "Play it in Live by firing Capture slot {slot}; the folder may need its own access grant before the file can be opened. Nothing else in the set changed."
     ));
     out
 }
 
-pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
-    guard_performance(live, "capture_mix", "would stop and move the transport")?;
-    for cmd in [
-        "ensure_capture_track",
-        "start_capture",
-        "capture_status",
-        "stop_capture",
-    ] {
-        require(live, cmd)?;
-    }
-    if !(1..=64).contains(&p.bars) {
-        return Err(format!("bars must be between 1 and 64, got {}", p.bars));
-    }
-    let (tempo, beats_per_bar) = tempo_and_meter(live);
-    let start = match (p.start_bar, p.start) {
-        (Some(b), _) if b >= 1.0 => (b - 1.0) * beats_per_bar,
-        (Some(b), _) => return Err(format!("start_bar {b} is before bar 1")),
-        (None, Some(s)) if s >= 0.0 => s,
-        (None, Some(_)) => return Err("start must be 0 or later".into()),
-        (None, None) => 0.0,
-    };
-    let seconds_per_bar = 60.0 / tempo * beats_per_bar;
-    let ensured = live
-        .send_command("ensure_capture_track", None)
-        .map_err(|e| live_err("prepare the Capture track", e))?;
-    let track_index = ensured.get("index").and_then(Value::as_i64).unwrap_or(-1);
-    let created = ensured
-        .get("created")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+/// Peak, RMS, crest, the octave balance and the low-to-high ratio: the
+/// numbers a mix decision is actually made on.
+fn analysis_text(m: &crate::audio::Measurements) -> String {
+    let labels = crate::audio::octave_labels();
+    let width = 6usize;
+    let head: String = labels
+        .iter()
+        .map(|l| format!("{l:>width$}"))
+        .collect::<Vec<_>>()
+        .join("");
+    let shares: String = m
+        .octaves
+        .iter()
+        .map(|v| format!("{:>width$}", format!("{:.0}%", v * 100.0)))
+        .collect::<Vec<_>>()
+        .join("");
+    format!(
+        "peak {:.1} dBFS · RMS {:.1} dBFS · crest {:.1} dB · LF/HF {}{:.1} dB{}\nbands {}\n      {}\n",
+        m.peak_dbfs,
+        m.rms_dbfs,
+        m.crest_db,
+        if m.lf_hf_db > 0.0 { "+" } else { "" },
+        m.lf_hf_db,
+        m.stereo_correlation
+            .map(|c| format!(" · stereo correlation {c:.2}"))
+            .unwrap_or_default(),
+        head,
+        shares
+    )
+}
+
+/// One take, recorded and measured. The slot is left holding it; the caller
+/// decides whether it is a take worth keeping.
+fn record_take(
+    live: &LiveState,
+    p: &CaptureMixParams,
+    start: f64,
+    tempo: f64,
+    seconds_per_bar: f64,
+) -> Result<(i64, String, f64), String> {
     let started = live
         .send_command(
             "start_capture",
@@ -3378,6 +4018,10 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
         )
         .map_err(|e| live_err("start the capture", e))?;
     let slot = started.get("slot").and_then(Value::as_i64).unwrap_or(0);
+    let confirmed = started
+        .get("confirmed_at")
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::NAN);
     let mut guard = CaptureGuard {
         live,
         slot,
@@ -3412,13 +4056,110 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
     // Recording is done: stop the transport ourselves and disarm the guard.
     let _ = live.send_command("stop_capture", Some(json!({"slot": slot})));
     guard.armed = false;
-    let path = status
-        .get("file_path")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let audio = crate::audio::read_file(std::path::Path::new(&path))?;
-    let m = crate::audio::measure(&audio, seconds_per_bar);
+    Ok((
+        slot,
+        status
+            .get("file_path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        confirmed,
+    ))
+}
+
+pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
+    guard_performance(live, "capture_mix", "would stop and move the transport")?;
+    for cmd in [
+        "ensure_capture_track",
+        "start_capture",
+        "capture_status",
+        "stop_capture",
+    ] {
+        require(live, cmd)?;
+    }
+    if !(1..=64).contains(&p.bars) {
+        return Err(format!("bars must be between 1 and 64, got {}", p.bars));
+    }
+    let (tempo, beats_per_bar) = tempo_and_meter(live);
+    let start = match (p.start_bar, p.start) {
+        (Some(b), _) if b >= 1.0 => (b - 1.0) * beats_per_bar,
+        (Some(b), _) => return Err(format!("start_bar {b} is before bar 1")),
+        (None, Some(s)) if s >= 0.0 => s,
+        (None, Some(_)) => return Err("start must be 0 or later".into()),
+        (None, None) => 0.0,
+    };
+    let seconds_per_bar = 60.0 / tempo * beats_per_bar;
+    let ensured = live
+        .send_command("ensure_capture_track", None)
+        .map_err(|e| live_err("prepare the Capture track", e))?;
+    let track_index = ensured.get("index").and_then(Value::as_i64).unwrap_or(-1);
+    let created = ensured
+        .get("created")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // A take whose head is silent means the playhead had not arrived: it says
+    // nothing about the music, so it is discarded and recorded again rather
+    // than measured. Anything under an eighth of a bar is Live's own latency.
+    let tolerance = seconds_per_bar / 8.0;
+    let mut discarded: Vec<String> = Vec::new();
+    let mut retried = String::new();
+    let (slot, path, m) = loop {
+        let (slot, path, confirmed) = record_take(live, p, start, tempo, seconds_per_bar)?;
+        let audio = crate::audio::read_file(std::path::Path::new(&path))?;
+        let m = crate::audio::measure(&audio, seconds_per_bar);
+        // Silent from end to end is the set, not a failed take: nothing plays
+        // there. Say so instead of blaming the playhead, and do not re-record.
+        if m.peak_dbfs <= -60.0 {
+            // Live plays Session clips over the Arrangement while the tracks
+            // are "back to arranger": the timeline is silent and that is not
+            // the capture's doing.
+            let session = live
+                .send_command("get_session_info", None)
+                .ok()
+                .and_then(|r| r.get("back_to_arranger").and_then(Value::as_bool))
+                .unwrap_or(false);
+            retried.push_str(&format!(
+                "Nothing plays from {} for {} bar{}: the take is silent end to end. That is the set, not a failed capture.{}\n",
+                bar_text(start, beats_per_bar),
+                p.bars,
+                if p.bars == 1 { "" } else { "s" },
+                if session {
+                    " The tracks are following Session clips, so the Arrangement is not what you hear — adv_back_to_arrangement puts them back on the timeline."
+                } else {
+                    " Check that something is placed there."
+                }
+            ));
+            break (slot, path, m);
+        }
+        if m.leading_silence_s <= tolerance {
+            if !discarded.is_empty() {
+                retried = format!(
+                    "The first take's opening {} was silent — the playhead had not reached {}. Discarded it and recorded again.\n",
+                    discarded.join(" and "),
+                    bar_text(start, beats_per_bar)
+                );
+            }
+            if confirmed.is_finite() {
+                retried.push_str(&format!(
+                    "Playhead confirmed at beat {confirmed:.2} before recording began.\n"
+                ));
+            }
+            break (slot, path, m);
+        }
+        discarded.push(format!("{:.2} s", m.leading_silence_s));
+        let _ = live.send_command(
+            "delete_clip",
+            Some(json!({"track_index": track_index, "clip_index": slot})),
+        );
+        if discarded.len() >= 2 {
+            return Err(format!(
+                "Could not capture {} bar(s) from {}: both takes began before the playhead reached it ({} of silence at the head). Nothing was measured and no reading is offered — a capture that starts early is not a mix observation. Capture slot {slot} was cleared. Is Live's transport being driven from somewhere else?",
+                p.bars,
+                bar_text(start, beats_per_bar),
+                discarded.join(" and ")
+            ));
+        }
+    };
     let clip_name = format!(
         "{} @ {} | {:.1} dBFS",
         p.name,
@@ -3437,6 +4178,7 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
             "Created the Capture track at index {track_index} (audio, input Resampling, monitoring off, muted, armed).\n"
         ));
     }
+    text.push_str(&retried);
     text.push_str(&capture_text(
         &format!("{} @ bar {}", p.name, bar_text(start, beats_per_bar)),
         slot,
@@ -3530,7 +4272,18 @@ pub fn delete_track_body(live: &LiveState, p: &TrackParams) -> ToolResult {
     guard_delete(live, p.track_index, None)?;
     let r = live
         .send_command("delete_track", Some(json!({"track_index": p.track_index})))
-        .map_err(|e| live_err("delete the track", e))?;
+        .map_err(|e| {
+            let text = live_err("delete the track", e);
+            // An older script passes Live's own bare refusal through; say
+            // which rule it is rather than making the caller guess.
+            if text.to_lowercase().contains("couldn't delete track")
+                || text.to_lowercase().contains("could not delete track")
+            {
+                format!("{text} — Live keeps at least one track in a set, and will not delete a frozen track. Create the track that replaces it first, then delete this one.")
+            } else {
+                text
+            }
+        })?;
     Ok(format!(
         "Deleted track {} ('{}'); {} tracks remain and later indices moved down by one.",
         p.track_index,
@@ -3862,15 +4615,57 @@ const END_OPTIONS: &str = "Use end_performance {\"at\": \"next_bar\"} to stop on
 
 /// The guard every transport-touching tool calls first: while a performance
 /// runs, the call is refused with the on-the-bar alternative in the message.
+/// A performance nobody is playing is reconciled away first — the server
+/// outlives a conversation, and state from this morning must not block work
+/// tonight.
 fn guard_performance(live: &LiveState, tool: &str, harm: &str) -> Result<(), String> {
-    match performance_running(live) {
-        Some(p) => Err(format!(
-            "A performance is running (since bar {}, started {}). {tool} {harm}. {END_OPTIONS}",
-            p.start_bar,
-            p.started_at.format("%H:%M:%S")
-        )),
-        None => Ok(()),
+    let Some(p) = performance_running(live) else {
+        return Ok(());
+    };
+    if let Some(note) = reconcile_performance(live, &p) {
+        add_note(live, note);
+        return Ok(());
     }
+    Err(format!(
+        "A performance is running (since bar {}, started {}, transport playing). {tool} {harm}. {END_OPTIONS}",
+        p.start_bar,
+        p.started_at.format("%H:%M:%S")
+    ))
+}
+
+/// How long a performance may sit with the transport stopped before the
+/// server stops believing in it.
+const STALE_PERFORMANCE_S: i64 = 60;
+
+/// Ends a performance that is not being played — the transport stopped, no cue
+/// pending, and more than a minute old — and returns the line the reply
+/// carries. `None` leaves the performance alone.
+fn reconcile_performance(live: &LiveState, p: &Performance) -> Option<String> {
+    let age = (chrono::Local::now() - p.started_at).num_seconds();
+    if age < STALE_PERFORMANCE_S {
+        return None;
+    }
+    let state = read_perf_state(live).ok()?;
+    if state.is_playing || !state.cues.is_empty() {
+        return None;
+    }
+    *live.performance.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    Some(format!(
+        "A performance was left running from {} ago and Live's transport has been stopped since — I ended it.",
+        crate::performance::fmt_secs(age as f64)
+    ))
+}
+
+/// A line a guard wants on the reply of whatever tool it let through.
+pub(crate) fn add_note(live: &LiveState, note: String) {
+    live.notes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(note);
+}
+
+fn take_notes(live: &LiveState) -> Vec<String> {
+    std::mem::take(&mut *live.notes.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// delete_track / delete_clip: allowed during a performance only when the
@@ -4027,20 +4822,21 @@ pub fn listen_body(live: &LiveState, p: &ListenParams) -> ToolResult {
             .and_then(Value::as_i64)
             .unwrap_or(start_bar);
         return Ok(format!(
-            "Listened by recording {} bar{} from bar {lands} (Capture slot {slot}, {:.1} s):\n  peak {:.1} dBFS · RMS {:.1} dBFS · low {:.0}% · mid {:.0}% · high {:.0}%{}{}\nRMS per bar: {}\nThe clip stays on the Capture track; the transport was never touched.",
+            "Listened by recording {} bar{} from bar {lands} (Capture slot {slot}, {:.1} s):\n{}  low {:.0}% · mid {:.0}% · high {:.0}%{}{}\nRMS per bar: {}\nReading: {}.\nThe clip stays on the Capture track; the transport was never touched.",
             p.bars.ceil() as i64,
             if p.bars.ceil() as i64 == 1 { "" } else { "s" },
             m.duration_s,
-            m.peak_dbfs,
-            m.rms_dbfs,
+            analysis_text(&m),
             bands.low * 100.0,
             bands.mid * 100.0,
             bands.high * 100.0,
             if m.clipped_samples > 0 { format!(" · {} clipped samples", m.clipped_samples) } else { String::new() },
             match m.stereo_correlation { Some(c) if c < 0.1 => " · very wide/mono-unsafe".to_string(), _ => String::new() },
-            m.rms_per_bar.iter().map(|x| format!("{x:.1}")).collect::<Vec<_>>().join(" ")
+            m.rms_per_bar.iter().map(|x| format!("{x:.1}")).collect::<Vec<_>>().join(" "),
+            crate::audio::reading(&m)
         ));
     }
+    let scale = meter_scale(live);
     let wait = state.seconds_to_next_bar().clamp(0.0, 10.0);
     std::thread::sleep(std::time::Duration::from_secs_f64(wait));
     let deadline = Instant::now() + std::time::Duration::from_secs_f64(p.bars * bar_s);
@@ -4095,15 +4891,19 @@ pub fn listen_body(live: &LiveState, p: &ListenParams) -> ToolResult {
         if peak <= 0.0001 {
             continue;
         }
-        let flag = if name == "Master" && peak > 0.944 {
-            "   ← within 0.5 dB of clipping"
+        let flag = if name == "Master" {
+            match scale.db(peak) {
+                db if db >= 0.0 => "   ← over 0 dB: clipping",
+                db if db > -0.5 => "   ← within 0.5 dB of 0 dB",
+                _ => "",
+            }
         } else {
             ""
         };
         out.push_str(&format!(
             "  {name:<width$} peak {}  avg {}{flag}\n",
-            crate::song::fmt_db(crate::song::meter_db(peak), 1),
-            crate::song::fmt_db(crate::song::meter_db(avg), 1)
+            meter_text(&scale, peak),
+            meter_text(&scale, avg)
         ));
     }
     let silent: Vec<&String> = order.iter().filter(|n| peaks[*n].0 <= 0.0001).collect();
@@ -4117,7 +4917,8 @@ pub fn listen_body(live: &LiveState, p: &ListenParams) -> ToolResult {
                 .join(", ")
         ));
     }
-    out.push_str("Peaks in dB from Live's meters (0 dB is the top). listen {\"capture\": true} records the bars instead and adds RMS and low/mid/high balance.");
+    out.push_str(meter_footer(&scale));
+    out.push_str(" listen {\"capture\": true} records the bars instead and adds RMS, crest and the octave balance.");
     Ok(out)
 }
 
@@ -5155,8 +5956,16 @@ pub fn get_performance_state_body(live: &LiveState, p: &GetPerformanceStateParam
             take.start_bar
         ));
     }
-    if running.is_some() && !state.is_playing {
-        text.push_str("\nThe transport is stopped (outside this server, or by end_performance's cue). The guards are still on: fire_scene or start a cue to resume, or end_performance to lift them.");
+    if let Some(r) = running.as_ref().filter(|_| !state.is_playing) {
+        let age = (chrono::Local::now() - r.started_at).num_seconds();
+        if age >= STALE_PERFORMANCE_S && state.cues.is_empty() {
+            text.push_str(&format!(
+                "\nThe transport is stopped and nothing is cued, and this performance has been running {} — the next tool that needs the transport will end it and carry on.",
+                crate::performance::fmt_secs(age as f64)
+            ));
+        } else {
+            text.push_str("\nThe transport is stopped (outside this server, or by end_performance's cue). The guards are still on: fire_scene or start a cue to resume, or end_performance to lift them.");
+        }
     }
     Ok(text)
 }
@@ -5615,10 +6424,11 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
     named_tools!(live, name, args;
         "get_session_info" => (Empty, get_session_info_body),
         "get_remote_script_info" => (Empty, get_remote_script_info_body),
-        "get_track_info" => (TrackParams, get_track_info_body),
+        "get_track_info" => (TrackInfoParams, get_track_info_body),
         "get_clip_notes" => (ClipParams, get_clip_notes_body),
         "get_device_parameters" => (DeviceParams, get_device_parameters_body),
         "set_device_parameter" => (SetDeviceParameterParams, set_device_parameter_body),
+        "edit_devices" => (EditDevicesParams, edit_devices_body),
         "get_session_snapshot" => (SnapshotParams, get_session_snapshot_body),
         "create_midi_track" => (CreateTrackParams, create_midi_track_body),
         "create_audio_track" => (CreateTrackParams, create_audio_track_body),
@@ -5838,6 +6648,17 @@ fn song_track_index(name: &str, created: &BTreeMap<String, i64>) -> Result<i64, 
 
 pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     // ── validate everything before the first command ──
+    let mode = match p.on_existing.trim().to_lowercase().as_str() {
+        "" | "converge" => "converge".to_string(),
+        "add" => "add".to_string(),
+        "fail" => "fail".to_string(),
+        other => {
+            return Err(format!(
+                "on_existing must be converge, add or fail, not '{other}'"
+            ))
+        }
+    };
+    let mode = mode.as_str();
     let mut names: Vec<&str> = Vec::new();
     for t in &p.tracks {
         if t.name.trim().is_empty() {
@@ -5925,7 +6746,11 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
 
     // ── execute, stopping at the first failure ──
     let mut done = plan;
-    let fail = |done: &str, what: String| -> String { format!("{done}Stopped: {what}") };
+    let fail = |done: &str, what: String| -> String {
+        format!(
+            "{done}Stopped: {what}\nWhat is above is in the set; the rest is not. Re-run the same document — build_song converges: a track whose name already exists is reused, and a slot that already holds the named clip is left alone."
+        )
+    };
     if let Some(k) = p.key.as_ref().filter(|k| !k.trim().is_empty()) {
         let text =
             crate::arrange::set_key_body(live, &crate::arrange::SetKeyParams { key: k.clone() })
@@ -5971,6 +6796,9 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     // Every track in one round trip: the instruments are resolved to URIs
     // here (the library index), the script creates, names, loads and mixes.
     let mut created: BTreeMap<String, i64> = BTreeMap::new();
+    let mut reused: Vec<i64> = Vec::new();
+    let mut skipped_clips = 0usize;
+    let mut skipped_places = 0usize;
     if !p.tracks.is_empty() {
         require(live, "create_tracks").map_err(|e| fail(&done, e))?;
         let mut specs: Vec<Value> = Vec::new();
@@ -6015,8 +6843,13 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
                 "color_index": t.color_index, "sends": sends,
             }));
         }
+        // Live decides what already exists, inside the same round trip: a
+        // re-run of the document converges instead of building a second copy.
         let r = live
-            .send_command("create_tracks", Some(json!({"tracks": specs})))
+            .send_command(
+                "create_tracks",
+                Some(json!({"tracks": specs, "on_existing": mode})),
+            )
             .map_err(|e| fail(&done, live_err("create the tracks", e)))?;
         let entries = r
             .get("created")
@@ -6036,6 +6869,11 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
         for (t, e) in p.tracks.iter().zip(entries.iter()) {
             let index = e.get("index").and_then(Value::as_i64).unwrap_or(-1);
             created.insert(t.name.clone(), index);
+            if e.get("reused").and_then(Value::as_bool) == Some(true) {
+                reused.push(index);
+                done.push_str(&format!("Track {index} '{}' — reused\n", t.name));
+                continue;
+            }
             done.push_str(&format!(
                 "Track {index} '{}'{}\n",
                 t.name,
@@ -6047,6 +6885,40 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
         }
         if !found.is_empty() {
             done.push_str(&format!("Found in the library: {}.\n", found.join(", ")));
+        }
+    }
+    // What the reused tracks already hold, so a re-run writes only what is
+    // missing. Fresh tracks are empty by construction and cost no read.
+    let mut slots_taken: BTreeMap<(i64, i64), String> = BTreeMap::new();
+    if mode == "converge" && !reused.is_empty() {
+        let mut seen: Vec<i64> = Vec::new();
+        for c in &p.clips {
+            let Ok(index) = song_track_index(&c.track, &created) else {
+                continue;
+            };
+            if seen.contains(&index) || !reused.contains(&index) {
+                continue;
+            }
+            seen.push(index);
+            if let Ok(info) = live.send_command(
+                "get_track_info",
+                Some(json!({"track_index": index, "kind": "track"})),
+            ) {
+                for slot in info
+                    .get("clip_slots")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+                {
+                    let slot_index = slot.get("index").and_then(Value::as_i64).unwrap_or(-1);
+                    if let Some(clip) = slot.get("clip").filter(|c| !c.is_null()) {
+                        slots_taken.insert(
+                            (index, slot_index),
+                            get_display(clip, "name", "").to_lowercase(),
+                        );
+                    }
+                }
+            }
         }
     }
     // Every clip in one round trip; copies in other rows are made inside
@@ -6068,12 +6940,21 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
                 }
             }
             let first = slots[0];
+            let mut written_here = 0usize;
             for (i, slot) in slots.iter().enumerate() {
+                if slots_taken.get(&(track_index, *slot)) == Some(&c.name.to_lowercase()) {
+                    skipped_clips += 1;
+                    continue;
+                }
+                written_here += 1;
                 if i == 0 {
                     specs.push(json!({"track_index": track_index, "clip_index": slot, "name": c.name, "length": c.length, "notes": notes}));
                 } else {
                     specs.push(json!({"track_index": track_index, "clip_index": slot, "name": c.name, "copy_of": first}));
                 }
+            }
+            if written_here == 0 {
+                continue;
             }
             lines.push(format!(
                 "Clip '{}' on track {track_index} slot{} {} ({} notes).",
@@ -6087,25 +6968,54 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
                 notes.len()
             ));
         }
-        let r = live
-            .send_command("write_clips", Some(json!({"clips": specs})))
-            .map_err(|e| fail(&done, live_err("write the clips", e)))?;
-        let written = r
-            .get("written")
-            .and_then(Value::as_array)
-            .map_or(specs.len(), Vec::len);
-        for l in &lines {
-            done.push_str(l);
-            done.push('\n');
+        if specs.is_empty() {
+            // Everything this document asks for is already in those slots.
+            done.push_str("Every clip was already in its slot; nothing was written.\n");
+        } else {
+            let r = live
+                .send_command("write_clips", Some(json!({"clips": specs})))
+                .map_err(|e| fail(&done, live_err("write the clips", e)))?;
+            let written = r
+                .get("written")
+                .and_then(Value::as_array)
+                .map_or(specs.len(), Vec::len);
+            for l in &lines {
+                done.push_str(l);
+                done.push('\n');
+            }
+            done.push_str(&format!(
+                "{written} clip{} written in one round trip.\n",
+                if written == 1 { "" } else { "s" }
+            ));
         }
-        done.push_str(&format!(
-            "{written} clip{} written in one round trip.\n",
-            if written == 1 { "" } else { "s" }
-        ));
     }
     for (i, times) in &placements {
         let pl = &p.placements[*i];
         let track_index = song_track_index(&pl.track, &created).map_err(|e| fail(&done, e))?;
+        // On a reused track, a beat that already holds this clip is left alone.
+        let mut times = times.clone();
+        if mode == "converge" && reused.contains(&track_index) {
+            if let Ok(r) = live.send_command(
+                "get_arrangement_clips",
+                Some(json!({"track_index": track_index})),
+            ) {
+                let there: Vec<f64> = r
+                    .get("clips")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|c| c.get("start_time").and_then(Value::as_f64))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let before = times.len();
+                times.retain(|t| !there.iter().any(|x| (x - t).abs() < 0.01));
+                skipped_places += before - times.len();
+            }
+        }
+        if times.is_empty() {
+            continue;
+        }
         let params = DuplicateToArrangementParams {
             track_index,
             clip_index: pl.slot,
@@ -6136,6 +7046,14 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
         )
         .map_err(|e| fail(&done, e))?;
         done.push_str(&format!("Locator '{}' at beat {}.\n", l.name, l.time));
+    }
+    if skipped_clips > 0 || skipped_places > 0 || !reused.is_empty() {
+        done.push_str(&format!(
+            "Converged: {} track(s) reused, {} clip(s) and {} placement(s) were already there — nothing was duplicated.\n",
+            reused.len(),
+            skipped_clips,
+            skipped_places
+        ));
     }
     done.push_str(
         "Done. switch_to_arrangement_view to see it; play_and_measure to hear the balance.",
@@ -6188,7 +7106,15 @@ fn run_blocking<P: Serialize>(
 ) -> ToolResult {
     let start = Instant::now();
     connection::begin_trace();
+    let _ = take_notes(live);
     let result = body(live, params);
+    // A guard may have ended a stale performance on the way in; the tool that
+    // was being called says so.
+    let result = match (take_notes(live), result) {
+        (notes, Ok(text)) if !notes.is_empty() => Ok(format!("{} {text}", notes.join(" "))),
+        (notes, Err(text)) if !notes.is_empty() => Err(format!("{} {text}", notes.join(" "))),
+        (_, other) => other,
+    };
     let trace = connection::end_trace();
     // While a performance runs the Remote Script attaches its clock to every
     // response; it ends every result here, success or error, at no cost. The
@@ -6320,7 +7246,7 @@ impl Server {
 
     /// Get detailed information about a specific track in Ableton.
     #[tool(name = "get_track_info")]
-    async fn get_track_info(&self, Parameters(p): Parameters<TrackParams>) -> CallToolResult {
+    async fn get_track_info(&self, Parameters(p): Parameters<TrackInfoParams>) -> CallToolResult {
         self.run(&GET_TRACK_INFO, p, get_track_info_body).await
     }
 
@@ -6332,7 +7258,11 @@ impl Server {
         self.run(&GET_CLIP_NOTES, p, get_clip_notes_body).await
     }
 
-    /// Read all parameters for a device on a track (name, value, min, max).
+    /// Every parameter of one device, as Live shows it: the display string
+    /// ("200 Hz", "Low Cut 48 dB"), the range, and for a switch or a chooser
+    /// the list of values it accepts. `track` is a name, an index, "master",
+    /// or a return's name or letter; `device` is a name (a substring is
+    /// enough) or an index.
     #[tool(name = "get_device_parameters")]
     async fn get_device_parameters(
         &self,
@@ -6342,8 +7272,11 @@ impl Server {
             .await
     }
 
-    /// Set a device parameter to a specific value. Use get_device_parameters
-    /// first to discover parameter indices and ranges.
+    /// Set one device parameter. The value may be what Live displays ("3 dB",
+    /// "200 Hz", "Low Cut 48 dB") or the raw number between min and max; the
+    /// reply gives both, before and after. `track` is a name, an index,
+    /// "master", or a return's name or letter. A chooser refuses a label it
+    /// does not have, lists the ones it has, and changes nothing.
     #[tool(name = "set_device_parameter")]
     async fn set_device_parameter(
         &self,
@@ -6351,6 +7284,16 @@ impl Server {
     ) -> CallToolResult {
         self.run(&SET_DEVICE_PARAMETER, p, set_device_parameter_body)
             .await
+    }
+
+    /// Remove, move, bypass or re-enable a device in a chain — on a track, a
+    /// return or the master. action: "remove" takes it out (Cmd-Z in Live puts
+    /// it back), "move" needs to_index, "bypass" leaves it in the chain and
+    /// stops it processing, "enable" turns it back on. `device` is a name (a
+    /// substring is enough) or an index; the reply lists the chain afterwards.
+    #[tool(name = "edit_devices")]
+    async fn edit_devices(&self, Parameters(p): Parameters<EditDevicesParams>) -> CallToolResult {
+        self.run(&EDIT_DEVICES, p, edit_devices_body).await
     }
 
     /// Capture a project state snapshot: session metadata, every track
@@ -6778,9 +7721,11 @@ impl Server {
 
     /// Hear the result as numbers: record `bars` bars of the arrangement
     /// from `start_bar` through a Capture track (made once, input
-    /// Resampling, muted), then report the clip and its levels: peak dBFS,
-    /// RMS, RMS per bar, silent bars, clipped samples, stereo correlation,
-    /// with a one-line reading. The clip stays on the Capture track so you
+    /// Resampling, muted), then report peak dBFS, RMS, crest factor, ten
+    /// octave bands, the low-to-high ratio and RMS per bar, with a reading
+    /// you can act on. The playhead is confirmed at the starting bar before
+    /// recording begins; a take that starts early is discarded and recorded
+    /// again rather than measured. The clip stays on the Capture track so you
     /// can play it; clear_captures removes the track when you are done.
     /// Nothing else in the set changes. One capture at a time; 1–64 bars.
     #[tool(name = "capture_mix")]
@@ -7071,7 +8016,10 @@ impl Server {
     /// clips with their notes in any compact form, Arrangement placements
     /// (times or start/end/step) and locators. Everything is validated before
     /// the first command reaches Live; dry_run: true shows the plan only.
-    /// Stops at the first failure and says what was built.
+    /// Stops at the first failure and says what was built — re-run the same
+    /// document and it converges: a track whose name already exists is reused
+    /// and a slot that already holds the named clip is left alone, so nothing
+    /// is duplicated (on_existing: "add" or "fail" changes that).
     #[tool(name = "build_song")]
     async fn build_song(&self, Parameters(p): Parameters<BuildSongParams>) -> CallToolResult {
         self.run(&BUILD_SONG, p, build_song_body).await
@@ -7481,7 +8429,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 101);
+        assert_eq!(tools.len(), 102);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().unwrap();
@@ -7499,7 +8447,7 @@ mod tests {
         // intent. Keeping a performance is part of playing one.
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 101, "the take must not add a tool");
+        assert_eq!(tools.len(), 102, "the take must not add a tool");
         // start_performance is served as adv_start_performance (decision 0006).
         for name in ["adv_start_performance", "play_song"] {
             let tool = tools.iter().find(|t| t.name == name).unwrap();

@@ -61,7 +61,7 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.26.0"
+SCRIPT_VERSION = "1.27.2"
 PROTOCOL_VERSION = 1
 
 # A handler returns this when it will answer the socket itself, from a later
@@ -177,6 +177,9 @@ SCRIPT_CAPABILITIES = [
     "stop_arrangement_record",
     "place_sample",
     "list_sample_folders",
+    "delete_device",
+    "move_device",
+    "get_meter_scale",
 ]
 
 def create_instance(c_instance):
@@ -451,6 +454,7 @@ class AbletonMCP(ControlSurface):
         "set_device_parameters", "place_clips", "delete_arrangement_clips",
         "duplicate_arrangement_clip", "create_return_track", "create_tracks", "write_clips",
         "start_arrangement_record", "stop_arrangement_record", "place_sample",
+        "delete_device", "move_device",
     ])
 
     def _slice_budget(self):
@@ -560,7 +564,8 @@ class AbletonMCP(ControlSurface):
         if command_type == "get_session_info":
             return self._get_session_info()
         elif command_type == "get_track_info":
-            return self._get_track_info(params.get("track_index", 0))
+            return self._get_track_info(
+                params.get("track_index", 0), params.get("kind", "track"))
         elif command_type == "create_midi_track":
             index = params.get("index", -1)
             result = self._create_midi_track(index)
@@ -739,13 +744,22 @@ class AbletonMCP(ControlSurface):
         elif command_type == "create_return_track":
             result = self._create_return_track(params.get("name"))
         elif command_type == "create_tracks":
-            result = self._create_tracks(params.get("tracks", []))
+            result = self._create_tracks(
+                params.get("tracks", []), params.get("on_existing", "add"))
         elif command_type == "write_clips":
             result = self._write_clips(params.get("clips", []))
         elif command_type == "set_device_parameters":
             result = self._set_device_parameters(
                 params.get("track_index", 0), params.get("device_index", 0),
-                params.get("values", []))
+                params.get("values", []), params.get("kind", "track"))
+        elif command_type == "delete_device":
+            result = self._delete_device(
+                params.get("track_index", 0), params.get("device_index", 0),
+                params.get("kind", "track"))
+        elif command_type == "move_device":
+            result = self._move_device(
+                params.get("track_index", 0), params.get("device_index", 0),
+                params.get("to_index", 0), params.get("kind", "track"))
         elif command_type == "set_clip_groove":
             result = self._set_clip_groove(
                 params.get("track_index"), params.get("clip_index"),
@@ -838,16 +852,19 @@ class AbletonMCP(ControlSurface):
                 params.get("resolution", 1.0))
         elif command_type == "get_drum_rack_pads":
             return self._get_drum_rack_pads(
-                params.get("track_index", 0), params.get("device_index", -1))
+                params.get("track_index", 0), params.get("device_index", -1),
+                params.get("kind", "track"))
         # Dataset / state-snapshot reads
         elif command_type == "get_clip_notes":
             track_index = params.get("track_index", 0)
             clip_index = params.get("clip_index", 0)
             return self._get_clip_notes(track_index, clip_index)
         elif command_type == "get_device_parameters":
-            track_index = params.get("track_index", 0)
-            device_index = params.get("device_index", 0)
-            return self._get_device_parameters(track_index, device_index)
+            return self._get_device_parameters(
+                params.get("track_index", 0), params.get("device_index", 0),
+                params.get("kind", "track"))
+        elif command_type == "get_meter_scale":
+            return self._get_meter_scale()
         elif command_type == "get_session_snapshot":
             include_notes = params.get("include_notes", True)
             include_params = params.get("include_params", True)
@@ -872,7 +889,9 @@ class AbletonMCP(ControlSurface):
                 params.get("track_index", 0),
                 params.get("device_index", 0),
                 params.get("parameter_index", 0),
-                params.get("value", 0.0),
+                params.get("value"),
+                params.get("kind", "track"),
+                params.get("value_display"),
             )
         else:
             raise ValueError("Unknown command: " + command_type)
@@ -926,23 +945,26 @@ class AbletonMCP(ControlSurface):
                 "loop":              self._safe_song_property("loop",              bool,  False),
                 "loop_start":        self._safe_song_property("loop_start",        float, 0.0),
                 "loop_length":       self._safe_song_property("loop_length",       float, 0.0),
+                # True when the tracks are following Session clips, so the
+                # Arrangement is not what you would hear.
+                "back_to_arranger":  self._safe_song_property("back_to_arranger",  bool,  False),
             }
             return result
         except Exception as e:
             self.log_message("Error getting session info: " + str(e))
             raise
     
-    def _get_track_info(self, track_index):
-        """Get information about a track"""
+    def _get_track_info(self, track_index, kind="track"):
+        """Get information about a track, a return track or the master"""
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            
-            track = self._song.tracks[track_index]
-            
-            # Get clip slots
+            track = self._resolve_track(track_index, kind)
+            kind = str(kind or "track").lower()
+            if kind not in ("track", "return", "master"):
+                kind = "track"
+
+            # Get clip slots (the returns and the master have none)
             clip_slots = []
-            for slot_index, slot in enumerate(track.clip_slots):
+            for slot_index, slot in enumerate(getattr(track, "clip_slots", [])):
                 clip_info = None
                 if slot.has_clip:
                     clip = slot.clip
@@ -970,15 +992,17 @@ class AbletonMCP(ControlSurface):
                 })
             
             result = {
-                "index": track_index,
+                "index": track_index if kind != "master" else 0,
+                "kind": kind,
                 "name": track.name,
-                "is_audio_track": track.has_audio_input,
-                "is_midi_track": track.has_midi_input,
-                "mute": track.mute,
-                "solo": track.solo,
+                "is_audio_track": self._safe_attr(track, "has_audio_input", bool, False),
+                "is_midi_track": self._safe_attr(track, "has_midi_input", bool, False),
+                "mute": self._safe_attr(track, "mute", bool, False),
+                "solo": self._safe_attr(track, "solo", bool, False),
                 "arm": self._safe_arm(track),
-                "volume": track.mixer_device.volume.value,
-                "panning": track.mixer_device.panning.value,
+                "volume": float(track.mixer_device.volume.value),
+                "volume_db": self._volume_db(track.mixer_device.volume),
+                "panning": float(track.mixer_device.panning.value),
                 "clip_slots": clip_slots,
                 "devices": devices
             }
@@ -2122,10 +2146,10 @@ class AbletonMCP(ControlSurface):
                 continue
         return None
 
-    def _get_drum_rack_pads(self, track_index, device_index=-1):
+    def _get_drum_rack_pads(self, track_index, device_index=-1, kind="track"):
         """Which sample sits on which pad of a track's Drum Rack."""
         try:
-            track = self._resolve_track(track_index)
+            track = self._resolve_track(track_index, kind)
             devices = list(track.devices)
             device_index = int(device_index if device_index is not None else -1)
             if device_index >= 0:
@@ -2395,14 +2419,34 @@ class AbletonMCP(ControlSurface):
                         bool(note.get("mute", False))))
         return tuple(out)
 
-    def _create_tracks(self, tracks):
+    def _create_tracks(self, tracks, on_existing="add"):
         """Several tracks in one round trip: create, name, load the instrument
         or effect by URI, set the fader (dB or raw), pan, colour and sends.
-        Stops at the first failure and reports how far it got."""
+        Stops at the first failure and reports how far it got.
+
+        `on_existing` says what to do about a name the set already has:
+        "add" (the old behaviour) makes another, "converge" reuses the track
+        that is there, so re-running a document after a dropped connection
+        finishes it instead of building a second copy, and "fail" refuses."""
         created = []
+        on_existing = str(on_existing or "add").lower()
         try:
             for spec in list(tracks or []):
                 yield None  # one track (with its device load) per slice
+                wanted = spec.get("name")
+                if wanted and on_existing != "add":
+                    there = None
+                    for i, t in enumerate(self._song.tracks):
+                        if ("%s" % t.name).strip().lower() == ("%s" % wanted).strip().lower():
+                            there = i
+                            break
+                    if there is not None:
+                        if on_existing == "fail":
+                            raise ValueError("the set already has a track named '%s'" % wanted)
+                        created.append({"index": there,
+                                        "name": "%s" % self._song.tracks[there].name,
+                                        "reused": True})
+                        continue
                 kind = str(spec.get("kind") or "midi").lower()
                 if kind == "audio":
                     self._create_audio_track(-1)
@@ -2411,6 +2455,9 @@ class AbletonMCP(ControlSurface):
                 index = len(self._song.tracks) - 1
                 track = self._song.tracks[index]
                 entry = {"index": index, "name": "%s" % track.name}
+                # Recorded before the device load, so a failure half-way names
+                # the tracks that are really in the set.
+                created.append(entry)
                 name = spec.get("name")
                 if name:
                     track.name = "%s" % name
@@ -2430,10 +2477,12 @@ class AbletonMCP(ControlSurface):
                         track.color_index = int(spec.get("color_index"))
                     except Exception as e:
                         entry["color_error"] = str(e)
-                created.append(entry)
             yield Done({"created": created})
         except Exception as e:
             self.log_message("Error creating tracks: " + str(e))
+            if not created:
+                # Nothing was made: the reason is the whole story.
+                raise
             raise RuntimeError("after %d of %d tracks (%s): %s" % (
                 len(created), len(list(tracks or [])), ", ".join(c["name"] for c in created), str(e)))
 
@@ -2852,9 +2901,26 @@ class AbletonMCP(ControlSurface):
             def finish():
                 try:
                     song.continue_playing()
-                    result = {"playing_from": target, "is_playing": bool(song.is_playing)}
-                    if response_queue is not None:
-                        self._answer(response_queue, {"status": "success", "result": result})
+
+                    def settle():
+                        # A seek made while the transport was stopped does not
+                        # always survive continue_playing: Live resumes from
+                        # where it last stopped. A seek while it is rolling
+                        # lands, so confirm and repeat it if it did not.
+                        try:
+                            now = float(song.current_song_time)
+                            if abs(now - target) > 0.5:
+                                song.current_song_time = target
+                                now = float(song.current_song_time)
+                            result = {"playing_from": target, "at": now,
+                                      "is_playing": bool(song.is_playing)}
+                            if response_queue is not None:
+                                self._answer(response_queue, {"status": "success", "result": result})
+                        except Exception as e:
+                            if response_queue is not None:
+                                self._answer(response_queue, {"status": "error", "message": str(e)})
+
+                    self.schedule_message(1, settle)
                 except Exception as e:
                     if response_queue is not None:
                         self._answer(response_queue, {"status": "error", "message": str(e)})
@@ -2874,6 +2940,14 @@ class AbletonMCP(ControlSurface):
             track_index = int(track_index)
             if track_index < 0 or track_index >= len(tracks):
                 raise IndexError("track index %d out of range (0-%d)" % (track_index, len(tracks) - 1))
+            if len(tracks) == 1:
+                raise ValueError(
+                    "Live keeps at least one track in a set, so the last track cannot be deleted. "
+                    "Create the track that replaces it first, then delete this one.")
+            if self._safe_attr(tracks[track_index], "is_frozen", bool, False):
+                raise ValueError(
+                    "'%s' is frozen; unfreeze it in Live (right-click the track, Unfreeze Track) and delete it then."
+                    % tracks[track_index].name)
             name = tracks[track_index].name
             self._song.delete_track(track_index)
             return {"deleted": name, "index": track_index, "track_count": len(self._song.tracks)}
@@ -2997,16 +3071,33 @@ class AbletonMCP(ControlSurface):
             beats_per_bar = int(song.signature_numerator)
             record_length = float(bars * beats_per_bar)
             start = float(start)
-            preroll = 1.0 if float(song.tempo) <= 160.0 else 2.0
             if Live is None:
                 raise RuntimeError("captures need Live's own Python (Live 11 or newer)")
-            # Live's enum names a beat "q_quarter"; fall back to no quantization
-            # rather than fail if a Live version spells it differently.
-            quant = None
-            for attr in ("q_quarter", "q_beat", "q_no_q"):
-                quant = getattr(Live.Song.Quantization, attr, None)
-                if quant is not None:
-                    break
+            # A whole bar of preroll, so the fire is armed while the playhead is
+            # still inside the bar before `start`: the seek and the transport are
+            # asynchronous, and firing blind is what put digital silence at the
+            # head of a capture. The quantized launch then lands on `start`.
+            bar_beats = float(beats_per_bar)
+            preroll = bar_beats if start >= bar_beats else start
+            begin = max(0.0, start - preroll)
+            on_bar = abs((start / bar_beats) - round(start / bar_beats)) < 1e-6
+            on_beat = abs(start - round(start)) < 1e-6
+
+            def quantization(*names):
+                for attr in names:
+                    value = getattr(Live.Song.Quantization, attr, None)
+                    if value is not None:
+                        return attr, value
+                return None, None
+
+            if preroll <= 0.0:
+                quant_name, quant = quantization("q_no_q")
+            elif on_bar:
+                quant_name, quant = quantization("q_bar", "q_quarter", "q_no_q")
+            elif on_beat:
+                quant_name, quant = quantization("q_quarter", "q_no_q")
+            else:
+                quant_name, quant = quantization("q_no_q")
             if quant is None:
                 raise RuntimeError("Live.Song.Quantization has no usable member")
             self._pending_capture = {"slot": slot_index, "name": str(name or "capture"),
@@ -3018,33 +3109,69 @@ class AbletonMCP(ControlSurface):
                 raise RuntimeError("captures need Live 11 or newer")
             if song.is_playing:
                 song.stop_playing()
-            song.current_song_time = max(0.0, start - preroll)
+            song.current_song_time = begin
+            state = {"ticks": 0, "seeks": 0}
 
-            def finish():
+            def fail(message):
+                self._pending_capture = None
+                self.log_message("Error starting capture: " + message)
+                if response_queue is not None:
+                    self._answer(response_queue, {"status": "error", "message": message})
+
+            def fire_now(confirmed_at):
+                slot.fire(record_length=record_length, launch_quantization=quant)
+                result = {"slot": slot_index, "record_length": record_length,
+                          "preroll_beats": preroll, "beats_per_bar": beats_per_bar,
+                          "tempo": float(song.tempo), "started_at": start,
+                          "begin_beat": begin, "confirmed_at": confirmed_at,
+                          "launch_quantization": quant_name}
+                if response_queue is not None:
+                    self._answer(response_queue, {"status": "success", "result": result})
+                return result
+
+            def arm():
+                """Fire only once Live says the playhead is inside the preroll
+                and still before `start`."""
                 try:
-                    # continue_playing plays from current_song_time; start_playing
-                    # would jump back to the start marker.
-                    song.continue_playing()
-                    slot.fire(record_length=record_length, launch_quantization=quant)
-                    result = {"slot": slot_index, "record_length": record_length,
-                              "preroll_beats": preroll, "beats_per_bar": beats_per_bar,
-                              "tempo": float(song.tempo), "started_at": start}
-                    if response_queue is not None:
-                        self._answer(response_queue, {"status": "success", "result": result})
+                    if preroll <= 0.0:
+                        # Nothing to wait for: the take starts where the
+                        # transport does.
+                        fire_now(float(song.current_song_time))
+                        if not song.is_playing:
+                            song.continue_playing()
+                        return
+                    if not song.is_playing:
+                        # continue_playing plays from current_song_time;
+                        # start_playing would jump back to the start marker.
+                        song.continue_playing()
+                        self.schedule_message(1, arm)
+                        return
+                    state["ticks"] += 1
+                    now = float(song.current_song_time)
+                    # The window is the preroll: after `begin`, before `start`.
+                    # A seek made while stopped does not always survive
+                    # continue_playing, so seek again now that it is rolling
+                    # and look next tick. Firing outside the window is what
+                    # recorded the wrong bars.
+                    if now < begin - 0.05 or now >= start - 0.02:
+                        if state["ticks"] > 60:
+                            fail("the playhead would not settle before beat %.2f (it is at %.2f); nothing was recorded"
+                                 % (start, now))
+                            return
+                        state["seeks"] += 1
+                        song.current_song_time = begin
+                        self.schedule_message(1, arm)
+                        return
+                    fire_now(now)
                 except TypeError as e:
-                    msg = "captures need Live 11 or newer (fixed-length recording): " + str(e)
-                    self.log_message(msg)
-                    if response_queue is not None:
-                        self._answer(response_queue, {"status": "error", "message": msg})
+                    fail("captures need Live 11 or newer (fixed-length recording): " + str(e))
                 except Exception as e:
-                    self.log_message("Error starting capture: " + str(e))
-                    if response_queue is not None:
-                        self._answer(response_queue, {"status": "error", "message": str(e)})
+                    fail(str(e))
 
             if response_queue is None:
-                finish()
-                return {"slot": slot_index, "record_length": record_length}
-            self.schedule_message(2, finish)
+                song.continue_playing()
+                return fire_now(float(song.current_song_time))
+            self.schedule_message(1, arm)
             return DEFERRED
         except Exception as e:
             self.log_message("Error starting capture: " + str(e))
@@ -4290,11 +4417,49 @@ class AbletonMCP(ControlSurface):
 
     # ── Levels: meter peaks per bar and per section, kept by the tick ───────
 
-    def _db(self, v):
-        v = float(v)
-        if v <= 0.0001:
+    def _db_for(self, param, value):
+        """Live's own dB reading of a fader-scale value; -inf becomes -80."""
+        text = self._param_display(param, value)
+        if text is None:
+            return None
+        text = text.replace("dB", "").replace("db", "").strip()
+        if "inf" in text:
             return -80.0
-        return round(20.0 * math.log10(v), 1)
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    # Live's output meters are linear in dB, not in amplitude and not on the
+    # fader taper: 0.0 reads -70 dB and 1.0 reads +6 dB. Measured on Live
+    # 12.4.6 against a file of known level, seven fader positions over 42 dB
+    # (-6 to -48 dBFS): a straight-line fit gave dB = 76 * value - 70 with
+    # zero residuals. 20*log10 of a meter value is not dB, which is why a
+    # 12 dB fader move used to read as about 2 dB.
+    METER_FLOOR_DB = -70.0
+    METER_TOP_DB = 6.0
+
+    def _meter_points(self):
+        """The curve as two points; it is a straight line in dB."""
+        return [[0.0, self.METER_FLOOR_DB], [1.0, self.METER_TOP_DB]]
+
+    def _get_meter_scale(self):
+        """The curve the server converts meter readings with."""
+        span = self.METER_TOP_DB - self.METER_FLOOR_DB
+        return {"points": self._meter_points(),
+                "source": "measured on Live 12.4.6: dB = %.0f * value %+.0f" % (
+                    span, self.METER_FLOOR_DB),
+                "reference": "post_fader",
+                "floor_db": self.METER_FLOOR_DB, "top_db": self.METER_TOP_DB,
+                "zero_dbfs": round(-self.METER_FLOOR_DB / span, 4)}
+
+    def _db(self, v):
+        """A meter reading (Live's 0-1 meter units) as dB. Silence is -80."""
+        v = float(v)
+        if v <= 0.0:
+            return -80.0
+        span = self.METER_TOP_DB - self.METER_FLOOR_DB
+        return round(max(-80.0, min(self.METER_TOP_DB, span * v + self.METER_FLOOR_DB)), 1)
 
     def _meter_of(self, track):
         best = 0.0
@@ -5565,6 +5730,154 @@ class AbletonMCP(ControlSurface):
     # a snapshot can never blow the stack or the payload size.
     _MAX_CHAIN_DEPTH = 4
 
+    # ── Device parameters: what Live shows, not only the float ──────────────
+
+    _DISPLAY_UNITS = {"khz": ("hz", 1000.0), "hz": ("hz", 1.0), "ms": ("s", 0.001),
+                      "s": ("s", 1.0), "db": ("db", 1.0), "%": ("%", 1.0),
+                      "st": ("st", 1.0), "k": ("", 1000.0)}
+
+    def _param_items(self, param):
+        """The labels a quantized parameter accepts, as Live spells them."""
+        try:
+            if not bool(getattr(param, "is_quantized", False)):
+                return []
+            return ["%s" % item for item in list(getattr(param, "value_items", []) or [])]
+        except Exception:
+            return []
+
+    def _param_display(self, param, value=None):
+        """Live's own display string for a value: "200 Hz", "Low Cut 48 dB".
+        The Live Object Model gives str_for_value; value_string is not in it,
+        so it is only a fallback for the current value."""
+        try:
+            if value is None:
+                return "%s" % param.str_for_value(param.value)
+            return "%s" % param.str_for_value(float(value))
+        except Exception:
+            pass
+        if value is None:
+            try:
+                return "%s" % param.value_string
+            except Exception:
+                pass
+        return None
+
+    def _display_parts(self, text):
+        """(number, unit) from one of Live's display strings, normalized:
+        "1.20 kHz" -> (1200.0, "hz"), "12.0 ms" -> (0.012, "s")."""
+        if text is None:
+            return (None, "")
+        text = ("%s" % text).strip().lower().replace(",", ".")
+        if "inf" in text:
+            return (-80.0 if text.startswith("-") else None, "db")
+        digits = ""
+        i = 0
+        while i < len(text) and (text[i].isdigit() or text[i] in "+-."):
+            digits += text[i]
+            i += 1
+        try:
+            value = float(digits)
+        except ValueError:
+            return (None, text)
+        unit = text[i:].strip()
+        known = self._DISPLAY_UNITS.get(unit)
+        if known is not None:
+            return (value * known[1], known[0])
+        return (value, unit)
+
+    def _value_from_display(self, param, text):
+        """The value whose display reads `text`: an exact label for a
+        quantized parameter, a bisection over Live's own str_for_value for a
+        continuous one. Raises ValueError naming what the parameter takes."""
+        want = ("%s" % text).strip()
+        if want == "":
+            raise ValueError("give a value")
+        low = want.lower()
+        items = self._param_items(param)
+        if items:
+            lo_i, hi_i = int(round(float(param.min))), int(round(float(param.max)))
+            if hi_i - lo_i <= 512:
+                for step in range(lo_i, hi_i + 1):
+                    label = self._param_display(param, step)
+                    if label is not None and label.strip().lower() == low:
+                        return float(step)
+            for index, label in enumerate(items):
+                if label.strip().lower() == low:
+                    return float(param.min) + float(index)
+            raise ValueError("'%s' takes one of: %s" % (param.name, ", ".join(items)))
+        target, unit = self._display_parts(want)
+        if target is None:
+            raise ValueError("'%s' is not a value '%s' can show" % (want, param.name))
+        lo, hi = float(param.min), float(param.max)
+        show_lo, show_hi = self._param_display(param, lo), self._param_display(param, hi)
+        n_lo = self._display_parts(show_lo)[0]
+        n_hi = self._display_parts(show_hi)[0]
+        if n_lo is None or n_hi is None:
+            raise ValueError("Live does not show '%s' as a number; give the raw value between %s and %s" % (
+                param.name, lo, hi))
+        if target < min(n_lo, n_hi) - 1e-6 or target > max(n_lo, n_hi) + 1e-6:
+            raise ValueError("'%s' runs %s to %s; '%s' is outside that" % (
+                param.name, show_lo, show_hi, want))
+        ascending = n_hi >= n_lo
+        for _ in range(48):
+            mid = (lo + hi) / 2.0
+            n_mid = self._display_parts(self._param_display(param, mid))[0]
+            if n_mid is None:
+                break
+            if (n_mid < target) == ascending:
+                lo = mid
+            else:
+                hi = mid
+            if abs(hi - lo) < 1e-7:
+                break
+        # Live's display is rounded, so the bisection lands at the edge of a
+        # bucket: take whichever end actually reads closest to what was asked.
+        best, best_gap = (lo + hi) / 2.0, None
+        for candidate in (lo, hi, (lo + hi) / 2.0):
+            shown = self._display_parts(self._param_display(param, candidate))[0]
+            if shown is None:
+                continue
+            gap = abs(shown - target)
+            if best_gap is None or gap < best_gap:
+                best, best_gap = candidate, gap
+        return best
+
+    def _serialize_parameter(self, param, index, displays=True):
+        """One parameter as the server renders it: the float Live automates,
+        and the string Live shows a person. `displays` is off for the snapshot
+        and the rack-chain walk, where the strings are never read and Live
+        would pay three str_for_value calls per parameter."""
+        entry = {
+            "index": index,
+            "name": "%s" % param.name,
+            "value": float(param.value),
+            "min": float(param.min),
+            "max": float(param.max),
+            "is_enabled": bool(getattr(param, "is_enabled", True)),
+            "is_quantized": bool(getattr(param, "is_quantized", False)),
+        }
+        if displays:
+            display = self._param_display(param)
+            if display is not None:
+                entry["display"] = display
+                # kept under the old key too, so an older server still reads it
+                entry["value_string"] = display
+            items = self._param_items(param)
+            if items:
+                entry["items"] = items
+            else:
+                show_lo = self._param_display(param, entry["min"])
+                show_hi = self._param_display(param, entry["max"])
+                if show_lo is not None:
+                    entry["display_min"] = show_lo
+                if show_hi is not None:
+                    entry["display_max"] = show_hi
+        try:
+            entry["automation_state"] = int(param.automation_state)
+        except Exception:
+            pass
+        return entry
+
     def _serialize_device(self, device, device_index, include_params=True, depth=0):
         info = {
             "index": device_index,
@@ -5584,23 +5897,7 @@ class AbletonMCP(ControlSurface):
             try:
                 for p_index, param in enumerate(device.parameters):
                     try:
-                        entry = {
-                            "index": p_index,
-                            "name": param.name,
-                            "value": float(param.value),
-                            "min": float(param.min),
-                            "max": float(param.max),
-                            "is_enabled": bool(getattr(param, "is_enabled", True)),
-                            "is_quantized": bool(getattr(param, "is_quantized", False)),
-                        }
-                        if hasattr(param, "value_string"):
-                            entry["value_string"] = str(param.value_string)
-                        if hasattr(param, "automation_state"):
-                            try:
-                                entry["automation_state"] = int(param.automation_state)
-                            except Exception:
-                                pass
-                        params.append(entry)
+                        params.append(self._serialize_parameter(param, p_index, displays=False))
                     except Exception:
                         continue
             except Exception as e:
@@ -5829,21 +6126,47 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting clip notes: " + str(e))
             raise
 
-    def _get_device_parameters(self, track_index, device_index):
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            if device_index < 0 or device_index >= len(track.devices):
-                raise IndexError("Device index out of range")
-            device = track.devices[device_index]
-            return {
-                "track_index": track_index,
-                "device": self._serialize_device(device, device_index, include_params=True),
-            }
-        except Exception as e:
-            self.log_message("Error getting device parameters: " + str(e))
-            raise
+    def _get_device_parameters(self, track_index, device_index, kind="track"):
+        """Generator: one device's parameters with Live's own display strings,
+        on a track, a return or the master. It yields between parameters so a
+        fifty-parameter device never holds the main thread for a whole slice."""
+        track = self._resolve_track(track_index, kind)
+        kind = str(kind or "track").lower()
+        devices = list(track.devices)
+        device_index = int(device_index)
+        if device_index < 0 or device_index >= len(devices):
+            raise IndexError("device index %d out of range ('%s' has %d device(s): %s)" % (
+                device_index, track.name, len(devices),
+                ", ".join("%s" % d.name for d in devices) or "none"))
+        device = devices[device_index]
+        info = {
+            "index": device_index,
+            "name": "%s" % device.name,
+            "class_name": "%s" % device.class_name,
+            "type": self._get_device_type(device),
+        }
+        automated = self._automated_params_for_device(device)
+        if automated:
+            info["automated_parameters"] = automated
+        info["automation_enabled"] = bool(automated)
+        params = []
+        for p_index, param in enumerate(device.parameters):
+            try:
+                params.append(self._serialize_parameter(param, p_index))
+            except Exception as e:
+                self.log_message("parameter %d unreadable: %s" % (p_index, str(e)))
+            yield None
+        info["parameters"] = params
+        if getattr(device, "can_have_chains", False):
+            yield None
+            info["chains"] = self._serialize_chains(device, include_params=True, depth=0)
+        yield Done({
+            "track_index": track_index if kind != "master" else 0,
+            "kind": kind,
+            "track_name": "%s" % track.name,
+            "devices": ["%s" % d.name for d in devices],
+            "device": info,
+        })
 
     def _get_session_snapshot(self, include_notes=True, include_params=True):
         """Full v2 project state dump for trajectory dataset recording."""
@@ -5921,44 +6244,80 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting session snapshot: " + str(e))
             raise
 
-    def _set_device_parameter(self, track_index, device_index, parameter_index, value):
+    def _set_device_parameter(self, track_index, device_index, parameter_index,
+                              value=None, kind="track", value_display=None):
+        """One parameter, on a track, a return or the master. `value_display`
+        is what Live shows ("200 Hz", "Low Cut 48 dB") and is resolved through
+        Live's own strings; `value` is the raw number."""
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            if device_index < 0 or device_index >= len(track.devices):
-                raise IndexError("Device index out of range")
-            device = track.devices[device_index]
-            if parameter_index < 0 or parameter_index >= len(device.parameters):
-                raise IndexError("Parameter index out of range")
-            param = device.parameters[parameter_index]
+            track = self._resolve_track(track_index, kind)
+            kind = str(kind or "track").lower()
+            devices = list(track.devices)
+            device_index = int(device_index)
+            if device_index < 0 or device_index >= len(devices):
+                raise IndexError("device index %d out of range ('%s' has %d device(s))" % (
+                    device_index, track.name, len(devices)))
+            device = devices[device_index]
+            params = list(device.parameters)
+            parameter_index = int(parameter_index)
+            if parameter_index < 0 or parameter_index >= len(params):
+                raise IndexError("parameter index %d out of range ('%s' has %d)" % (
+                    parameter_index, device.name, len(params)))
+            param = params[parameter_index]
             old = float(param.value)
-            param.value = float(value)
-            return {
-                "track_index": track_index,
+            old_display = self._param_display(param)
+            if value_display is not None and ("%s" % value_display).strip() != "":
+                target = self._value_from_display(param, value_display)
+            elif value is None:
+                raise ValueError("give value (the raw number) or value_display (what Live shows)")
+            else:
+                target = float(value)
+            lo, hi = float(param.min), float(param.max)
+            if target < lo - 1e-9 or target > hi + 1e-9:
+                raise ValueError("'%s' takes %s to %s (%s to %s); %s is outside that" % (
+                    param.name, lo, hi, self._param_display(param, lo),
+                    self._param_display(param, hi), target))
+            param.value = max(lo, min(hi, target))
+            out = {
+                "track_index": track_index if kind != "master" else 0,
+                "kind": kind,
+                "track_name": "%s" % track.name,
                 "device_index": device_index,
+                "device": "%s" % device.name,
                 "parameter_index": parameter_index,
-                "name": param.name,
+                "name": "%s" % param.name,
                 "old_value": old,
                 "value": float(param.value),
-                "min": float(param.min),
-                "max": float(param.max),
+                "min": lo,
+                "max": hi,
             }
+            if old_display is not None:
+                out["old_display"] = old_display
+            display = self._param_display(param)
+            if display is not None:
+                out["display"] = display
+                out["value_string"] = display
+            items = self._param_items(param)
+            if items:
+                out["items"] = items
+            return out
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
             raise
 
-    def _set_device_parameters(self, track_index, device_index, values):
+    def _set_device_parameters(self, track_index, device_index, values, kind="track"):
         """Several parameters of one device in one round trip: values is a
         list of {index, value}; each reply entry carries the name, the old
         and new value, the range and Live's display string."""
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            if device_index < 0 or device_index >= len(track.devices):
-                raise IndexError("Device index out of range")
-            device = track.devices[device_index]
+            track = self._resolve_track(track_index, kind)
+            kind = str(kind or "track").lower()
+            devices = list(track.devices)
+            device_index = int(device_index)
+            if device_index < 0 or device_index >= len(devices):
+                raise IndexError("device index %d out of range ('%s' has %d device(s))" % (
+                    device_index, track.name, len(devices)))
+            device = devices[device_index]
             params = list(device.parameters)
             out = []
             for item in list(values or []):
@@ -5967,20 +6326,89 @@ class AbletonMCP(ControlSurface):
                     raise IndexError("Parameter index %d out of range on '%s'" % (pi, device.name))
                 param = params[pi]
                 old = float(param.value)
-                new = max(float(param.min), min(float(param.max), float(item.get("value", old))))
+                old_display = self._param_display(param)
+                display_wanted = item.get("value_display")
+                if display_wanted is not None and ("%s" % display_wanted).strip() != "":
+                    new = self._value_from_display(param, display_wanted)
+                else:
+                    new = float(item.get("value", old))
+                new = max(float(param.min), min(float(param.max), new))
                 param.value = new
                 entry = {"index": pi, "name": "%s" % param.name, "old_value": old,
                          "value": float(param.value), "min": float(param.min), "max": float(param.max)}
-                try:
-                    entry["value_string"] = "%s" % param.value_string
-                except Exception:
-                    pass
+                if old_display is not None:
+                    entry["old_display"] = old_display
+                display = self._param_display(param)
+                if display is not None:
+                    entry["display"] = display
+                    entry["value_string"] = display
+                items = self._param_items(param)
+                if items:
+                    entry["items"] = items
                 out.append(entry)
-            return {"track_index": track_index, "device_index": device_index,
+            return {"track_index": track_index if kind != "master" else 0, "kind": kind,
+                    "track_name": "%s" % track.name,
+                    "device_index": device_index,
                     "device": "%s" % device.name, "class_name": "%s" % device.class_name,
                     "parameters": out}
         except Exception as e:
             self.log_message("Error setting device parameters: " + str(e))
+            raise
+
+    def _delete_device(self, track_index, device_index, kind="track"):
+        """Take a device out of a chain. Live keeps it in its own undo history."""
+        try:
+            track = self._resolve_track(track_index, kind)
+            kind = str(kind or "track").lower()
+            devices = list(track.devices)
+            device_index = int(device_index)
+            if device_index < 0 or device_index >= len(devices):
+                raise IndexError("device index %d out of range ('%s' has %d device(s): %s)" % (
+                    device_index, track.name, len(devices),
+                    ", ".join("%s" % d.name for d in devices) or "none"))
+            if self._safe_attr(track, "is_frozen", bool, False):
+                raise ValueError("'%s' is frozen; unfreeze it in Live before changing its devices" % track.name)
+            name = "%s" % devices[device_index].name
+            track.delete_device(device_index)
+            return {"deleted": name, "index": device_index, "kind": kind,
+                    "track_index": track_index if kind != "master" else 0,
+                    "track_name": "%s" % track.name,
+                    "devices": ["%s" % d.name for d in track.devices]}
+        except Exception as e:
+            self.log_message("Error deleting device: " + str(e))
+            raise
+
+    def _move_device(self, track_index, device_index, to_index, kind="track"):
+        """Move a device inside its own chain, by index."""
+        try:
+            track = self._resolve_track(track_index, kind)
+            kind = str(kind or "track").lower()
+            devices = list(track.devices)
+            device_index = int(device_index)
+            if device_index < 0 or device_index >= len(devices):
+                raise IndexError("device index %d out of range ('%s' has %d device(s))" % (
+                    device_index, track.name, len(devices)))
+            if self._safe_attr(track, "is_frozen", bool, False):
+                raise ValueError("'%s' is frozen; unfreeze it in Live before changing its devices" % track.name)
+            to_index = max(0, min(int(to_index), len(devices) - 1))
+            device = devices[device_index]
+            name = "%s" % device.name
+            # Live inserts *before* the position it is given, counting the
+            # device that is still in the chain. Moving later therefore needs
+            # one more, so `to_index` means the index it ends up at.
+            insert_at = to_index + 1 if to_index > device_index else to_index
+            self._song.move_device(device, track, min(insert_at, len(devices)))
+            after = ["%s" % d.name for d in track.devices]
+            landed = to_index
+            for i, n in enumerate(after):
+                if n == name:
+                    landed = i
+                    break
+            return {"moved": name, "from_index": device_index, "to_index": landed,
+                    "kind": kind, "track_index": track_index if kind != "master" else 0,
+                    "track_name": "%s" % track.name, "devices": after}
+        except Exception as e:
+            self.log_message("Error moving device: " + str(e))
             raise
 
     def get_browser_tree(self, category_type="all"):
