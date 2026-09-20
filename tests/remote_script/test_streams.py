@@ -5,6 +5,7 @@ reads (never a listener on a clip, which is what deadlocked Live during the
 first capture), and stop when nobody is listening.
 """
 import json
+import time
 import unittest
 
 import harness
@@ -111,6 +112,69 @@ class Streams(unittest.TestCase):
         self.song.is_playing = True
         self.script.tick()
         self.assertGreater(len(self.events("clock")), count, "it did not resume")
+
+    # ── the clock's rate ───────────────────────────────────────────────────
+    def live_ticks(self, count, period=0.10005, jitter=0.01):
+        """Live's own tick as it was measured: about 100.05 ms apart with
+        roughly 10 ms of jitter either way, so half the ticks land early.
+        It runs from now, because subscribing already put the schedule on
+        the real clock."""
+        out, t = [], self.later()
+        for i in range(count):
+            out.append(t + (-jitter if i % 2 else jitter))
+            t += period
+        return out
+
+    def later(self, seconds=1.0):
+        """An instant past anything the harness's own ticks scheduled."""
+        return time.time() + seconds
+
+    def clock_at(self, times):
+        """Drive the clock channel over those wall-clock instants and count
+        the events it published."""
+        before = len(self.events("clock"))
+        for t in times:
+            self.script._clock_event_tick(t)
+        self.script._flush_clients()
+        return len(self.events("clock")) - before
+
+    def test_a_100_ms_subscription_gets_an_event_on_every_tick(self):
+        # An early tick used to fail a hard floor at the interval, and a skip
+        # costs a whole tick: 100 ms asked for arrived every 199 ms (#51).
+        self.subscribe(["clock"], clock_every_ms=100)
+        self.assertEqual(self.clock_at(self.live_ticks(20)), 20)
+
+    def test_a_faster_tick_still_delivers_the_rate_that_was_asked_for(self):
+        # Live's tick is not a constant: on a busy set it has been seen well
+        # under 100 ms. The schedule advances by the interval, so the rate
+        # holds whatever the tick is -- 50 ticks 60 ms apart span 2.945 s and
+        # carry 30 events, a shade over the 10/s asked for. Measuring from
+        # the last send instead rounds every interval up to the next tick and
+        # delivers 25.
+        self.subscribe(["clock"], clock_every_ms=100)
+        self.assertEqual(self.clock_at(self.live_ticks(50, period=0.06, jitter=0.005)), 30)
+
+    def test_a_long_gap_does_not_produce_a_burst_to_catch_up(self):
+        self.subscribe(["clock"], clock_every_ms=100)
+        t0 = self.later()
+        self.clock_at([t0])
+        # Live stalled for five seconds: the schedule is clamped forward, so
+        # the next ticks are one event each, not fifty at once.
+        self.assertEqual(self.clock_at([t0 + 5.0, t0 + 5.1, t0 + 5.2]), 3)
+
+    def test_a_rate_change_takes_effect_at_once(self):
+        # The fastest subscriber sets the rate. When one arrives asking for
+        # every tick, the schedule built for the slower rate must not hold
+        # the next event back.
+        self.subscribe(["clock"], clock_every_ms=100)
+        t0 = self.later()
+        self.clock_at([t0])
+        self.assertEqual(self.clock_at([t0 + 0.03]), 0, "100 ms was not held")
+        other_sock, _ = connect(self.script, self.ns)
+        other_sock.feed('{"id": 1, "type": "subscribe", "params": '
+                        '{"channels": ["clock"], "clock_every_ms": 0}}\n')
+        self.script.tick()
+        self.assertEqual(self.clock_at([t0 + 0.06, t0 + 0.09, t0 + 0.12]), 3)
 
     # ── the levels ─────────────────────────────────────────────────────────
     def test_levels_arrive_once_a_bar_in_lives_own_meter_scale(self):
