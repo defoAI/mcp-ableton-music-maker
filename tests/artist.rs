@@ -73,9 +73,9 @@ async fn arrange_places_repeats_moves_deletes_and_lists_in_bars_one_round_trip_p
         .run(
             &tools::ARRANGE,
             ArrangeParams {
-                clip: Some(0),
-                at_bar: Some(1.0),
-                until_bar: Some(9.0),
+                clip: Some(json!(0)),
+                at_bar: Some(json!(1.0)),
+                until_bar: Some(json!(9.0)),
                 ..arrange("place")
             },
             mcp_ableton_music_maker::arrange::arrange_body,
@@ -100,7 +100,7 @@ async fn arrange_places_repeats_moves_deletes_and_lists_in_bars_one_round_trip_p
         .run(
             &tools::ARRANGE,
             ArrangeParams {
-                clip: Some(2),
+                clip: Some(json!(2)),
                 times: Some(2),
                 ..arrange("repeat")
             },
@@ -122,8 +122,8 @@ async fn arrange_places_repeats_moves_deletes_and_lists_in_bars_one_round_trip_p
         .run(
             &tools::ARRANGE,
             ArrangeParams {
-                clip: Some(1),
-                at_bar: Some(17.0),
+                clip: Some(json!(1)),
+                at_bar: Some(json!(17.0)),
                 ..arrange("move")
             },
             mcp_ableton_music_maker::arrange::arrange_body,
@@ -149,8 +149,8 @@ async fn arrange_places_repeats_moves_deletes_and_lists_in_bars_one_round_trip_p
         .run(
             &tools::ARRANGE,
             ArrangeParams {
-                from_bar: Some(5.0),
-                to_bar: Some(9.0),
+                from_bar: Some(json!(5.0)),
+                to_bar: Some(json!(9.0)),
                 ..arrange("delete")
             },
             mcp_ableton_music_maker::arrange::arrange_body,
@@ -176,7 +176,7 @@ async fn arrange_places_repeats_moves_deletes_and_lists_in_bars_one_round_trip_p
             &tools::ARRANGE,
             ArrangeParams {
                 action: "shorten".into(),
-                to_bar: Some(5.0),
+                to_bar: Some(json!(5.0)),
                 ..Default::default()
             },
             mcp_ableton_music_maker::arrange::arrange_body,
@@ -232,8 +232,8 @@ async fn arrange_places_repeats_moves_deletes_and_lists_in_bars_one_round_trip_p
         .run(
             &tools::ARRANGE,
             ArrangeParams {
-                clip: Some(0),
-                at_bar: Some(0.0),
+                clip: Some(json!(0)),
+                at_bar: Some(json!(0.0)),
                 ..arrange("place")
             },
             mcp_ableton_music_maker::arrange::arrange_body,
@@ -419,9 +419,10 @@ async fn set_key_create_return_clear_captures_and_faders_in_db() {
         .run(
             &tools::LOAD_INSTRUMENT_OR_EFFECT,
             LoadInstrumentParams {
-                track_index: 0,
+                track_index: Some(0),
                 uri: "query:AudioFx#Limiter".into(),
                 kind: "master".into(),
+                ..Default::default()
             },
             tools::load_instrument_or_effect_body,
         )
@@ -434,7 +435,7 @@ async fn set_key_create_return_clear_captures_and_faders_in_db() {
         .run(
             &tools::SET_TRACK_MIXER,
             SetTrackMixerParams {
-                track_index: 0,
+                track_index: Some(0),
                 kind: "track".into(),
                 volume: Some(-6.0),
                 volume_db: None,
@@ -443,6 +444,7 @@ async fn set_key_create_return_clear_captures_and_faders_in_db() {
                 mute: None,
                 solo: None,
                 arm: None,
+                ..Default::default()
             },
             tools::set_track_mixer_body,
         )
@@ -656,4 +658,94 @@ fn a_call_that_held_live_while_playing_says_so() {
         held_line(&t).is_none(),
         "no performance clock: nothing said"
     );
+}
+
+// ── Names instead of numbers (#66) ──────────────────────────────────────────
+
+/// #66's whole point: the damage was not the seven tools, it was that they
+/// **interleaved** — an agent that had just succeeded with a name had no way
+/// to know the next tool would refuse one.
+///
+/// So this is the invariant rather than seven separate assertions: every
+/// core tool that addresses a track by index also takes `track`, and every
+/// one that addresses a Session clip by index also takes `clip`. A new tool
+/// that takes `track_index` alone fails here, and so would half-doing this
+/// again.
+#[tokio::test]
+async fn every_core_tool_that_takes_a_track_takes_a_name() {
+    let server = server_with(FakeBridge::responding(json!({})));
+    let tools_list = server.tool_list();
+    // `arrange` and `build_song` address a track inside their own documents;
+    // `arrange` is covered by tests/arrangement.rs, and `build_song`'s
+    // document names every track it creates.
+    let by_document = ["build_song", "arrange"];
+    let mut checked = 0;
+    for name in CORE_TOOLS {
+        if by_document.contains(name) {
+            continue;
+        }
+        let tool = tools_list
+            .iter()
+            .find(|t| t.name == **name)
+            .unwrap_or_else(|| panic!("{name} is served"));
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        let Some(properties) = schema["properties"].as_object() else {
+            continue;
+        };
+        if properties.contains_key("track_index") {
+            assert!(
+                properties.contains_key("track"),
+                "{name} takes a track by index only; #66 says every core tool takes the name"
+            );
+            checked += 1;
+        }
+        if properties.contains_key("clip_index") {
+            assert!(
+                properties.contains_key("clip"),
+                "{name} takes a clip by index only; #66 says a clip has a name too"
+            );
+        }
+    }
+    assert!(
+        checked >= 6,
+        "only {checked} core tools address a track by index — has the list moved?"
+    );
+}
+
+/// The audit in #66, the other way round: the tools it named must each take
+/// `track`, whatever else changes around them.
+#[tokio::test]
+async fn the_seven_tools_the_audit_named_all_take_a_track() {
+    let server = server_with(FakeBridge::responding(json!({})));
+    let tools_list = server.tool_list();
+    for name in [
+        "set_track_mixer",
+        "set_send",
+        "load_instrument_or_effect",
+        "delete_track",
+        "create_clip",
+        "add_notes_to_clip",
+        "delete_clip",
+        // and the one added for consistency
+        "adv_set_clip_name",
+    ] {
+        let tool = tools_list
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("{name} is served"));
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        let properties = schema["properties"].as_object().unwrap();
+        assert!(properties.contains_key("track"), "{name} has no track");
+        // The index form is what build_song documents and batch payloads
+        // send: it is kept, never required.
+        assert!(
+            properties.contains_key("track_index"),
+            "{name} dropped track_index"
+        );
+        let required = schema["required"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !required.iter().any(|r| r == "track_index"),
+            "{name} still requires track_index"
+        );
+    }
 }

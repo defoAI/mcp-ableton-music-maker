@@ -64,8 +64,8 @@ async fn notes_written_through_the_tool_read_back_out_of_the_clip() {
         .run(
             &tools::CREATE_CLIP,
             CreateClipParams {
-                track_index: 0,
-                clip_index: 0,
+                track_index: Some(0),
+                clip_index: Some(0),
                 length: 4.0,
                 ..Default::default()
             },
@@ -78,8 +78,8 @@ async fn notes_written_through_the_tool_read_back_out_of_the_clip() {
         .run(
             &tools::ADD_NOTES_TO_CLIP,
             AddNotesParams {
-                track_index: 0,
-                clip_index: 0,
+                track_index: Some(0),
+                clip_index: Some(0),
                 input: NotesInput {
                     notes: vec![note(60, 0.0), note(64, 1.0)],
                     ..Default::default()

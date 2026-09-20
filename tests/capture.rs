@@ -279,7 +279,7 @@ async fn a_take_that_starts_early_is_discarded_and_recorded_again() {
         .run(
             &tools::CAPTURE_MIX,
             CaptureMixParams {
-                start_bar: Some(33.0),
+                start_bar: Some(json!(33.0)),
                 start: None,
                 bars: 2,
                 name: "drop".into(),
@@ -328,7 +328,7 @@ async fn two_bad_takes_are_an_error_with_no_measurements() {
         .run(
             &tools::CAPTURE_MIX,
             CaptureMixParams {
-                start_bar: Some(33.0),
+                start_bar: Some(json!(33.0)),
                 start: None,
                 bars: 2,
                 name: "drop".into(),
@@ -373,7 +373,7 @@ async fn the_reading_names_a_spectral_problem() {
         .run(
             &tools::CAPTURE_MIX,
             CaptureMixParams {
-                start_bar: Some(1.0),
+                start_bar: Some(json!(1.0)),
                 start: None,
                 bars: 2,
                 name: "low".into(),
@@ -397,4 +397,74 @@ async fn the_reading_names_a_spectral_problem() {
         t.contains("access grant"),
         "the reply says the folder may need a grant: {t}"
     );
+}
+
+// ── Names instead of numbers (#66) ──────────────────────────────────────────
+
+/// #66: a named bar is a locator. `create_locator` already makes them and
+/// Live's Save keeps them, so `capture_mix` can start at one by name.
+#[tokio::test]
+async fn capture_mix_starts_at_a_locator_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("Capture 0001.wav");
+    write_wav(&file, 4.0, 0.4, 0.4);
+    let bridge = capture_bridge(&file);
+    // The locators, as the generic ops layer reads them.
+    bridge.script(
+        "run",
+        vec![
+            json!({"cues": ["Drop"]}),
+            json!({"n0": "Drop", "t0": 128.0}),
+        ],
+    );
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::CAPTURE_MIX,
+            CaptureMixParams {
+                start_bar: Some(json!("Drop")),
+                start: None,
+                bars: 2,
+                name: "drop".into(),
+            },
+            tools::capture_mix_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let sent = bridge
+        .last("start_capture")
+        .expect("start_capture was sent");
+    assert_eq!(sent["start"], 128.0, "the locator's own beat, not bar 1");
+}
+
+/// An unknown locator names what the set has, and records nothing.
+#[tokio::test]
+async fn capture_mix_refuses_an_unknown_locator_without_recording() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("Capture 0001.wav");
+    write_wav(&file, 4.0, 0.4, 0.4);
+    let bridge = capture_bridge(&file);
+    bridge.script(
+        "run",
+        vec![
+            json!({"cues": ["Drop"]}),
+            json!({"n0": "Drop", "t0": 128.0}),
+        ],
+    );
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::CAPTURE_MIX,
+            CaptureMixParams {
+                start_bar: Some(json!("Chorus")),
+                start: None,
+                bars: 2,
+                name: "drop".into(),
+            },
+            tools::capture_mix_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    assert!(text_of(&r).contains("'Drop' (bar 33)"), "{}", text_of(&r));
+    assert!(!bridge.commands().contains(&"start_capture".to_string()));
 }

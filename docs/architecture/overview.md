@@ -193,6 +193,16 @@ script is loaded and up to date. Both are for CI and the Mac app.
   `get_track_info`, `get_drum_rack_pads`, `delete_device`, `move_device`) carries the `kind`
   the script resolves with `_resolve_track`. So anything that can be loaded can be read,
   corrected and removed.
+- **So is everything else that takes a track.** `resolve_track_target` is the one resolver:
+  every core tool that addresses a track runs through it, and `tests/artist.rs` fails the
+  build when a core tool takes `track_index` without `track`. Beside it,
+  `tools::resolve_clip_slot` turns a Session clip's name into its slot (read off
+  `get_track_info`) and `tools::resolve_bar` turns a locator's name into a bar — the locators
+  are read through the generic ops layer (`song.cue_points`), so no command was added for it.
+  Two rules hold all three: an **ambiguous** name lists every candidate and changes nothing,
+  and a name that matches nothing is an error listing what does exist — it never falls back
+  to an index, because reading "Drop" as slot 0 is how the wrong clip gets overwritten. The
+  index forms stay, because `build_song` documents them and `batch` payloads send them.
 - **A parameter carries what Live shows.** The Live Object Model has no `value_string`; it has
   `str_for_value(value)` and, for a quantized parameter, `value_items`. The script reads both
   in `_serialize_parameter` — the display string, the range as display strings, the labels of

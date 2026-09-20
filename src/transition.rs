@@ -311,14 +311,15 @@ fn retime(
             crate::tools::create_clip_body(
                 live,
                 &CreateClipParams {
-                    track_index: t.index,
-                    clip_index: target.index,
+                    track_index: Some(t.index),
+                    clip_index: Some(target.index),
                     length,
                     name: new_name.clone(),
                     input: crate::notes::NotesInput {
                         notes: plain,
                         ..Default::default()
                     },
+                    ..Default::default()
                 },
             )?;
         }
@@ -549,14 +550,15 @@ fn fill(
     crate::tools::create_clip_body(
         live,
         &CreateClipParams {
-            track_index: t.index,
-            clip_index: slot,
+            track_index: Some(t.index),
+            clip_index: Some(slot),
             length: fill_len,
             name: fill_name.clone(),
             input: crate::notes::NotesInput {
                 notes: plain,
                 ..Default::default()
             },
+            ..Default::default()
         },
     )?;
     note_new_clip(state, t.index, slot);

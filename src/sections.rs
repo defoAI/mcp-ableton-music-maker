@@ -525,14 +525,15 @@ fn apply_change(
                 tools::create_clip_body(
                     live,
                     &CreateClipParams {
-                        track_index,
-                        clip_index: slot,
+                        track_index: Some(track_index),
+                        clip_index: Some(slot),
                         length,
                         name: format!("{section}/{track_name}"),
                         input: NotesInput {
                             notes: notes.clone(),
                             ..Default::default()
                         },
+                        ..Default::default()
                     },
                 )?;
             }

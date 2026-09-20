@@ -18,6 +18,14 @@ The tools without a mark are the artist's set (`CORE_TOOLS`, decision 0006); a t
 *advanced* here is served as `adv_<name>`. Faders and levels are in dB, Arrangement positions
 in Live's 1-based bars.
 
+**Addressing.** Every tool that takes a track takes a **name**: the track's name, its index,
+`"master"`, or a return's name or Live letter (`tools::resolve_track_target`). A Session clip
+is its name or its slot (`resolve_clip_slot`), and a bar is a number or a **locator's name**
+(`resolve_bar`, reading `song.cue_points` through the generic ops layer — no command was
+added). An ambiguous name lists every candidate and changes nothing; a name that matches
+nothing is an error listing what exists, never a fall-back to an index. The `*_index` forms
+all still work.
+
 | Area | Tool | Remote Script command(s) | Notes |
 |---|---|---|---|
 | Arrange | `arrange` | `place_clips`, `duplicate_arrangement_clip`, `delete_arrangement_clips`, `get_arrangement_clips` | place a Session clip at a bar or every N bars up to a bar, repeat an Arrangement clip after itself, move one to a bar, delete the clips starting in a bar range, shorten the whole arrangement to end at a bar (clips that run past it are named: Live's API cannot trim), list; one round trip per track however many clips |

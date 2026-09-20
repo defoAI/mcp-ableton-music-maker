@@ -223,8 +223,9 @@ async fn delete_is_refused_only_for_playing_or_queued_targets() {
         .run(
             &tools::DELETE_CLIP,
             ClipParams {
-                track_index: 0,
-                clip_index: 1,
+                track_index: Some(0),
+                clip_index: Some(1),
+                ..Default::default()
             },
             tools::delete_clip_body,
         )
@@ -239,8 +240,9 @@ async fn delete_is_refused_only_for_playing_or_queued_targets() {
         .run(
             &tools::DELETE_CLIP,
             ClipParams {
-                track_index: 0,
-                clip_index: 0,
+                track_index: Some(0),
+                clip_index: Some(0),
+                ..Default::default()
             },
             tools::delete_clip_body,
         )
@@ -250,7 +252,10 @@ async fn delete_is_refused_only_for_playing_or_queued_targets() {
     let r = server
         .run(
             &tools::DELETE_TRACK,
-            TrackParams { track_index: 1 },
+            TrackParams {
+                track_index: Some(1),
+                ..Default::default()
+            },
             tools::delete_track_body,
         )
         .await;
@@ -258,7 +263,10 @@ async fn delete_is_refused_only_for_playing_or_queued_targets() {
     let r = server
         .run(
             &tools::DELETE_TRACK,
-            TrackParams { track_index: 2 },
+            TrackParams {
+                track_index: Some(2),
+                ..Default::default()
+            },
             tools::delete_track_body,
         )
         .await;

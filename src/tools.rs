@@ -346,8 +346,10 @@ macro_rules! params {
 
 params!(Empty {});
 params!(TrackParams {
-    /// The index of the track
-    track_index: i64,
+    /// The track: a name or an index
+    track: Option<Value>,
+    /// The track by index, when `track` is not given
+    track_index: Option<i64>,
 });
 params!(ResetSetParams {
     /// How many tracks the fresh set has (default 4: two MIDI, two audio)
@@ -368,10 +370,14 @@ params!(TrackInfoParams {
     track_index: Option<i64>,
 });
 params!(ClipParams {
-    /// The index of the track containing the clip
-    track_index: i64,
-    /// The index of the clip slot containing the clip
-    clip_index: i64,
+    /// The track holding the clip: a name or an index
+    track: Option<Value>,
+    /// The clip: its name, or the Session slot it sits in
+    clip: Option<Value>,
+    /// The track by index, when `track` is not given
+    track_index: Option<i64>,
+    /// The clip by slot index, when `clip` is not given
+    clip_index: Option<i64>,
 });
 params!(DeviceParams {
     /// The track that owns the device: a name, an index, "master", or a
@@ -469,10 +475,15 @@ params!(SetTrackNameParams {
     name: String,
 });
 params!(CreateClipParams {
-    /// The index of the track to create the clip in
-    track_index: i64,
-    /// The index of the clip slot to create the clip in
-    clip_index: i64,
+    /// The track to create the clip in: a name or an index
+    track: Option<Value>,
+    /// The slot to create it in: a slot index, or the name of a clip to
+    /// replace on this track
+    clip: Option<Value>,
+    /// The track by index, when `track` is not given
+    track_index: Option<i64>,
+    /// The slot by index, when `clip` is not given
+    clip_index: Option<i64>,
     /// The length of the clip in beats (default: 4.0)
     length: f64 = "four",
     /// Name for the new clip (optional; saves a set_clip_name call)
@@ -530,10 +541,14 @@ fn int_or_float<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error>
 }
 
 params!(AddNotesParams {
-    /// The index of the track containing the clip
-    track_index: i64,
-    /// The index of the clip slot containing the clip
-    clip_index: i64,
+    /// The track holding the clip: a name or an index
+    track: Option<Value>,
+    /// The clip: its name, or the Session slot it sits in
+    clip: Option<Value>,
+    /// The track by index, when `track` is not given
+    track_index: Option<i64>,
+    /// The clip by slot index, when `clip` is not given
+    clip_index: Option<i64>,
     /// Remove the clip's existing notes first, so this call replaces
     /// instead of appending (default false)
     clear: bool = "bool::default",
@@ -546,10 +561,15 @@ params!(AddNotesParams {
     input: NotesInput,
 });
 params!(SetClipNameParams {
-    /// The index of the track containing the clip
-    track_index: i64,
-    /// The index of the clip (Session slot, or position in track.arrangement_clips)
-    clip_index: i64,
+    /// The track holding the clip: a name or an index
+    track: Option<Value>,
+    /// The clip: its current name, or the Session slot it sits in
+    clip: Option<Value>,
+    /// The track by index, when `track` is not given
+    track_index: Option<i64>,
+    /// The clip by index, when `clip` is not given (Session slot, or
+    /// position in track.arrangement_clips)
+    clip_index: Option<i64>,
     /// The new name for the clip
     name: String,
 });
@@ -558,8 +578,10 @@ params!(SetTempoParams {
     tempo: f64,
 });
 params!(LoadInstrumentParams {
-    /// The track (or return) index
-    track_index: i64,
+    /// The track: a name, an index, "master", or a return's name or letter
+    track: Option<Value>,
+    /// The track by index, when `track` is not given
+    track_index: Option<i64>,
     /// The instrument or effect: a browser URI, or plain words ("reverb", "analog bass") searched in the library
     uri: String,
     /// "track" (default), "return" (an effect on a return track) or "master" (an effect on the master)
@@ -612,9 +634,11 @@ params!(DuplicateToArrangementParams {
     every_bars: Option<f64>,
 });
 params!(SetTrackMixerParams {
-    /// Index of the track (among the song's tracks, or among the return
-    /// tracks when kind is "return"; ignored for "master")
-    track_index: i64,
+    /// The track: a name, an index, "master", or a return's name or letter
+    track: Option<Value>,
+    /// The track by index, when `track` is not given (among the song's
+    /// tracks, or among the return tracks when kind is "return")
+    track_index: Option<i64>,
     /// "track" (default), "return" or "master"
     kind: String = "track_kind",
     /// Fader in dB, e.g. -6 (0 is unity, +6 the top); the reply reads it back in dB
@@ -631,8 +655,10 @@ params!(SetTrackMixerParams {
     arm: Option<bool>,
 });
 params!(SetSendParams {
-    /// Index of the track whose send changes
-    track_index: i64,
+    /// The track whose send changes: a name or an index
+    track: Option<Value>,
+    /// The track by index, when `track` is not given
+    track_index: Option<i64>,
     /// "track" (default) or "return"
     kind: String = "track_kind",
     /// The return track's name ("Reverb") or letter ("A"); see get_returns
@@ -947,8 +973,9 @@ params!(SetArrangementLoopParams {
     enabled: Option<bool>,
 });
 params!(CaptureMixParams {
-    /// The bar to start capturing from (Live's 1-based bars; default: bar 1)
-    start_bar: Option<f64>,
+    /// The bar to start capturing from: a number (Live's 1-based bars) or a
+    /// locator's name (default: bar 1)
+    start_bar: Option<Value>,
     /// Or a beat position (a bar boundary, e.g. 128 for bar 33 in 4/4)
     start: Option<f64>,
     /// How many bars to capture (default 8, max 64)
@@ -1120,9 +1147,11 @@ pub fn get_track_info_body(live: &LiveState, p: &TrackInfoParams) -> ToolResult 
 
 pub fn get_clip_notes_body(live: &LiveState, p: &ClipParams) -> ToolResult {
     require(live, "get_clip_notes")?;
+    let target = resolve_track_target(live, p.track.as_ref(), None, p.track_index)?;
+    let slot = resolve_clip_slot(live, &target, p.clip.as_ref(), p.clip_index)?;
     live.send_command(
         "get_clip_notes",
-        Some(json!({"track_index": p.track_index, "clip_index": p.clip_index})),
+        Some(json!({"track_index": target.index, "clip_index": slot})),
     )
     .map(|r| pretty(&r))
     .map_err(|e| live_err("get clip notes", e))
@@ -1306,6 +1335,222 @@ fn resolve_track_name(live: &LiveState, given: &str) -> Result<TrackTarget, Stri
             .map(|(_, n, l)| format!("{n} ({})", l.to_uppercase()))
             .collect::<Vec<_>>()
             .join(", ")
+    ))
+}
+
+/// The Session clips on a track, as `(slot, name)` — only the slots that
+/// hold one.
+fn track_clips(
+    live: &LiveState,
+    target: &TrackTarget,
+) -> Result<(String, Vec<(i64, String)>), String> {
+    require(live, "get_track_info")?;
+    let info = live
+        .send_command(
+            "get_track_info",
+            Some(json!({"track_index": target.index, "kind": target.kind})),
+        )
+        .map_err(|e| live_err("read the track's clips", e))?;
+    let clips = info
+        .get("clip_slots")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, slot)| {
+            let index = slot
+                .get("index")
+                .and_then(Value::as_i64)
+                .unwrap_or(i as i64);
+            let clip = slot.get("clip").filter(|c| c.is_object())?;
+            Some((index, get_display(clip, "name", "")))
+        })
+        .collect();
+    Ok((get_display(&info, "name", ""), clips))
+}
+
+/// A clip on a track: a Session slot by index, or a clip by its name.
+///
+/// A name that matches nothing is an error listing what the track holds. It
+/// never falls back to an index: silently reading "Drop" as slot 0 is how a
+/// producer overwrites the wrong clip.
+pub(crate) fn resolve_clip_slot(
+    live: &LiveState,
+    target: &TrackTarget,
+    which: Option<&Value>,
+    clip_index: Option<i64>,
+) -> Result<i64, String> {
+    match which {
+        None | Some(Value::Null) => clip_index
+            .ok_or_else(|| "give clip (a clip's name, or a Session slot index)".to_string()),
+        Some(Value::Number(n)) => Ok(n.as_i64().unwrap_or(0)),
+        Some(Value::String(s)) => {
+            let given = s.trim();
+            if let Ok(i) = given.parse::<i64>() {
+                return Ok(i);
+            }
+            resolve_clip_name(live, target, given)
+        }
+        Some(other) => Err(format!("a clip is a name or a slot index, not {other}")),
+    }
+}
+
+/// A clip name against one track's slots: exact first, then a substring.
+/// Two matches name both and change nothing.
+fn resolve_clip_name(live: &LiveState, target: &TrackTarget, given: &str) -> Result<i64, String> {
+    let want = given.to_lowercase();
+    if want.is_empty() {
+        return Err("give a clip name or a Session slot index".into());
+    }
+    let (track_name, clips) = track_clips(live, target)?;
+    let label = target.label(&track_name);
+    let listing = || -> String {
+        if clips.is_empty() {
+            format!("{label} holds no clips")
+        } else {
+            format!(
+                "{label} holds: {}",
+                clips
+                    .iter()
+                    .map(|(slot, name)| format!("'{name}' (slot {slot})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    };
+    for exact in [true, false] {
+        let hits: Vec<&(i64, String)> = clips
+            .iter()
+            .filter(|(_, name)| {
+                let lower = name.to_lowercase();
+                if exact {
+                    lower == want
+                } else {
+                    lower.contains(&want)
+                }
+            })
+            .collect();
+        match hits.len() {
+            0 => continue,
+            1 => return Ok(hits[0].0),
+            _ => {
+                return Err(format!(
+                    "'{given}' matches {} clips on {label}: {}. Say the slot index, or rename one.",
+                    hits.len(),
+                    hits.iter()
+                        .map(|(slot, name)| format!("'{name}' (slot {slot})"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
+        }
+    }
+    Err(format!("no clip named '{given}'; {}.", listing()))
+}
+
+/// Live's locators, as `(name, beat)`, read through the generic ops layer:
+/// one batch for the count, one for the names and times. No new command.
+pub(crate) fn locators(live: &LiveState) -> Result<Vec<(String, f64)>, String> {
+    use crate::lom::{Batch, Op, Path};
+    crate::lom::require(live).map_err(|e| live_err("read the locators", e))?;
+    let cues = Path::song().attr("cue_points");
+    // The script renders a Live vector as a list of strings, so the first
+    // batch is only ever asked for how many there are.
+    let count = Batch::new()
+        .push(Op::get(&cues, "cues"))
+        .run(live)?
+        .get("cues")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let mut batch = Batch::new();
+    for i in 0..count as i64 {
+        let cue = cues.clone().at(i);
+        batch = batch
+            .push(Op::get(&cue.clone().attr("name"), &format!("n{i}")))
+            .push(Op::get(&cue.attr("time"), &format!("t{i}")));
+    }
+    let out = batch.run(live)?;
+    Ok((0..count as i64)
+        .filter_map(|i| {
+            let name = out.get(&format!("n{i}"))?.as_str()?.to_string();
+            let time = out.get(&format!("t{i}")).and_then(Value::as_f64)?;
+            Some((name, time))
+        })
+        .collect())
+}
+
+/// A bar the caller named: a number is Live's 1-based bar, and a word is a
+/// locator — `create_locator` already makes them and Live's Save keeps them.
+pub(crate) fn resolve_bar(
+    live: &LiveState,
+    beats_per_bar: f64,
+    which: Option<&Value>,
+) -> Result<Option<f64>, String> {
+    let given = match which {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Number(n)) => return Ok(n.as_f64()),
+        Some(Value::String(s)) => s.trim().to_string(),
+        Some(other) => return Err(format!("a bar is a number or a locator name, not {other}")),
+    };
+    if let Ok(n) = given.parse::<f64>() {
+        return Ok(Some(n));
+    }
+    if given.is_empty() {
+        return Err("give a bar number or a locator name".into());
+    }
+    let marks = locators(live)?;
+    let want = given.to_lowercase();
+    for exact in [true, false] {
+        let hits: Vec<&(String, f64)> = marks
+            .iter()
+            .filter(|(name, _)| {
+                let lower = name.to_lowercase();
+                if exact {
+                    lower == want
+                } else {
+                    lower.contains(&want)
+                }
+            })
+            .collect();
+        match hits.len() {
+            0 => continue,
+            1 => return Ok(Some(hits[0].1 / beats_per_bar + 1.0)),
+            _ => {
+                return Err(format!(
+                    "'{given}' matches {} locators: {}. Say the bar, or rename one.",
+                    hits.len(),
+                    hits.iter()
+                        .map(|(name, beat)| format!(
+                            "'{name}' (bar {})",
+                            crate::arrange::fmt_bar(beat / beats_per_bar + 1.0)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
+        }
+    }
+    Err(format!(
+        "no locator named '{given}'; {}. create_locator makes one.",
+        if marks.is_empty() {
+            "the set has none".to_string()
+        } else {
+            format!(
+                "the set has: {}",
+                marks
+                    .iter()
+                    .map(|(name, beat)| format!(
+                        "'{name}' (bar {})",
+                        crate::arrange::fmt_bar(beat / beats_per_bar + 1.0)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
     ))
 }
 
@@ -2180,6 +2425,10 @@ pub fn set_track_name_body(live: &LiveState, p: &SetTrackNameParams) -> ToolResu
 
 pub fn create_clip_body(live: &LiveState, p: &CreateClipParams) -> ToolResult {
     require(live, "create_clip")?;
+    let target = resolve_track_target(live, p.track.as_ref(), None, p.track_index)?;
+    // A slot by number, or the name of a clip already on this track. A name
+    // that matches nothing is an error, not slot 0.
+    let slot = resolve_clip_slot(live, &target, p.clip.as_ref(), p.clip_index)?;
     // Expand the notes before touching Live, so a bad pattern creates nothing.
     let notes = if p.input.is_empty() {
         Vec::new()
@@ -2192,17 +2441,17 @@ pub fn create_clip_body(live: &LiveState, p: &CreateClipParams) -> ToolResult {
     }
     live.send_command(
         "create_clip",
-        Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "length": p.length})),
+        Some(json!({"track_index": target.index, "clip_index": slot, "length": p.length})),
     )
     .map_err(|e| live_err("create clip", e))?;
     let mut text = format!(
-        "Created clip at track {}, slot {} with length {} beats",
-        p.track_index, p.clip_index, p.length
+        "Created clip at track {}, slot {slot} with length {} beats",
+        target.index, p.length
     );
     if !p.name.is_empty() {
         live.send_command(
             "set_clip_name",
-            Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "name": p.name})),
+            Some(json!({"track_index": target.index, "clip_index": slot, "name": p.name})),
         )
         .map_err(|e| live_err("name the new clip", e))?;
         text.push_str(&format!(", named '{}'", p.name));
@@ -2210,7 +2459,7 @@ pub fn create_clip_body(live: &LiveState, p: &CreateClipParams) -> ToolResult {
     if !notes.is_empty() {
         live.send_command(
             "add_notes_to_clip",
-            Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "notes": notes})),
+            Some(json!({"track_index": target.index, "clip_index": slot, "notes": notes})),
         )
         .map_err(|e| live_err("add notes to the new clip", e))?;
         text.push_str(&format!(", with {} notes", notes.len()));
@@ -2237,6 +2486,8 @@ pub fn create_audio_clip_body(live: &LiveState, p: &CreateAudioClipParams) -> To
 
 pub fn add_notes_to_clip_body(live: &LiveState, p: &AddNotesParams) -> ToolResult {
     require(live, "add_notes_to_clip")?;
+    let target = resolve_track_target(live, p.track.as_ref(), None, p.track_index)?;
+    let slot = resolve_clip_slot(live, &target, p.clip.as_ref(), p.clip_index)?;
     let notes = crate::notes::expand(&p.input)?;
     if notes.is_empty() && !p.clear {
         return Err("No notes given. Use notes, notes_csv, steps or patterns (or clear: true to empty the clip).".into());
@@ -2247,7 +2498,7 @@ pub fn add_notes_to_clip_body(live: &LiveState, p: &AddNotesParams) -> ToolResul
         let r = live
             .send_command(
                 "clear_notes_from_clip",
-                Some(json!({"track_index": p.track_index, "clip_index": p.clip_index})),
+                Some(json!({"track_index": target.index, "clip_index": slot})),
             )
             .map_err(|e| live_err("clear notes from clip", e))?;
         cleared = format!(
@@ -2257,13 +2508,13 @@ pub fn add_notes_to_clip_body(live: &LiveState, p: &AddNotesParams) -> ToolResul
     }
     if notes.is_empty() {
         return Ok(format!(
-            "Cleared clip at track {}, slot {}{}",
-            p.track_index, p.clip_index, cleared
+            "Cleared clip at track {}, slot {slot}{cleared}",
+            target.index
         ));
     }
     live.send_command(
         "add_notes_to_clip",
-        Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "notes": notes})),
+        Some(json!({"track_index": target.index, "clip_index": slot, "notes": notes})),
     )
     .map_err(|e| live_err("add notes to clip", e))?;
     let last = notes
@@ -2271,19 +2522,12 @@ pub fn add_notes_to_clip_body(live: &LiveState, p: &AddNotesParams) -> ToolResul
         .map(|n| n.start_time + n.duration)
         .fold(0.0_f64, f64::max);
     let mut text = format!(
-        "Added {} notes to clip at track {}, slot {}{} — last note ends at beat {}",
+        "Added {} notes to clip at track {}, slot {slot}{cleared} — last note ends at beat {last}",
         notes.len(),
-        p.track_index,
-        p.clip_index,
-        cleared,
-        last
+        target.index,
     );
     if p.propagate_to_arrangement {
-        text.push_str(&propagate_to_arrangement(
-            live,
-            p.track_index,
-            p.clip_index,
-        )?);
+        text.push_str(&propagate_to_arrangement(live, target.index, slot)?);
     }
     Ok(text)
 }
@@ -2360,44 +2604,67 @@ fn propagate_to_arrangement(
 
 pub fn clear_notes_from_clip_body(live: &LiveState, p: &ClipParams) -> ToolResult {
     require(live, "clear_notes_from_clip")?;
+    let target = resolve_track_target(live, p.track.as_ref(), None, p.track_index)?;
+    let slot = resolve_clip_slot(live, &target, p.clip.as_ref(), p.clip_index)?;
     let r = live
         .send_command(
             "clear_notes_from_clip",
-            Some(json!({"track_index": p.track_index, "clip_index": p.clip_index})),
+            Some(json!({"track_index": target.index, "clip_index": slot})),
         )
         .map_err(|e| live_err("clear notes from clip", e))?;
     Ok(format!(
         "Cleared {} note(s) from clip '{}' (track {}, slot {})",
         get_display(&r, "cleared_count", "?"),
         get_display(&r, "clip_name", "clip"),
-        p.track_index,
-        p.clip_index
+        target.index,
+        slot
     ))
 }
 
 pub fn set_clip_name_body(live: &LiveState, p: &SetClipNameParams) -> ToolResult {
     require(live, "set_clip_name")?;
+    let target = resolve_track_target(live, p.track.as_ref(), None, p.track_index)?;
+    let slot = resolve_clip_slot(live, &target, p.clip.as_ref(), p.clip_index)?;
     live.send_command(
         "set_clip_name",
-        Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "name": p.name})),
+        Some(json!({"track_index": target.index, "clip_index": slot, "name": p.name})),
     )
     .map_err(|e| live_err("set clip name", e))?;
     Ok(format!(
-        "Renamed clip at track {}, slot {} to '{}'",
-        p.track_index, p.clip_index, p.name
+        "Renamed clip at track {}, slot {slot} to '{}'",
+        target.index, p.name
     ))
 }
 
+/// The Arrangement's clips are addressed by their position in
+/// `track.arrangement_clips`, which is what `arrange list` prints — a name
+/// there is ambiguous by design (the copies share one), so this one keeps
+/// the index and only the track takes a name.
 pub fn set_arrangement_clip_name_body(live: &LiveState, p: &SetClipNameParams) -> ToolResult {
     require(live, "set_arrangement_clip_name")?;
+    let target = resolve_track_target(live, p.track.as_ref(), None, p.track_index)?;
+    let index = match p.clip.as_ref() {
+        Some(Value::Number(n)) => n.as_i64().unwrap_or(0),
+        Some(Value::String(s)) if s.trim().parse::<i64>().is_ok() => {
+            s.trim().parse::<i64>().unwrap_or(0)
+        }
+        Some(other) => {
+            return Err(format!(
+                "an Arrangement clip is its position as `arrange list` prints it, not {other}"
+            ))
+        }
+        None => p
+            .clip_index
+            .ok_or("give clip (the Arrangement clip's position, as `arrange list` prints it)")?,
+    };
     live.send_command(
         "set_arrangement_clip_name",
-        Some(json!({"track_index": p.track_index, "clip_index": p.clip_index, "name": p.name})),
+        Some(json!({"track_index": target.index, "clip_index": index, "name": p.name})),
     )
     .map_err(|e| live_err("set arrangement clip name", e))?;
     Ok(format!(
-        "Renamed arrangement clip at track {}, index {} to '{}'",
-        p.track_index, p.clip_index, p.name
+        "Renamed arrangement clip at track {}, index {index} to '{}'",
+        target.index, p.name
     ))
 }
 
@@ -2418,6 +2685,7 @@ pub fn load_instrument_or_effect_body(live: &LiveState, p: &LoadInstrumentParams
             p.kind
         ));
     }
+    let target = resolve_track_target(live, p.track.as_ref(), Some(&p.kind), p.track_index)?;
     // Plain words are a search; a URI carries a ':'.
     let uri = if p.uri.contains(':') {
         p.uri.clone()
@@ -2431,7 +2699,7 @@ pub fn load_instrument_or_effect_body(live: &LiveState, p: &LoadInstrumentParams
     let r = live
         .send_command(
             "load_browser_item",
-            Some(json!({"track_index": p.track_index, "item_uri": uri, "kind": kind})),
+            Some(json!({"track_index": target.index, "item_uri": uri, "kind": target.kind})),
         )
         .map_err(|e| live_err("load instrument by URI", e))?;
     if !r.get("loaded").and_then(Value::as_bool).unwrap_or(false) {
@@ -2442,15 +2710,15 @@ pub fn load_instrument_or_effect_body(live: &LiveState, p: &LoadInstrumentParams
             "Loaded '{}' as device {} on track {} ('{}'). Devices on the track now: {}",
             get_display(dev, "name", &get_display(&r, "item_name", "device")),
             get_display(dev, "index", "?"),
-            p.track_index,
-            get_display(&r, "track_name", "track"),
+            target.index,
+            target.label(&get_display(&r, "track_name", "")),
             join_names(r.get("devices_after"))
         )),
         None => Ok(format!(
             "Loaded '{}' on track {} ('{}'). Devices on the track now: {}",
             get_display(&r, "item_name", &p.uri),
-            p.track_index,
-            get_display(&r, "track_name", "track"),
+            target.index,
+            target.label(&get_display(&r, "track_name", "")),
             join_names(r.get("devices_after"))
         )),
     }
@@ -2570,23 +2838,27 @@ fn defer_if_too_close(
 
 pub fn stop_clip_body(live: &LiveState, p: &ClipParams) -> ToolResult {
     require(live, "stop_clip")?;
+    let target = resolve_track_target(live, p.track.as_ref(), None, p.track_index)?;
+    let slot = resolve_clip_slot(live, &target, p.clip.as_ref(), p.clip_index)?;
     live.send_command(
         "stop_clip",
-        Some(json!({"track_index": p.track_index, "clip_index": p.clip_index})),
+        Some(json!({"track_index": target.index, "clip_index": slot})),
     )
     .map_err(|e| live_err("stop clip", e))?;
     Ok(format!(
-        "Stopped clip at track {}, slot {}",
-        p.track_index, p.clip_index
+        "Stopped clip at track {}, slot {slot}",
+        target.index
     ))
 }
 
 pub fn delete_clip_body(live: &LiveState, p: &ClipParams) -> ToolResult {
     require(live, "delete_clip")?;
-    guard_delete(live, p.track_index, Some(p.clip_index))?;
+    let target = resolve_track_target(live, p.track.as_ref(), None, p.track_index)?;
+    let slot = resolve_clip_slot(live, &target, p.clip.as_ref(), p.clip_index)?;
+    guard_delete(live, target.index, Some(slot))?;
     live.send_command(
         "delete_clip",
-        Some(json!({"track_index": p.track_index, "clip_index": p.clip_index})),
+        Some(json!({"track_index": target.index, "clip_index": slot})),
     )
     .map(|r| pretty(&r))
     .map_err(|e| live_err("delete clip", e))
@@ -2829,9 +3101,10 @@ pub fn set_arrangement_time_body(live: &LiveState, p: &ArrangementTimeParams) ->
 
 pub fn get_arrangement_clips_body(live: &LiveState, p: &TrackParams) -> ToolResult {
     require(live, "get_arrangement_clips")?;
+    let target = resolve_track_target(live, p.track.as_ref(), None, p.track_index)?;
     live.send_command(
         "get_arrangement_clips",
-        Some(json!({"track_index": p.track_index})),
+        Some(json!({"track_index": target.index})),
     )
     .map(|r| pretty(&r))
     .map_err(|e| live_err("get arrangement clips", e))
@@ -3092,6 +3365,7 @@ fn mixer_summary(r: &Value) -> String {
 
 pub fn set_track_mixer_body(live: &LiveState, p: &SetTrackMixerParams) -> ToolResult {
     require(live, "set_track_mixer")?;
+    let target = resolve_track_target(live, p.track.as_ref(), Some(&p.kind), p.track_index)?;
     let volume_db = p.volume_db.or(p.volume);
     if volume_db.is_none()
         && p.fader.is_none()
@@ -3118,20 +3392,21 @@ pub fn set_track_mixer_body(live: &LiveState, p: &SetTrackMixerParams) -> ToolRe
         .send_command(
             "set_track_mixer",
             Some(json!({
-                "track_index": p.track_index, "kind": p.kind,
+                "track_index": target.index, "kind": target.kind,
                 "volume": p.fader, "volume_db": volume_db, "pan": p.pan, "mute": p.mute, "solo": p.solo, "arm": p.arm,
             })),
         )
         .map_err(|e| live_err("set the track mixer", e))?;
     Ok(format!(
         "'{}' now: {}",
-        get_display(&r, "name", &format!("track {}", p.track_index)),
+        target.label(&get_display(&r, "name", "")),
         mixer_summary(&r)
     ))
 }
 
 pub fn set_send_body(live: &LiveState, p: &SetSendParams) -> ToolResult {
     require(live, "set_send")?;
+    let target = resolve_track_target(live, p.track.as_ref(), Some(&p.kind), p.track_index)?;
     if p.send_name.is_empty() && p.send_index.is_none() {
         return Err("Say which send: send_name (the return track's name or letter) or send_index. get_returns lists them.".into());
     }
@@ -3139,7 +3414,7 @@ pub fn set_send_body(live: &LiveState, p: &SetSendParams) -> ToolResult {
         .send_command(
             "set_send",
             Some(json!({
-                "track_index": p.track_index, "kind": p.kind,
+                "track_index": target.index, "kind": target.kind,
                 "send_name": if p.send_name.is_empty() { Value::Null } else { json!(p.send_name) },
                 "send_index": p.send_index, "value": p.value,
             })),
@@ -3147,7 +3422,7 @@ pub fn set_send_body(live: &LiveState, p: &SetSendParams) -> ToolResult {
         .map_err(|e| live_err("set the send", e))?;
     Ok(format!(
         "'{}' send {} ({}) set to {}",
-        get_display(&r, "track", &format!("track {}", p.track_index)),
+        target.label(&get_display(&r, "track", "")),
         get_display(&r, "send_index", "?"),
         get_display(&r, "return_name", "return"),
         get_display(&r, "value", &p.value.to_string())
@@ -4239,7 +4514,8 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
         return Err(format!("bars must be between 1 and 64, got {}", p.bars));
     }
     let (tempo, beats_per_bar) = tempo_and_meter(live);
-    let start = match (p.start_bar, p.start) {
+    let start_bar = resolve_bar(live, beats_per_bar, p.start_bar.as_ref())?;
+    let start = match (start_bar, p.start) {
         (Some(b), _) if b >= 1.0 => (b - 1.0) * beats_per_bar,
         (Some(b), _) => return Err(format!("start_bar {b} is before bar 1")),
         (None, Some(s)) if s >= 0.0 => s,
@@ -4483,9 +4759,17 @@ pub fn reset_set_body(live: &LiveState, p: &ResetSetParams) -> ToolResult {
 
 pub fn delete_track_body(live: &LiveState, p: &TrackParams) -> ToolResult {
     require(live, "delete_track")?;
-    guard_delete(live, p.track_index, None)?;
+    let target = resolve_track_target(live, p.track.as_ref(), None, p.track_index)?;
+    if target.kind != "track" {
+        return Err(format!(
+            "delete_track deletes the song's tracks; {} is the {}. Live keeps the master, and a return goes from Live's own mixer.",
+            target.as_argument(),
+            target.kind
+        ));
+    }
+    guard_delete(live, target.index, None)?;
     let r = live
-        .send_command("delete_track", Some(json!({"track_index": p.track_index})))
+        .send_command("delete_track", Some(json!({"track_index": target.index})))
         .map_err(|e| {
             let text = live_err("delete the track", e);
             // An older script passes Live's own bare refusal through; say
@@ -4500,7 +4784,7 @@ pub fn delete_track_body(live: &LiveState, p: &TrackParams) -> ToolResult {
         })?;
     Ok(format!(
         "Deleted track {} ('{}'); {} tracks remain and later indices moved down by one.",
-        p.track_index,
+        target.index,
         get_display(&r, "deleted", "track"),
         get_display(&r, "track_count", "?")
     ))
@@ -5226,11 +5510,12 @@ pub fn vary_clip_body(live: &LiveState, p: &VaryClipParams) -> ToolResult {
             create_clip_body(
                 live,
                 &CreateClipParams {
-                    track_index: track.index,
-                    clip_index: slot,
+                    track_index: Some(track.index),
+                    clip_index: Some(slot),
                     length,
                     name: format!("{} ({})", get_display(&info, "name", "clip"), p.variation),
                     input,
+                    ..Default::default()
                 },
             )?;
             Ok(format!(
@@ -7703,7 +7988,7 @@ impl Server {
 
     /// Read all MIDI notes from a Session-view clip. Returns pitch,
     /// start_time, duration, velocity, mute (and extended fields when
-    /// available).
+    /// available). The track and the clip are a name or an index.
     #[tool(name = "get_clip_notes")]
     async fn get_clip_notes(&self, Parameters(p): Parameters<ClipParams>) -> CallToolResult {
         self.run(&GET_CLIP_NOTES, p, get_clip_notes_body).await
@@ -7797,7 +8082,9 @@ impl Server {
     /// name it and fill it with notes. Give `name` and any of the note forms
     /// (`steps`, `notes_csv`, `patterns`, `notes`, with `loop_every`/`until`
     /// to tile a bar across the clip) instead of calling set_clip_name and
-    /// add_notes_to_clip afterwards. The clip length is `length` beats.
+    /// add_notes_to_clip afterwards. The clip length is `length` beats. The
+    /// track is a name or an index, and `clip` a slot or the name of a clip
+    /// on that track.
     #[tool(name = "create_clip")]
     async fn create_clip(&self, Parameters(p): Parameters<CreateClipParams>) -> CallToolResult {
         self.run(&CREATE_CLIP, p, create_clip_body).await
@@ -7822,7 +8109,8 @@ impl Server {
     /// `pitch,start,duration,velocity` per line, and `loop_every` + `until`
     /// tile one bar across a long clip (e.g. loop_every 4, until 64). Full
     /// `notes` objects still work. Pitches may be names (C1, F#2). Set
-    /// `clear: true` to replace the clip's notes instead of appending.
+    /// `clear: true` to replace the clip's notes instead of appending. The
+    /// track and the clip are a name or an index.
     #[tool(name = "add_notes_to_clip")]
     async fn add_notes_to_clip(&self, Parameters(p): Parameters<AddNotesParams>) -> CallToolResult {
         self.run(&ADD_NOTES_TO_CLIP, p, add_notes_to_clip_body)
@@ -7832,14 +8120,16 @@ impl Server {
     /// Remove all MIDI notes from a Session clip. Writes are additive
     /// (add_notes_to_clip only appends), so to truly modify a clip: read the
     /// notes with get_clip_notes, edit the list, clear_notes_from_clip, then
-    /// add_notes_to_clip the edited notes.
+    /// add_notes_to_clip the edited notes. The track and the clip are a name
+    /// or an index.
     #[tool(name = "clear_notes_from_clip")]
     async fn clear_notes_from_clip(&self, Parameters(p): Parameters<ClipParams>) -> CallToolResult {
         self.run(&CLEAR_NOTES_FROM_CLIP, p, clear_notes_from_clip_body)
             .await
     }
 
-    /// Set the name of a Session clip.
+    /// Set the name of a Session clip. The track and the clip are a name or
+    /// an index.
     #[tool(name = "set_clip_name")]
     async fn set_clip_name(&self, Parameters(p): Parameters<SetClipNameParams>) -> CallToolResult {
         self.run(&SET_CLIP_NAME, p, set_clip_name_body).await
@@ -7870,8 +8160,10 @@ impl Server {
     /// Load an instrument or effect: by plain words searched in the library
     /// ("reverb", "analog bass") or by browser URI. An instrument replaces
     /// the track's instrument; an effect goes at the end of the chain, so
-    /// "put an Echo on the pad" is one call. kind "return" puts an effect on
-    /// a return track, "master" on the master. The result names the device.
+    /// "put an Echo on the pad" is one call. The track is a name, an index,
+    /// "master", or a return's name or letter; kind "return" puts an effect
+    /// on a return track, "master" on the master. The result names the
+    /// device.
     #[tool(name = "load_instrument_or_effect")]
     async fn load_instrument_or_effect(
         &self,
@@ -7894,15 +8186,16 @@ impl Server {
         self.run(&FIRE_CLIP, p, fire_clip_body).await
     }
 
-    /// Stop playing a clip.
+    /// Stop playing a clip. The track and the clip are a name or an index.
     #[tool(name = "stop_clip")]
     async fn stop_clip(&self, Parameters(p): Parameters<ClipParams>) -> CallToolResult {
         self.run(&STOP_CLIP, p, stop_clip_body).await
     }
 
-    /// Delete the clip in the given clip slot, freeing it for reuse. Use
-    /// this before create_clip when you want to overwrite an existing clip
-    /// (create_clip refuses to write into an occupied slot).
+    /// Delete the clip in the given clip slot, freeing it for reuse. The
+    /// track and the clip are a name or an index. Use this before create_clip
+    /// when you want to overwrite an existing clip (create_clip refuses to
+    /// write into an occupied slot).
     #[tool(name = "delete_clip")]
     async fn delete_clip(&self, Parameters(p): Parameters<ClipParams>) -> CallToolResult {
         self.run(&DELETE_CLIP, p, delete_clip_body).await
@@ -7970,8 +8263,8 @@ impl Server {
             .await
     }
 
-    /// List all clips placed in the Arrangement timeline for a track:
-    /// name, start_time, end_time, length, and type.
+    /// List all clips placed in the Arrangement timeline for a track (a name
+    /// or an index): name, start_time, end_time, length, and type.
     #[tool(name = "get_arrangement_clips")]
     async fn get_arrangement_clips(
         &self,
@@ -8006,8 +8299,9 @@ impl Server {
     }
 
     /// Set a track's fader (volume_db, e.g. -6), pan, mute, solo or arm in
-    /// one call; returns (kind "return") and the master (kind "master") too.
-    /// The reply reads the fader back in dB.
+    /// one call. The track is a name, an index, "master", or a return's name
+    /// or letter; returns (kind "return") and the master (kind "master")
+    /// work too. The reply reads the fader back in dB.
     #[tool(name = "set_track_mixer")]
     async fn set_track_mixer(
         &self,
@@ -8017,8 +8311,9 @@ impl Server {
     }
 
     /// Route a track to a return track: set one send level (0.0-1.0) by
-    /// the return's name ("Reverb"), its letter ("A") or its index. Call
-    /// get_returns first to see what returns exist.
+    /// the return's name ("Reverb"), its letter ("A") or its index. The
+    /// track is a name or an index. Call get_returns first to see what
+    /// returns exist.
     #[tool(name = "set_send")]
     async fn set_send(&self, Parameters(p): Parameters<SetSendParams>) -> CallToolResult {
         self.run(&SET_SEND, p, set_send_body).await
@@ -8196,7 +8491,8 @@ impl Server {
     /// octave bands, the low-to-high ratio and RMS per bar, with a reading
     /// you can act on. The playhead is confirmed at the starting bar before
     /// recording begins; a take that starts early is discarded and recorded
-    /// again rather than measured. The clip stays on the Capture track so you
+    /// again rather than measured. `start_bar` is a bar number or a
+    /// locator's name. The clip stays on the Capture track so you
     /// can play it; clear_captures removes the track when you are done.
     /// Nothing else in the set changes. One capture at a time; 1–64 bars.
     #[tool(name = "capture_mix")]
@@ -8228,8 +8524,8 @@ impl Server {
         self.run(&RESET_SET, p, reset_set_body).await
     }
 
-    /// Delete a track by index. Later tracks move up by one. Refused while
-    /// a performance runs if the track is playing.
+    /// Delete a track, by name or by index. Later tracks move up by one.
+    /// Refused while a performance runs if the track is playing.
     #[tool(name = "delete_track")]
     async fn delete_track(&self, Parameters(p): Parameters<TrackParams>) -> CallToolResult {
         self.run(&DELETE_TRACK, p, delete_track_body).await
@@ -8685,8 +8981,9 @@ impl Server {
     /// The Arrangement in bars: place a Session clip at a bar (or every N
     /// bars up to a bar), repeat an Arrangement clip after itself, move one
     /// to a bar, delete the clips that start in a bar range, shorten the
-    /// whole arrangement to end at a bar, or list what is there. One round
-    /// trip per track, however many clips.
+    /// whole arrangement to end at a bar, or list what is there. Tracks and
+    /// clips are named or indexed, and every bar is a number or a locator's
+    /// name. One round trip per track, however many clips.
     #[tool(name = "arrange")]
     async fn arrange(
         &self,
@@ -8963,13 +9260,16 @@ mod tests {
         assert_eq!(tools.len(), 105);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
-        let required = schema["required"].as_array().unwrap();
-        assert!(required.iter().any(|r| r == "track_index"));
-        assert!(
-            !required.iter().any(|r| r == "length"),
-            "length has a default"
-        );
-        assert!(!required.iter().any(|r| r == "user_prompt"));
+        let required = schema["required"].as_array().cloned().unwrap_or_default();
+        // The track and the clip are a name or an index, so neither index is
+        // required any more; `length` has always had a default.
+        let properties = schema["properties"].as_object().unwrap();
+        for key in ["track", "track_index", "clip", "clip_index"] {
+            assert!(properties.contains_key(key), "create_clip has no {key}");
+        }
+        for key in ["length", "user_prompt", "track_index", "clip_index"] {
+            assert!(!required.iter().any(|r| r == key), "{key} is required");
+        }
     }
 
     #[test]

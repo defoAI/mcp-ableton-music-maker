@@ -26,14 +26,15 @@ async fn create_clip_names_and_fills_in_one_call() {
     let bridge = FakeBridge::responding(json!({}));
     let server = server_with(bridge.clone());
     let p = CreateClipParams {
-        track_index: 2,
-        clip_index: 0,
+        track_index: Some(2),
+        clip_index: Some(0),
         length: 4.0,
         name: "Kick".into(),
         input: NotesInput {
             steps: steps(&[("36", "x...x...x...x...")]),
             ..Default::default()
         },
+        ..Default::default()
     };
     let r = server
         .run(&tools::CREATE_CLIP, p, tools::create_clip_body)
@@ -55,14 +56,15 @@ async fn create_clip_with_a_bad_pattern_touches_nothing() {
     let bridge = FakeBridge::responding(json!({}));
     let server = server_with(bridge.clone());
     let p = CreateClipParams {
-        track_index: 2,
-        clip_index: 0,
+        track_index: Some(2),
+        clip_index: Some(0),
         length: 4.0,
         name: String::new(),
         input: NotesInput {
             steps: steps(&[("36", "x..?")]),
             ..Default::default()
         },
+        ..Default::default()
     };
     let r = server
         .run(&tools::CREATE_CLIP, p, tools::create_clip_body)
@@ -76,8 +78,8 @@ async fn add_notes_clear_flag_replaces_instead_of_appending() {
     let bridge = FakeBridge::responding(json!({"cleared_count": 12, "clip_name": "Bass"}));
     let server = server_with(bridge.clone());
     let p = AddNotesParams {
-        track_index: 1,
-        clip_index: 0,
+        track_index: Some(1),
+        clip_index: Some(0),
         clear: true,
         propagate_to_arrangement: false,
         input: NotesInput {
@@ -86,6 +88,7 @@ async fn add_notes_clear_flag_replaces_instead_of_appending() {
             until: 16.0,
             ..Default::default()
         },
+        ..Default::default()
     };
     let r = server
         .run(&tools::ADD_NOTES_TO_CLIP, p, tools::add_notes_to_clip_body)
@@ -106,11 +109,12 @@ async fn add_notes_without_any_form_is_an_error_before_live() {
     let bridge = FakeBridge::responding(json!({}));
     let server = server_with(bridge.clone());
     let p = AddNotesParams {
-        track_index: 1,
-        clip_index: 0,
+        track_index: Some(1),
+        clip_index: Some(0),
         clear: false,
         propagate_to_arrangement: false,
         input: NotesInput::default(),
+        ..Default::default()
     };
     let r = server
         .run(&tools::ADD_NOTES_TO_CLIP, p, tools::add_notes_to_clip_body)
@@ -374,4 +378,210 @@ async fn created_track_reports_its_index() {
         text_of(&r)
     );
     assert!(text_of(&r).contains("track_index 6"));
+}
+
+// ── Names instead of numbers (#66) ──────────────────────────────────────────
+
+use mcp_ableton_music_maker::arrange::{arrange_body, ArrangeParams};
+use std::sync::Arc;
+
+fn perf_state() -> Value {
+    json!({
+        "is_playing": false, "tempo": 120.0, "signature_numerator": 4,
+        "signature_denominator": 4, "beat": 0.0, "bar": 1, "beat_in_bar": 1,
+        "clip_trigger_quantization": 4,
+        "tracks": [
+            {"index": 0, "name": "Kick", "playing_slot_index": -1, "slots_with_clips": [0, 1]},
+            {"index": 1, "name": "Pad", "playing_slot_index": -1, "slots_with_clips": []}
+        ],
+        "scenes": [], "cues": [], "events": []
+    })
+}
+
+/// Live's locators, as the generic ops layer reads them: one batch for the
+/// count, then one for the names and times.
+fn with_locators(b: &FakeBridge, marks: &[(&str, f64)]) {
+    let mut named = serde_json::Map::new();
+    for (i, (name, beat)) in marks.iter().enumerate() {
+        named.insert(format!("n{i}"), json!(name));
+        named.insert(format!("t{i}"), json!(beat));
+    }
+    b.script(
+        "run",
+        vec![
+            json!({"cues": marks.iter().map(|(n, _)| json!(n)).collect::<Vec<_>>()}),
+            Value::Object(named),
+        ],
+    );
+}
+
+fn arranging_bridge() -> Arc<FakeBridge> {
+    let b = FakeBridge::responding(json!({}));
+    b.script("get_performance_state", vec![perf_state()]);
+    b.script(
+        "get_track_info",
+        vec![
+            json!({"index": 0, "kind": "track", "name": "Kick", "clip_slots": [
+                {"index": 0, "has_clip": true, "clip": {"name": "Four", "length": 8.0}},
+                {"index": 1, "has_clip": true, "clip": {"name": "Break", "length": 8.0}}
+            ]}),
+        ],
+    );
+    b.script(
+        "get_clip_info",
+        vec![json!({"name": "Four", "length": 8.0})],
+    );
+    b.script(
+        "place_clips",
+        vec![json!({"clip": "Four", "placed": [64.0], "failed": []})],
+    );
+    b
+}
+
+/// #66: inside one call, `arrange` took the track by name and the clip by
+/// integer. Now both are names — and a bar can be a locator the producer
+/// already dropped in the Arrangement.
+#[tokio::test]
+async fn arrange_places_a_clip_by_name_at_a_locator() {
+    let b = arranging_bridge();
+    with_locators(&b, &[("Drop", 64.0), ("Outro", 128.0)]);
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::ARRANGE,
+            ArrangeParams {
+                action: "place".into(),
+                track: Some(json!("Kick")),
+                clip: Some(json!("Break")),
+                at_bar: Some(json!("Drop")),
+                ..Default::default()
+            },
+            arrange_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let sent = b.last("place_clips").expect("place_clips was sent");
+    assert_eq!(sent["track_index"], 0);
+    assert_eq!(sent["clip_index"], 1, "'Break' is slot 1");
+    // Bar 17 in 4/4 is beat 64 — the locator's own time.
+    assert_eq!(sent["times"], json!([64.0]));
+}
+
+/// An unknown locator says what the set does have, and places nothing.
+#[tokio::test]
+async fn an_unknown_locator_lists_the_locators_that_exist() {
+    let b = arranging_bridge();
+    with_locators(&b, &[("Drop", 64.0), ("Outro", 128.0)]);
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::ARRANGE,
+            ArrangeParams {
+                action: "place".into(),
+                track: Some(json!("Kick")),
+                clip: Some(json!(0)),
+                at_bar: Some(json!("Chorus")),
+                ..Default::default()
+            },
+            arrange_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    let text = text_of(&r);
+    assert!(text.contains("no locator named 'Chorus'"), "{text}");
+    assert!(text.contains("'Drop' (bar 17)"), "{text}");
+    assert!(text.contains("'Outro' (bar 33)"), "{text}");
+    assert!(text.contains("create_locator"), "{text}");
+    assert!(!b.commands().contains(&"place_clips".to_string()));
+}
+
+/// A set with no locators says so rather than naming an empty list.
+#[tokio::test]
+async fn a_locator_name_in_a_set_with_none_says_so() {
+    let b = arranging_bridge();
+    b.script("run", vec![json!({"cues": []})]);
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::ARRANGE,
+            ArrangeParams {
+                action: "place".into(),
+                track: Some(json!("Kick")),
+                clip: Some(json!(0)),
+                at_bar: Some(json!("Drop")),
+                ..Default::default()
+            },
+            arrange_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    assert!(text_of(&r).contains("the set has none"), "{}", text_of(&r));
+}
+
+/// The copies of one Session clip share its name, so a name that matches
+/// several Arrangement clips names each with its bars and moves nothing.
+#[tokio::test]
+async fn an_ambiguous_arrangement_clip_name_lists_every_candidate() {
+    let b = arranging_bridge();
+    b.script(
+        "get_arrangement_clips",
+        vec![json!({"track_index": 0, "clips": [
+            {"name": "Four", "start_time": 0.0, "end_time": 8.0},
+            {"name": "Four", "start_time": 8.0, "end_time": 16.0},
+            {"name": "Break", "start_time": 16.0, "end_time": 24.0}
+        ]})],
+    );
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::ARRANGE,
+            ArrangeParams {
+                action: "move".into(),
+                track: Some(json!("Kick")),
+                clip: Some(json!("Four")),
+                at_bar: Some(json!(9.0)),
+                ..Default::default()
+            },
+            arrange_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    let text = text_of(&r);
+    assert!(text.contains("matches 2 Arrangement clips"), "{text}");
+    assert!(text.contains("0 (bars 1–3)"), "{text}");
+    assert!(text.contains("1 (bars 3–5)"), "{text}");
+    assert!(!b
+        .commands()
+        .contains(&"duplicate_arrangement_clip".to_string()));
+}
+
+/// One name, one clip: `move` takes it and the position still works.
+#[tokio::test]
+async fn arrange_moves_an_arrangement_clip_by_name() {
+    let b = arranging_bridge();
+    b.script(
+        "get_arrangement_clips",
+        vec![json!({"track_index": 0, "clips": [
+            {"name": "Four", "start_time": 0.0, "end_time": 8.0},
+            {"name": "Break", "start_time": 8.0, "end_time": 16.0}
+        ]})],
+    );
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::ARRANGE,
+            ArrangeParams {
+                action: "move".into(),
+                track: Some(json!("Kick")),
+                clip: Some(json!("Break")),
+                at_bar: Some(json!(17.0)),
+                ..Default::default()
+            },
+            arrange_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let sent = b.last("delete_arrangement_clips").unwrap();
+    assert_eq!(sent["indices"], json!([1]), "'Break' is position 1");
+    assert!(text_of(&r).contains("Moved 'Break'"), "{}", text_of(&r));
 }

@@ -67,9 +67,10 @@ async fn load_reports_the_device_it_added() {
         .run(
             &tools::LOAD_INSTRUMENT_OR_EFFECT,
             LoadInstrumentParams {
-                track_index: track as i64,
+                track_index: Some(track as i64),
                 uri: "query:Synths#Analog".into(),
                 kind: "track".into(),
+                ..Default::default()
             },
             tools::load_instrument_or_effect_body,
         )
@@ -803,14 +804,15 @@ async fn add_notes_can_refresh_arrangement_copies() {
     bridge.clear();
 
     let p = tools::AddNotesParams {
-        track_index: track as i64,
-        clip_index: 0,
+        track_index: Some(track as i64),
+        clip_index: Some(0),
         clear: true,
         propagate_to_arrangement: true,
         input: NotesInput {
             notes_csv: "36,0,1,100".into(),
             ..Default::default()
         },
+        ..Default::default()
     };
     let r = server
         .run(&tools::ADD_NOTES_TO_CLIP, p, tools::add_notes_to_clip_body)
@@ -1376,4 +1378,124 @@ fn five_track_song() -> BuildSongParams {
         })
         .collect();
     p
+}
+
+// ── Names instead of numbers (#66) ──────────────────────────────────────────
+
+/// #66: the producer who deleted four default tracks should not be carrying
+/// an index map. Against a real set: load by name, and read the device back
+/// off the track that name meant.
+#[tokio::test]
+async fn load_instrument_or_effect_takes_a_track_name() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    set.build(&[
+        ("Pad", "midi", ""),
+        ("Keys", "midi", ""),
+        ("Sub", "midi", ""),
+    ]);
+    let sub = set.track_index("Sub").expect("the set has a Sub track");
+
+    let r = server
+        .run(
+            &tools::LOAD_INSTRUMENT_OR_EFFECT,
+            LoadInstrumentParams {
+                track: Some(json!("Sub")),
+                uri: "query:Synths#Analog".into(),
+                kind: "track".into(),
+                ..Default::default()
+            },
+            tools::load_instrument_or_effect_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    assert!(
+        set.devices(sub).iter().any(|d| d.contains("Analog")),
+        "the Analog landed on Sub: {:?}",
+        set.devices(sub)
+    );
+    assert!(
+        text_of(&r).contains("'Sub'"),
+        "the reply names the track the name meant: {}",
+        text_of(&r)
+    );
+}
+
+/// Deleting by name is the call that most wants one: an index off by one
+/// cuts the wrong track, and nothing undoes that.
+#[tokio::test]
+async fn delete_track_takes_a_track_name() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    set.build(&[
+        ("Pad", "midi", ""),
+        ("Keys", "midi", ""),
+        ("Sub", "midi", ""),
+    ]);
+
+    let r = server
+        .run(
+            &tools::DELETE_TRACK,
+            tools::TrackParams {
+                track: Some(json!("Keys")),
+                ..Default::default()
+            },
+            tools::delete_track_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    let names = set.track_names();
+    assert!(!names.contains(&"Keys".to_string()), "{names:?}");
+    assert!(names.contains(&"Pad".to_string()), "{names:?}");
+    assert!(names.contains(&"Sub".to_string()), "{names:?}");
+}
+
+/// A name nothing answers to deletes nothing and says what is there.
+#[tokio::test]
+async fn delete_track_refuses_an_unknown_name_without_deleting() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    set.build(&[("Pad", "midi", ""), ("Keys", "midi", "")]);
+    let before = set.track_count();
+
+    let r = server
+        .run(
+            &tools::DELETE_TRACK,
+            tools::TrackParams {
+                track: Some(json!("Bells")),
+                ..Default::default()
+            },
+            tools::delete_track_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    assert!(
+        text_of(&r).contains("no track named 'Bells'"),
+        "{}",
+        text_of(&r)
+    );
+    assert_eq!(set.track_count(), before);
+}
+
+/// The master is not a track to delete, and saying so beats deleting track 0.
+#[tokio::test]
+async fn delete_track_refuses_the_master() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    set.build(&[("Pad", "midi", ""), ("Keys", "midi", "")]);
+    let before = set.track_count();
+
+    let r = server
+        .run(
+            &tools::DELETE_TRACK,
+            tools::TrackParams {
+                track: Some(json!("master")),
+                ..Default::default()
+            },
+            tools::delete_track_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    assert!(text_of(&r).contains("master"), "{}", text_of(&r));
+    assert_eq!(set.track_count(), before);
 }

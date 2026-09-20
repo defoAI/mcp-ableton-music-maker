@@ -118,6 +118,16 @@ impl FakeBridge {
     pub fn commands(&self) -> Vec<String> {
         self.sent().into_iter().map(|(c, _)| c).collect()
     }
+
+    /// The params of the last `command`, if it was sent — the same reader
+    /// [`RecordingBridge`] gives, so a test reads either double the same way.
+    pub fn last(&self, command: &str) -> Option<Value> {
+        self.sent()
+            .into_iter()
+            .rev()
+            .find(|(c, _)| c == command)
+            .map(|(_, p)| p)
+    }
 }
 
 impl LiveBridge for FakeBridge {
