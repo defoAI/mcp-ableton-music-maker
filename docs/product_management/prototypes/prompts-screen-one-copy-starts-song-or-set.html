@@ -1,0 +1,537 @@
+<title>Prompts Screen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground: #E4E2DD;
+    --win: #FFFFFF;
+    --side: #F2F1EE;
+    --side-edge: #DCDAD4;
+    --panel: #F7F6F3;
+    --line: #E3E1DB;
+    --line-strong: #CFCCC4;
+    --ink: #1D1C1A;
+    --ink-2: #5C5A55;
+    --ink-3: #8C8983;
+    --accent: #0A7AFF;
+    --accent-ink: #FFFFFF;
+    --live: #E39B21;
+    --live-soft: #FBEFD8;
+    --good: #2FB344;
+    --good-soft: #E3F5E6;
+    --warn: #F08A00;
+    --warn-soft: #FDEEDC;
+    --bad: #E5372B;
+    --led-off: #C9C6BF;
+    --sel: #E7EFFB;
+    --shadow: 0 18px 50px rgba(30, 25, 10, .18), 0 1px 0 rgba(0,0,0,.05);
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #141311;
+      --win: #1B1A18;
+      --side: #262523;
+      --side-edge: #34322E;
+      --panel: #232220;
+      --line: #34322E;
+      --line-strong: #4A4740;
+      --ink: #EDEBE6;
+      --ink-2: #B3B0A8;
+      --ink-3: #7E7B74;
+      --accent: #3D96FF;
+      --accent-ink: #0B1420;
+      --live: #EBA83A;
+      --live-soft: #3B2C14;
+      --good: #4CC95F;
+      --good-soft: #1E3322;
+      --warn: #F5A030;
+      --warn-soft: #3B2C14;
+      --bad: #F25A4F;
+      --led-off: #4A4740;
+      --sel: #253549;
+      --shadow: 0 18px 50px rgba(0, 0, 0, .55), 0 1px 0 rgba(255,255,255,.03);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #141311; --win: #1B1A18; --side: #262523; --side-edge: #34322E; --panel: #232220;
+    --line: #34322E; --line-strong: #4A4740; --ink: #EDEBE6; --ink-2: #B3B0A8; --ink-3: #7E7B74;
+    --accent: #3D96FF; --accent-ink: #0B1420; --live: #EBA83A; --live-soft: #3B2C14;
+    --good: #4CC95F; --good-soft: #1E3322; --warn: #F5A030; --warn-soft: #3B2C14; --bad: #F25A4F;
+    --led-off: #4A4740; --sel: #253549;
+    --shadow: 0 18px 50px rgba(0, 0, 0, .55), 0 1px 0 rgba(255,255,255,.03);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 13px/1.45 var(--ui); -webkit-font-smoothing: antialiased; padding: 24px 16px 60px; }
+  h1, h2, h3 { margin: 0; font-weight: 600; }
+  p { margin: 0; }
+  button { font: inherit; color: inherit; }
+  a { color: var(--accent); }
+  .mono { font-family: var(--mono); font-size: 12px; }
+
+  .stage { max-width: 1060px; margin: 0 auto; display: grid; gap: 18px; }
+  .stagebar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; color: var(--ink-2); }
+  .stagebar .name { font-weight: 600; color: var(--ink); font-size: 15px; }
+  .stagebar label { display: inline-flex; align-items: center; gap: 6px; }
+  .stagebar select, .stagebar .ghost { font: inherit; color: var(--ink); background: var(--win); border: 1px solid var(--line-strong); border-radius: 7px; padding: 4px 8px; }
+  .stagebar .ghost { cursor: pointer; }
+  .stagebar .ghost[aria-pressed="true"] { background: var(--sel); border-color: var(--accent); }
+
+  /* ---- the window ---- */
+  .win { background: var(--win); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+  .app { display: grid; grid-template-columns: 208px 1fr; min-height: 640px; }
+  .sidebar { background: var(--side); border-right: 1px solid var(--side-edge); padding: 0 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+  .traffic { height: 46px; display: flex; align-items: center; gap: 8px; padding-left: 4px; }
+  .traffic i { width: 11px; height: 11px; border-radius: 50%; background: var(--led-off); display: block; }
+  .traffic i:nth-child(1) { background: #FF5F57; } .traffic i:nth-child(2) { background: #FEBC2E; } .traffic i:nth-child(3) { background: #28C840; }
+  .nav { display: grid; gap: 2px; }
+  .nav button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; padding: 6px 9px; background: transparent; border: 0; border-radius: 7px; cursor: pointer; color: var(--ink); }
+  .nav button[aria-current="page"] { background: var(--sel); font-weight: 600; }
+  .nav .glyph { width: 18px; display: grid; place-items: center; color: var(--ink-2); }
+  .nav .badge { margin-left: auto; font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+  .nav .new { margin-left: auto; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  .side-foot { margin-top: auto; padding: 10px 8px 4px; color: var(--ink-3); font-size: 11px; display: grid; gap: 3px; }
+  .led { width: 8px; height: 8px; border-radius: 50%; background: var(--led-off); display: inline-block; vertical-align: middle; margin-right: 5px; }
+  .led.on { background: var(--good); } .led.warn { background: var(--warn); }
+
+  .content { padding: 22px 26px 30px; display: grid; gap: 18px; align-content: start; min-width: 0; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .head h2 { font-size: 20px; letter-spacing: -.01em; }
+  .head .sub { color: var(--ink-2); }
+  .eyebrow { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+
+  .banner { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--line-strong); background: var(--warn-soft); color: var(--ink); }
+  .banner b { font-weight: 600; }
+  .banner .btn { margin-left: auto; }
+
+  .rail { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .card { display: grid; gap: 6px; align-content: start; text-align: left; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); cursor: pointer; min-width: 0; }
+  .card:hover { border-color: var(--line-strong); }
+  .card[aria-pressed="true"] { border-color: var(--accent); background: var(--sel); box-shadow: inset 0 0 0 1px var(--accent); }
+  .card .t { font-weight: 600; font-size: 13.5px; }
+  .card .d { color: var(--ink-2); font-size: 12px; }
+  .card .m { color: var(--ink-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .card:focus-visible, .btn:focus-visible, .nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .detail { border: 1px solid var(--line); border-radius: var(--radius); background: var(--win); overflow: hidden; }
+  .dhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .dhead h3 { font-size: 14px; }
+  .dhead .why { color: var(--ink-2); font-size: 12px; }
+  .dhead .actions { margin-left: auto; display: flex; gap: 8px; }
+  .btn { background: var(--win); border: 1px solid var(--line-strong); border-radius: 7px; padding: 5px 11px; cursor: pointer; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .btn.small { padding: 3px 9px; font-size: 12px; }
+  .btn[disabled] { opacity: .5; cursor: not-allowed; }
+
+  .prompt { margin: 0; padding: 14px 16px; max-height: 300px; overflow: auto; font-family: var(--mono); font-size: 11.5px; line-height: 1.65; white-space: pre-wrap; background: var(--panel); border-bottom: 1px solid var(--line); color: var(--ink); user-select: text; }
+  .prompt b { font-weight: 600; color: var(--ink); }
+  .prompt .tool { color: var(--accent); }
+
+  .after { padding: 12px 14px; display: grid; gap: 10px; }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .step { display: grid; gap: 4px; align-content: start; padding: 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
+  .step .n { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 700; }
+  .step .s { font-size: 12px; color: var(--ink-2); }
+  .chiprow { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 5px; background: var(--win); border: 1px solid var(--line-strong); color: var(--ink-2); }
+  .dfoot { padding: 9px 14px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 11.5px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .path { font-family: var(--mono); font-size: 11px; color: var(--ink-2); }
+
+  .toast { position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 14px); background: var(--ink); color: var(--win); padding: 8px 14px; border-radius: 9px; font-size: 12.5px; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---- notes ---- */
+  .notes { background: var(--win); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; display: grid; gap: 16px; }
+  .notes h2 { font-size: 15px; }
+  .notes h3 { font-size: 12.5px; }
+  .notes ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 5px; color: var(--ink-2); }
+  .notes li b { color: var(--ink); font-weight: 600; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .q { border-left: 2px solid var(--live); padding-left: 10px; }
+  .q p { color: var(--ink-2); margin-top: 3px; }
+
+  @media (max-width: 820px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar { border-right: 0; border-bottom: 1px solid var(--side-edge); }
+    .nav { grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; }
+    .nav .new, .nav .badge { display: none; }
+    .side-foot { display: none; }
+    .rail, .steps, .cols { grid-template-columns: 1fr; }
+    .content { padding: 18px 16px 24px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="stage">
+
+  <div class="stagebar">
+    <span class="name">Prompts — copy one into Claude</span>
+    <label for="sim">Simulate
+      <select id="sim">
+        <option value="ready">Claude connected, Live open</option>
+        <option value="setup">Setup not finished</option>
+        <option value="nolive">Live not running</option>
+      </select>
+    </label>
+    <button class="ghost" id="themetoggle" aria-pressed="false">Dark</button>
+    <span style="color:var(--ink-3)">Prototype — real copy, fake status. Not the implementation.</span>
+  </div>
+
+  <div class="win">
+    <div class="app">
+      <aside class="sidebar">
+        <div class="traffic"><i></i><i></i><i></i></div>
+        <nav class="nav" aria-label="Sections">
+          <button type="button"><span class="glyph">◉</span>Overview</button>
+          <button type="button"><span class="glyph">≡</span>Activity</button>
+          <button type="button"><span class="glyph">∿</span>Listen</button>
+          <button type="button" aria-current="page"><span class="glyph">❝</span>Prompts <span class="new">new</span></button>
+          <button type="button"><span class="glyph">⇩</span>Setup <span class="badge" id="setupbadge" hidden>needs you</span></button>
+          <button type="button"><span class="glyph">⚙</span>Settings</button>
+        </nav>
+        <div class="side-foot" id="sidefoot"></div>
+      </aside>
+
+      <main class="content">
+        <div class="head">
+          <h2>Prompts</h2>
+          <span class="sub">Copy one, paste it into Claude. It asks you the rest.</span>
+        </div>
+
+        <div class="banner" id="banner" hidden></div>
+
+        <div>
+          <div class="eyebrow" style="margin-bottom:8px">Pick where you are</div>
+          <div class="rail" id="rail"></div>
+        </div>
+
+        <div class="detail">
+          <div class="dhead">
+            <h3 id="d-title">—</h3>
+            <span class="why" id="d-why"></span>
+            <span class="actions">
+              <button class="btn small" type="button" id="d-open">Open file</button>
+              <button class="btn small primary" type="button" id="d-copy">Copy prompt</button>
+            </span>
+          </div>
+          <pre class="prompt" id="d-text" tabindex="0"></pre>
+          <div class="after">
+            <div class="eyebrow">What happens after you paste</div>
+            <div class="steps" id="d-steps"></div>
+          </div>
+          <div class="dfoot">
+            <span>This text lives in <span class="path" id="d-path"></span> — the app ships the same file the repo does.</span>
+            <span style="margin-left:auto" id="d-len"></span>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h2>Design notes</h2>
+    <div class="cols">
+      <div>
+        <h3>What the screen is for</h3>
+        <ul>
+          <li>A producer who has just finished Setup has the tools connected and <b>no idea what to say</b>. The client shows a list of 105 tools; the server's instructions are handed to the model, not to the person. This screen is the person's half.</li>
+          <li>Every prompt is <b>finished text</b>. No fields to fill in: copy, paste, and Claude runs the interview in chat where the producer can answer loosely ("something like Burial but faster").</li>
+          <li>Each prompt carries three things the producer would never think to write: the <b>order of operations</b> (key before notes, dry_run before build, capture_mix before claiming it sounds right), the <b>rules Live imposes</b> (launch on the bar, Cmd+S is the producer's, a fresh set sits in C Major), and <b>how to talk</b> (two lines per move, play it, ask keep-or-change).</li>
+          <li>The four cards are the four states a producer is actually in when they open the app: nothing yet, a pile of half-finished material, one sample they love, or a gig tonight.</li>
+          <li>Two of them are <b>loops, not recipes</b>. <b>Make a song</b> does not stop at a built set: it plays each section back, changes what the producer reacts to, measures again, asks again — and is told never to call the mix finished. <b>Prepare a set</b> spends most of its text on what happens <em>while the music runs</em>: build the next section out of the one looping now, queue it ahead of the playhead, and never touch a clip that is sounding this phrase.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Decisions taken into this mock</h3>
+        <ul>
+          <li><b>Static text, Claude asks.</b> The app never asks for genre, BPM or length — the prompt tells Claude to ask, with a default offered for each so the producer can just say "go".</li>
+          <li><b>One markdown file per prompt in the repo</b>, embedded in the app at build time. A PR can review the wording; a Claude Code or Cursor user reads the same file without the Mac app.</li>
+          <li><b>The screen knows the state of the chain.</b> Copy still works when Live is closed — the producer may be preparing on the train — but the banner says what will fail and links to Setup instead of letting Claude find out.</li>
+          <li><b>Copy is the only action.</b> No "send to Claude" button: the server is started by the client, the app never holds the conversation. Pretending otherwise would be the one dishonest control on the screen.</li>
+          <li><b>Every tool name in the text is a real one</b>, spelled as the model will see it (<span class="mono">capture_mix</span>, <span class="mono">adv_keep_track_playing</span>). A prompt that names a tool that does not exist is worse than no prompt.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2>Open questions for this review</h2>
+    <div class="cols">
+      <div class="q">
+        <b>1. Does the performance prompt belong on this screen at all, or on the Overview when a song exists?</b>
+        <p>Preparing a set is the one thing a producer does <em>after</em> they have material. A card that is useless on day one may be better surfaced where the app already knows there are sections.</p>
+      </div>
+      <div class="q">
+        <b>2. Should a copied prompt show up in Activity?</b>
+        <p>The app would be recording something the producer did in the app, not a tool call. Leaning no: the activity log is the record of what reached Live, and widening it needs a TERMS.md line.</p>
+      </div>
+      <div class="q">
+        <b>3. Do the prompts name the client?</b>
+        <p>"Paste into Claude Desktop" is clearer, but the same text is pasted into Claude Code and Cursor. Currently the text names no client and the screen says "into Claude".</p>
+      </div>
+      <div class="q">
+        <b>4. How does a prompt stay true when a tool changes?</b>
+        <p>These name real tools and real workflow. If <span class="mono">feel</span> gains a mode or <span class="mono">play_song</span> changes its record question, the prompt is stale and nothing fails. Proposal: a test that every tool name in <span class="path">prompts/*.md</span> exists in the server's tool list.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+
+  const PROMPTS = [
+    {
+      id: 'song',
+      title: 'Make a song from nothing',
+      card: 'An empty set, and a track at the end of it.',
+      meta: '4 questions, then it keeps refining · make-a-song.md',
+      why: 'For an empty set, or a new idea in an old one.',
+      file: 'prompts/make-a-song.md',
+      steps: [
+        ['It looks', 'Reads the set and the instruments this Live actually has, and says in one line what is already there.', ['get_context', 'adv_get_library_status']],
+        ['It asks you', 'Style or a reference, mood, length, anything that must be in it — with a default for each, so "go" is a valid answer.', []],
+        ['It builds', 'Key and tempo first, then the whole set in one validated document — shown to you as a plan before a single command reaches Live.', ['set_key', 'set_tempo', 'build_song']],
+        ['It refines until you stop it', 'Section by section: change, play it, measure it again, ask you. It never declares the mix finished — you do.', ['shape_sound', 'feel', 'set_track_mixer', 'capture_mix']],
+      ],
+      text: `You are producing in my open Ableton Live set through the AbletonMusicMaker tools. Live is in front of me and I hear everything you do.
+
+Before you write a note:
+1. Call get_context. Tell me in one line what is already in this set.
+2. Call adv_get_library_status, so you only choose instruments this Live actually has.
+3. Then ask me what to make — one short round, not an interview: the style or a reference track, the mood, how long it should be, and anything that must be in it. Offer a default for each so I can just say "go".
+
+Once I have answered:
+- set_key first. A fresh Live 12 set sits in C Major and will bend every note you write. Then set_tempo.
+- Build the whole thing in one build_song document: the sections as scene rows with their bar lengths (intro, verse, drop, break, outro — whatever the style wants), the tracks with instruments in plain words, and the clips as step strings, notes_csv or patterns. Run it with dry_run: true first and show me the plan in a few lines. Then run it for real.
+- Shape it: shape_sound for the sounds (plain words like "darker" or "more attack", or any parameter by name), feel for swing, humanize and groove, set_track_mixer and set_send in dB for the balance.
+- Then hear it, do not assume it: capture_mix over the busiest section and read peak, RMS per bar and the octave balance back to me. Fix what it tells you, capture again to prove the fix, then clear_captures.
+- Arrange it: set_song for a setlist I can play, or arrange to lay it along the timeline in bars with create_locator on each part.
+
+Then refine it with me, and keep going until I say it is done. The first version is a draft, not the delivery:
+- Play me one section at a time and ask "keep or change?". Take my words literally ("the drums are too polite") and say what you are changing before you change it.
+- Keep every change to one undo step where you can (feel takes undo: true), so anything can go back.
+- After each round, capture_mix that section again and tell me what actually moved: peak, RMS per bar, the octave balance. If a fix did not show up in the numbers, say so instead of claiming it worked.
+- Once the sections are right, capture the whole song end to end and check it holds together: the loud section against the quiet one, the low end across the arrangement, any bar that clips.
+- Then ask me whether the mix is where I want it. Do not tell me it is finished — that is mine to say. Keep the loop running (change, play, measure, ask) until I say we are done. Then clear_captures and tell me to press Cmd+S.
+
+How I want you to work:
+- Work in whole sections. Two or three lines per move — no essays, no tool transcripts.
+- Play me things as you go and ask "keep or change?" instead of building in silence for ten minutes.
+- Never assume a sound exists. search_browser first.
+- Live's API cannot save my set. When we have something I like, tell me once to press Cmd+S.
+- If Live refuses something, say what it refused and offer the next move. Do not retry the same call.
+
+Start with get_context now, then ask me what we are making.`,
+    },
+    {
+      id: 'perform',
+      title: 'Prepare a set I can perform',
+      card: 'Sections and a setlist, then it drives — writing the next part while this one plays.',
+      meta: 'Never goes silent · prepare-a-performance-set.md',
+      why: 'For a set that has to keep running, and keep changing.',
+      file: 'prompts/prepare-a-performance-set.md',
+      steps: [
+        ['It asks, then starts', 'Length, material, order, whether you are playing — then three or four sections, a setlist, and the set is running.', ['get_context', 'make_section', 'set_song', 'play_song']],
+        ['It writes while it plays', 'The next section is built out of the one looping now and queued ahead of you, announced in a line before it ever sounds.', ['make_section', 'add_to_song', 'feel']],
+        ['It steers on the bar', 'Phrase ends, holds, jumps back — and it never lets the set fall silent or grind round the same loop.', ['go', 'hold_section', 'jump_to', 'end_performance']],
+      ],
+      text: `You are running my open Ableton Live set as a live instrument, through the AbletonMusicMaker tools. We prepare just enough to start, then you drive the set and keep building it while it plays. The music does not stop.
+
+Before anything:
+1. get_context. Tell me what is here: the tracks, the clips, and any sections or setlist that already exist.
+2. Ask me: how long the set should run, which material to start from, the order I have in mind, and whether I am playing over the top. Offer me an order from what is already there so I can just say "go".
+
+Getting it started — three or four sections is enough, do not over-prepare:
+- make_section for each part, named for what it is, with its phrase length in bars ("Drop · 16"). A section is one scene row: every track that should sound in it needs a clip in that row, and a track with no clip there stops when the section fires. Tell me which tracks drop out where.
+- set_song writes the order. Leave the repeat count off anywhere I might stretch — that entry loops until I say go. Give a count only where the section should move on by itself.
+- play_song starts it. If the Arrangement already holds something, play_song stops and asks whether to keep the take after it, replace it, or not record at all. Bring that question to me. Never choose for me, and never pass replace unless I said replace.
+
+Then keep it going. This is the job, not the preparation:
+- While a section loops, build the next one. Do not wait to be asked. make_section from the playing row with a change per track (a variation, a transpose, "empty" to strip it back), or write new clips for a track that is not sounding — then add_to_song so it is waiting in the setlist ahead of us.
+- Build it in the open, one line at a time: what you are making and where it lands ("making a stripped break after this — drums out, pad and vocal only"). I will tell you to keep it or kill it before it ever plays.
+- Always have at least one unplayed section ready. If we are two bars from the end of a loop and nothing new is ready, say so and hold_section rather than letting the set grind round again.
+- Keep what is already playing moving too: feel (a variation, a retime, more swing) on a clip that is about to come round again, a filter move with shape_sound, a send lifted before the drop.
+- Never let it go silent, and never edit a clip that is sounding this phrase — make the change on a copy and fire that instead.
+
+Steering, while all of that runs:
+- go lands at the end of the phrase; next_section, previous_section, hold_section, back and jump_to do the rest. Use at: "next_bar" only when I say "now" — it cuts the phrase short.
+- Everything lands on a bar line. Plan two bars ahead; never try to hit a beat with a tool call. For anything timed, adv_cue it at a bar number.
+- Read the clock line and the level line on every reply. If a jump warns you a section ran hot, pull it down with set_track_mixer before it plays, not after.
+- If I add a layer mid-set that has to survive the next section, adv_keep_track_playing it.
+- end_performance when I say we are done, and tell me which bars of the Arrangement the take covers.
+
+How I want you to work:
+- One line per move while we are playing. I am looking at Live, not at chat.
+- Whenever anything changes, tell me the bar we are on, what is queued, and what you are building next.
+- Do not stop playback, change tempo or delete a playing clip mid-set unless I ask. The tools will refuse anyway — take the on-the-bar alternative and tell me.
+
+Start with get_context, then ask me about the set.`,
+    },
+    {
+      id: 'finish',
+      title: 'Finish what I have already got',
+      card: 'Half-finished material, honestly assessed and taken to done.',
+      meta: 'Touches nothing without asking · file: finish-what-i-have.md',
+      why: 'For the set that has been open for three weeks.',
+      file: 'prompts/finish-what-i-have.md',
+      steps: [
+        ['It looks', 'Every track, clip, section and the key and tempo — then says what is finished, what is a sketch, and what clashes.', ['get_context']],
+        ['It asks you', 'What "finished" means for this one, and what is untouchable.', []],
+        ['It fills, arranges, measures', 'Holes first, then the timeline in bars, then a mix fixed against numbers — and it says what it did not touch.', ['create_clip', 'feel', 'arrange', 'create_locator', 'capture_mix', 'set_track_mixer']],
+      ],
+      text: `You are working in my open Ableton Live set through the AbletonMusicMaker tools. There is already material here. I want it finished, not restarted.
+
+First, look, and be honest:
+1. get_context: every track and its devices, the clips in every slot, the sections and the setlist, the key and the tempo.
+2. Tell me in a short list what is here and what state it is in — which parts are finished, which are sketches, what is empty, and what clashes (two basses, a track with no clip in half the sections).
+3. Then ask me what "finished" means for this one: an arrangement I can bounce, a loop to keep, a demo to send, or something to perform. And ask what is untouchable.
+
+Then, in this order, checking with me between stages:
+- Fix the foundation: set_key if the set is still sitting in Live's default C Major, set_tempo if the material disagrees with it.
+- Fill the holes. A section that needs a part gets one — create_clip and add_notes_to_clip, or make_section from what is playing. Reach for feel (swing, humanize, groove) before you add more notes: a stiff part usually needs feel, not more parts.
+- Arrange it: arrange places the Session clips along the timeline in bars, and create_locator marks each part so I can find it in Live.
+- Then mix with measurements, not adjectives: capture_mix over 8 bars of the loudest section, read peak, RMS per bar, crest and the octave bands back to me, fix what it shows with set_track_mixer in dB, set_send and shape_sound, and capture again to prove the fix. clear_captures when we are done.
+- Finally, tell me what you did not touch, and why.
+
+How I want you to work:
+- Do not rewrite my parts. If a part is wrong, say so and ask before you replace it.
+- Keep every change to one undo step where you can (feel takes undo: true), so I can put anything back.
+- Two or three lines per stage. Let me hear it and say keep or change.
+- Live's API cannot save my set: when it is where I want it, tell me once to press Cmd+S. export_set only if I ask for a copy of the document.
+
+Start with get_context and tell me what you found.`,
+    },
+    {
+      id: 'sample',
+      title: 'Build around my sample or idea',
+      card: 'One loop, one recording, one idea — and a track that serves it.',
+      meta: 'Nothing is copied or moved · file: build-around-my-idea.md',
+      why: 'For the thing you already love and cannot get past.',
+      file: 'prompts/build-around-my-idea.md',
+      steps: [
+        ['It looks, then asks', 'Reads the set, then offers the three ways in: a folder on this Mac, Live’s browser, or you playing it.', ['get_context', 'adv_sample_folders', 'search_browser', 'record_clip']],
+        ['It places the source', 'Warped and looped to whole bars, in a section or at a bar. The file is referenced where it lives.', ['add_sample']],
+        ['It builds around it', 'Matches key and tempo to the source, adds only parts that earn their place, and checks the two play together.', ['set_key', 'build_song', 'capture_mix']],
+      ],
+      text: `You are producing in my open Ableton Live set through the AbletonMusicMaker tools. I already have something — a sample, a loop, a few bars I played, or an idea I can only describe — and I want a track built around it.
+
+First:
+1. get_context. Tell me what is in the set, including any audio tracks and clips.
+2. Ask me what we are building on, and give me the three ways in:
+   - a file on this Mac: I give you the folder, you add it with adv_sample_folders, then search_browser with category "samples" to find the file;
+   - something in Live's browser: search_browser finds it;
+   - me playing it: record_clip arms the track and records me for the bars I name.
+   Then ask what it should become — style, mood, length — and whether the source is the hook, the drums, or just the mood.
+
+Then:
+- Put the source in first with add_sample: into a section so it plays with the song, or at a bar in the Arrangement. It is warped and looped to whole bars, and the file is only referenced — nothing of mine is copied, moved or uploaded.
+- Read it before you write around it. Tell me the tempo it sits at, the key you hear, and where it loops. Set the set's key with set_key and the tempo with set_tempo to match it, so everything you add after is in the same world.
+- Then build around it with build_song: only the parts that serve the source. Say in one line what each track is for ("sub under the vocal", "hats filling the gaps").
+- Keep checking that the two actually play together: capture_mix over the section holding the source and tell me whether it is buried or fighting the low end, then fix it with set_track_mixer, shape_sound or set_send.
+
+How I want you to work:
+- The source is the star. Every part you add earns its place beside it or comes out.
+- Two or three lines per move. Play it to me and ask "keep or change?".
+- Never assume a sample or an instrument is there — search first.
+- Cmd+S is mine. Tell me once when there is something worth saving.
+
+Start with get_context, then ask me what we are building on.`,
+    },
+  ];
+
+  const STATES = {
+    ready: {
+      foot: ['<span class="led on"></span>Claude Desktop connected', 'Live 12.4.6 · script 10 · 94 BPM'],
+      banner: null,
+      badge: false,
+    },
+    setup: {
+      foot: ['<span class="led warn"></span>No client connected', 'Live 12.4.6 · script 10'],
+      badge: true,
+      banner: ['warn', '<b>Claude cannot reach Live yet.</b> Setup has two steps left, so a pasted prompt will fail on its first call. Copying still works if you are getting ready.', 'Finish setup'],
+    },
+    nolive: {
+      foot: ['<span class="led on"></span>Claude Desktop connected', '<span class="led warn"></span>Live is not running'],
+      badge: false,
+      banner: ['warn', '<b>Live is not open.</b> Every prompt here starts with get_context, which needs a running set. Open Live with the control surface selected, then paste.', 'Open Live'],
+    },
+  };
+
+  const state = { sim: 'ready', pick: 'song' };
+
+  function renderRail() {
+    $('#rail').innerHTML = PROMPTS.map((p) => `
+      <button class="card" type="button" data-pick="${p.id}" aria-pressed="${p.id === state.pick}">
+        <span class="t">${p.title}</span>
+        <span class="d">${p.card}</span>
+        <span class="m">${p.meta}</span>
+      </button>`).join('');
+  }
+
+  function renderDetail() {
+    const p = PROMPTS.find((x) => x.id === state.pick);
+    $('#d-title').textContent = p.title;
+    $('#d-why').textContent = p.why;
+    $('#d-text').textContent = p.text;
+    $('#d-path').textContent = p.file;
+    const words = p.text.trim().split(/\s+/).length;
+    $('#d-len').textContent = `${words} words · about ${Math.round(words / 0.75 / 100) * 100} tokens of your conversation`;
+    $('#d-steps').innerHTML = p.steps.map(([n, s, tools]) => `
+      <div class="step">
+        <span class="n">${n}</span>
+        <span class="s">${s}</span>
+        ${tools.length ? `<span class="chiprow">${tools.map((t) => `<span class="chip">${t}</span>`).join('')}</span>` : ''}
+      </div>`).join('');
+  }
+
+  function renderState() {
+    const st = STATES[state.sim];
+    $('#sidefoot').innerHTML = st.foot.map((l) => `<span>${l}</span>`).join('');
+    $('#setupbadge').hidden = !st.badge;
+    const b = $('#banner');
+    if (!st.banner) { b.hidden = true; b.innerHTML = ''; return; }
+    const [, text, action] = st.banner;
+    b.hidden = false;
+    b.innerHTML = `<span>${text}</span><button class="btn small" type="button" data-act="goto">${action}</button>`;
+  }
+
+  function toast(msg) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(t._h);
+    t._h = setTimeout(() => t.classList.remove('show'), 2200);
+  }
+
+  document.addEventListener('click', (e) => {
+    const card = e.target.closest('[data-pick]');
+    if (card) { state.pick = card.dataset.pick; renderRail(); renderDetail(); return; }
+    if (e.target.closest('#d-copy')) {
+      const p = PROMPTS.find((x) => x.id === state.pick);
+      const done = () => toast('Copied. Paste it into Claude and answer its questions.');
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(p.text).then(done, () => toast('Copy failed — select the text and copy it'));
+      else toast('Prototype: would copy the prompt');
+      return;
+    }
+    if (e.target.closest('#d-open')) { toast('Prototype: would reveal the markdown file in Finder'); return; }
+    if (e.target.closest('[data-act="goto"]')) { toast('Prototype: would open the Setup screen'); return; }
+    const nav = e.target.closest('.nav button');
+    if (nav && !nav.hasAttribute('aria-current')) toast('Prototype: only the Prompts screen is drawn here');
+  });
+
+  $('#sim').addEventListener('change', (e) => { state.sim = e.target.value; renderState(); });
+  $('#themetoggle').addEventListener('click', (e) => {
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
+    e.currentTarget.setAttribute('aria-pressed', String(!dark));
+    e.currentTarget.textContent = dark ? 'Dark' : 'Light';
+  });
+
+  renderRail(); renderDetail(); renderState();
+})();
+</script>
