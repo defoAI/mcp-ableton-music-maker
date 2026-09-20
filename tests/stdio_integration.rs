@@ -414,7 +414,10 @@ async fn check_reports_live_and_exits_by_script_state() {
         (50.0..500.0).contains(&period),
         "the tick was {period} ms, which is not a tick"
     );
-    assert!(report["tick"]["samples"].as_u64().unwrap_or(0) > 0, "{report}");
+    assert!(
+        report["tick"]["samples"].as_u64().unwrap_or(0) > 0,
+        "{report}"
+    );
     assert_eq!(report["session"]["tempo"], 120.0);
     assert_eq!(report["session"]["track_count"], 4);
 
