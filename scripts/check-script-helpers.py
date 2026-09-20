@@ -116,28 +116,33 @@ def check_display_strings(script):
 
 
 def check_landing(script):
-    """A write Live ignored must be distinguishable from one it took."""
+    """A write Live ignored must be distinguishable from one it took.
+
+    `_write_landing`, not `_landing`: the two shared a name until 1.33.1 and
+    this check was reaching the later definition, which is why nothing here
+    noticed that `_landing()` — the launch-landing bar — had been shadowed.
+    """
     drive = Param("Drive", 0.5, -36.0, 36.0, lambda v: "%.2f dB" % v)
     drive.value = 3.0
-    got = script._landing(drive, 3.0, 3.0)
+    got = script._write_landing(drive, 3.0, 3.0)
     assert got["landed"] and got["asked"] == 3.0 and got["is_enabled"], got
 
     # Live left it where it was: the caller has to be told.
     stuck = Param("Variation", 0.0, 0.0, 1.0, lambda v: "%.0f %%" % (v * 100))
     stuck.is_enabled = False
-    got = script._landing(stuck, 0.35, 0.35)
+    got = script._write_landing(stuck, 0.35, 0.35)
     assert not got["landed"] and not got["is_enabled"], got
 
     # A quantized parameter snapping to its nearest step is not a failure,
     # but it is not what was asked for either.
     grid = Param("Grid", 0.0, 0.0, 1.0, lambda v: "1/%d" % (8 * (int(v * 8) + 1)),
                  ["1/8", "1/16", "1/32"])
-    got = script._landing(grid, 0.25, 0.25)
+    got = script._write_landing(grid, 0.25, 0.25)
     assert not got["landed"] and got["is_quantized"], got
 
     automated = Param("Freq", 0.3, 0.0, 1.0, lambda v: "%.2f" % v)
     automated.automation_state = 1
-    got = script._landing(automated, 0.8, 0.8)
+    got = script._write_landing(automated, 0.8, 0.8)
     assert not got["landed"] and got["automation_state"] == 1, got
     print("a write that did not land says so, and why")
 

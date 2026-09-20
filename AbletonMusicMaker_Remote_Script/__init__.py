@@ -63,7 +63,7 @@ HOST = _configured_host()
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.33.0"
+SCRIPT_VERSION = "1.33.1"
 PROTOCOL_VERSION = 2
 # Where client sockets are read. "main_thread_tick": sockets are non-blocking
 # and drained from the same tick the clock runs on, so a message waits one
@@ -6776,8 +6776,13 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting session snapshot: " + str(e))
             raise
 
-    def _landing(self, param, asked, clamped):
+    def _write_landing(self, param, asked, clamped):
         """What Live did with a write, read back off the parameter itself.
+
+        Named apart from `_landing` (the bar a launch lands on) on purpose:
+        the two shared a name until 1.33.1, and the later definition won, so
+        `fire_clip`, `fire_scene`, `record_clip` and `start_live_capture`
+        all raised TypeError inside Live.
 
         Live has three reasons to ignore or move a write, and a caller that
         is never told which one counts a step that did not happen as a step
@@ -6857,7 +6862,7 @@ class AbletonMCP(ControlSurface):
             items = self._param_items(param)
             if items:
                 out["items"] = items
-            out.update(self._landing(param, target, clamped))
+            out.update(self._write_landing(param, target, clamped))
             return out
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
@@ -6904,7 +6909,7 @@ class AbletonMCP(ControlSurface):
                 items = self._param_items(param)
                 if items:
                     entry["items"] = items
-                entry.update(self._landing(param, asked, new))
+                entry.update(self._write_landing(param, asked, new))
                 out.append(entry)
             return {"track_index": track_index if kind != "master" else 0, "kind": kind,
                     "track_name": "%s" % track.name,

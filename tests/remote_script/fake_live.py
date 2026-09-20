@@ -807,6 +807,8 @@ class ClipSlot(LiveObject):
         self._song = song
         self._track = track
         self._scene = scene
+        self._record_length = None
+        self._launch_quantization = None
         self._clip = None
         self._has_stop_button = True
         self._is_triggered = False
@@ -868,7 +870,29 @@ class ClipSlot(LiveObject):
         self._clip = None
         self._song._touch()
 
-    def fire(self):
+    def fire(self, record_length=None, launch_quantization=None, force_legato=False):
+        """Live 11+: `record_length` fires the slot as a fixed-length
+        recording, `launch_quantization` overrides the global grid for this
+        launch. The script passes both (`_record_clip`, `_start_capture`,
+        `_start_live_capture`), and a model that did not take them made
+        every fixed-length recording read as "needs Live 11 or newer"."""
+        if record_length is not None:
+            self._record_length = float(record_length)
+            self._launch_quantization = launch_quantization
+            if self._clip is None:
+                # Live records what the track carries: MIDI on a MIDI track,
+                # audio on an audio one. The Capture track is audio, which is
+                # the whole point of `start_capture`.
+                if self._track._has_midi_input:
+                    self.create_clip(float(record_length))
+                else:
+                    self._clip = Clip(self._song, self._track, float(record_length),
+                                      midi=False, name="", file_path=None)
+                    self._song._touch()
+            self._clip._is_recording = True
+            self._track._arm = True
+            self._track._fire_clip(self._clip)
+            return
         if self._clip is None:
             # Firing an empty slot stops the track's clip, as in Live.
             self._track._stop_playing()
