@@ -936,6 +936,28 @@ mod protocol_tests {
         assert_eq!(r, json!({"tempo":126}));
     }
 
+    /// The script may answer out of order, so a reply for a later id is held
+    /// rather than dropped. The command it belongs to is then served from the
+    /// inbox: two answers, one round trip, correctly paired.
+    #[test]
+    fn a_reply_held_for_a_later_id_serves_its_own_command() {
+        let port = fake_script(vec![
+            "{\"id\":2,\"status\":\"success\",\"result\":{\"who\":\"second\"}}".into(),
+            "{\"id\":1,\"status\":\"success\",\"result\":{\"who\":\"first\"}}".into(),
+        ]);
+        let conn = AbletonConnection::new("127.0.0.1", port);
+        // Answered in the order asked, not the order sent.
+        assert_eq!(
+            conn.send_command("get_session_info", None).unwrap(),
+            json!({"who": "first"})
+        );
+        // The held one is reused; the fake script writes nothing more.
+        assert_eq!(
+            conn.send_command("get_session_info", None).unwrap(),
+            json!({"who": "second"})
+        );
+    }
+
     #[test]
     fn a_script_before_ids_still_answers() {
         let port = fake_script(vec![

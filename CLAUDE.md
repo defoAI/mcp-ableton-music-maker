@@ -16,6 +16,8 @@ Rust MCP server that lets Claude drive Ableton Live. Two processes:
 ```bash
 cargo test                                   # 17 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, stdio
 python3 scripts/check-script-helpers.py      # the Remote Script's pure helpers, against a stub Live
+scripts/test-remote-script.sh                # the Remote Script's own suite: tick, duplex, sockets, ops, streams, cues
+scripts/live-latency.sh                      # against a running Live: measures the tick, the round trip and every phase
 cd app && npm run dev                        # the Mac app against this checkout (Tauri 2)
 cargo clippy --all-targets -- -D warnings    # CI runs this
 cargo fmt --all
@@ -34,6 +36,7 @@ No Rust toolchain on the machine? Build inside `rust:1-slim-bookworm` with the r
 ```
 src/connection.rs      LiveBridge trait, AbletonConnection (TCP), RealBridge (reconnecting), LiveError
 src/handshake.rs       get_script_info handshake, ScriptInfoCache, per-command capability check
+src/lom.rs             the Live Object Model in Rust: Path (typed, validated), Op, Batch, describe cache — how a capability is written without touching the script
 src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 104 tool bodies and their #[tool] bindings, run() wrapper
 src/activity.rs        the local activity log: one JSON line per tool call, payloads off by default
 src/state.rs           state_dir / activity_dir / sessions_dir — the only places the server writes
@@ -53,6 +56,7 @@ src/transition.rs      a jump's transition (tempo, retime, crossfade, fill, drop
 src/sound.rs           the sound vocabulary: words → rack macros, the per-instrument table, or a parameter name — pure
 src/sets.rs            export_set / import_set: a rebuildable document under state_dir()/sets, written only on request
 src/arrange.rs         the artist-facing tools: arrange (bars), feel (one tool, one undo), set_key, create_return, clear_captures
+tests/remote_script/   the Remote Script's suite (Python, no Live): harness.py stubs _Framework, FakeSurface.tick() drives schedule_message
 tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, samples.rs, local_only.rs, activity.rs, stdio_integration.rs, common/
 docker/                verify-image.sh, Claude Desktop example config
 .github/workflows/ci.yml   fmt, clippy, test, docs facts; the Mac app and its .dmg — both jobs on macOS, nothing on Linux
@@ -79,12 +83,22 @@ docker/                verify-image.sh, Claude Desktop example config
   `#[tool]` method only binds a body to its `ToolSpec` and calls `Server::run`, which writes
   the activity line. Keep it that way so tests can call bodies through `run()` with a
   `FakeBridge`. Failures are `CallToolResult::error`, never JSON-RPC errors.
+- **Reach Live through `run`/`describe` before you add a command.** The script exposes a
+  generic surface (protocol 2, [decision 0010](docs/decisions/0010-the-scripts-contract-is-a-duplex-protocol.md)):
+  `describe(path)` says what this Live has, and `run(ops)` gets, sets and calls along a
+  whitelisted path in one round trip. Build them in `src/lom.rs` with `Path` and `Batch`, and
+  the capability ships in the binary alone — no handler, no `SCRIPT_VERSION` bump, no reinstall,
+  no reselecting the control surface, and it works against every script that already has the
+  generic layer. `cargo run --example new_capability_no_reload` is the proof and the pattern.
+  A new *command* is for what ops cannot express: work that must loop inside one tick, or that
+  needs Live's main thread held across steps.
 - **Every tool checks its command against the script's capabilities** via `require(live, cmd)`.
   Adding a Remote Script command means: handler in the script, name in `SCRIPT_CAPABILITIES`,
   bump `SCRIPT_VERSION`, add it to `tools::ALL_REMOTE_COMMANDS` (a test cross-checks the list),
   then the tool body.
 - **The Remote Script touches Live only from Live's main thread** (decision 0007). The
-  socket thread parses and waits; `_run_on_main` → `_dispatch` runs every command there. A
+  socket is read *on* that thread, on Live's own 100 ms tick, not from a Python thread
+  (`SOCKET_READER`, decision 0010); `_run_on_main` → `_dispatch` runs every command there. A
   handler that loops over tracks, clips or browser items is a generator (`yield None`
   between units, `yield Done(result)` last) so the executor can slice it per tick; never
   call the Live API from the socket thread, never loop for seconds in one task. Every reply

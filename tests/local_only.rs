@@ -108,6 +108,52 @@ fn remote_script_binds_loopback_by_default() {
     assert!(script.contains("bind_host.txt"));
 }
 
+/// The generic layer (`describe` and `run`) lets a client on the loopback
+/// socket walk Live's object model by name. What keeps that from being a way
+/// to run arbitrary Python is that the script has no way to run arbitrary
+/// Python: the refusals are tested in `tests/remote_script`, and here the
+/// source itself is walked for the builtins that would undo them.
+///
+/// `open(` is allowed in exactly one place — reading the two configuration
+/// files beside the script at import time, before any socket exists. A test
+/// rather than a promise: a request can never reach it.
+#[test]
+fn the_scripts_request_path_cannot_run_arbitrary_python() {
+    let script = include_str!("../AbletonMusicMaker_Remote_Script/__init__.py");
+    let mut offenders = Vec::new();
+    // The configuration readers, by name: everything above the socket.
+    let config_readers = ["_configured_host", "_configured_reader"];
+    let mut current_fn = String::new();
+    for (i, line) in script.lines().enumerate() {
+        let code = line.split('#').next().unwrap_or("");
+        if let Some(rest) = code.trim_start().strip_prefix("def ") {
+            current_fn = rest.split('(').next().unwrap_or("").trim().to_string();
+        }
+        for needle in ["eval(", "exec(", "compile(", "__import__", "getattr(__"] {
+            if code.contains(needle) {
+                offenders.push(format!("line {}: {needle} in {current_fn}", i + 1));
+            }
+        }
+        if code.contains("open(") && !config_readers.contains(&current_fn.as_str()) {
+            offenders.push(format!("line {}: open( in {current_fn}", i + 1));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the script's request path must reach Live and nothing else: {offenders:?}"
+    );
+    // And the refusals the generic layer rests on are stated in the source,
+    // so deleting one is a visible change rather than a silent widening.
+    assert!(
+        script.contains("names starting with _ are refused"),
+        "the dunder refusal is gone"
+    );
+    assert!(
+        script.contains("path must start with"),
+        "the root whitelist is gone"
+    );
+}
+
 /// The Remote Script runs inside Live's own interpreter: Python 2.7 on Live
 /// 10, 3.x on 11 and 12. Two things a modern editor reaches for by reflex
 /// would stop it loading on the old one, so the source is checked for them.

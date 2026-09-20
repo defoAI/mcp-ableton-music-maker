@@ -144,3 +144,58 @@ fn activity_can_be_switched_off() {
         },
     );
 }
+
+/// Protocol 2 lets Live push `clock`, `levels`, `changes` and `cue` events on
+/// the same socket the replies come back on. They are not tool calls, and the
+/// log is a record of tool calls: an event never becomes a line, and its
+/// contents — which carry track names and meter readings — never reach disk.
+///
+/// Two things hold that, and both are pinned here rather than promised. A
+/// tool body cannot observe an event at all: `LiveBridge`, the whole of what
+/// a body is given, has one method and it is `send_command`. And the log's
+/// own source has no notion of an event to write.
+#[test]
+fn an_event_stream_leaves_the_activity_log_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    with_env(
+        &[
+            ("ABLETON_MCP_STATE_DIR", Some(dir.path().to_str().unwrap())),
+            ("ABLETON_MCP_ACTIVITY", None),
+            ("ABLETON_MCP_ACTIVITY_PAYLOADS", None),
+        ],
+        || {
+            let bridge = FakeBridge::responding(json!({"tempo": 126.0}));
+            let server = server_with(bridge.clone());
+            assert!(!is_error(&set_tempo(&server, 126.0)));
+
+            let all = lines(dir.path());
+            assert_eq!(all.len(), 1, "one call, one line: {all:?}");
+            let keys: Vec<&str> = all[0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            for key in &keys {
+                assert!(
+                    !key.contains("event")
+                        && !key.contains("clock")
+                        && !key.contains("level")
+                        && !key.contains("cue"),
+                    "an event reached the log as {key:?}"
+                );
+            }
+            let text = serde_json::to_string(&all[0]).unwrap();
+            for word in ["clock", "levels", "changes", "beat_in_bar", "master"] {
+                assert!(!text.contains(word), "{word:?} reached the log: {text}");
+            }
+        },
+    );
+
+    // The log cannot write what it cannot name.
+    let source = include_str!("../src/activity.rs");
+    assert!(
+        !source.contains("event"),
+        "src/activity.rs learned about events; this test is now a real one"
+    );
+}

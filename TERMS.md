@@ -1,6 +1,6 @@
 # MCP Ableton Music Maker — your data
 
-_Last updated: 19 September 2026_
+_Last updated: 20 September 2026_
 
 The software is licensed under [MIT](LICENSE). This page is about data, and it is short
 because there is almost none.
@@ -55,6 +55,27 @@ audio is analysed in memory about thirty times a second — a spectrum, the mast
 range levels and a short waveform — and thrown away. It is never written to disk, never
 sent anywhere, and it stops the moment no window is showing it. The only thing stored is
 where you left the small float window.
+
+## What the server hears from Live
+
+The server and the Remote Script share one connection, and Live can speak on it without
+being asked. The server has to ask first: it subscribes to named channels, and the script
+sends nothing on a channel nobody subscribed to. There are four, and this is all of what
+they carry:
+
+| Channel | What arrives | How often |
+|---|---|---|
+| `clock` | the bar, the beat in the bar, the tempo, whether the transport is playing | while playing, at the rate the server asked for |
+| `levels` | Live's own output meter for each track and the master, on Live's 0-to-1 meter scale | once a bar |
+| `changes` | a track or clip name, a mute, a solo or a count that differs from the last look, with the value before and after | only when something differs |
+| `cue` | that a scheduled step fired, and how late it was | when a step fires |
+
+Two things are worth saying plainly. The script computes `changes` by **reading** the set on
+Live's own tick and comparing it with the previous read — it registers no listener on any
+Live object, which is what makes it safe to run while you work. And none of this is written
+down: events live in memory in the running server, are handed to whatever asked for them,
+and are gone. Nothing in this section reaches the activity log, and nothing leaves your
+machine — see **Nothing is uploaded** above.
 
 ## Library index
 

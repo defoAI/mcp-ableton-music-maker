@@ -14,6 +14,32 @@ Script updates this note in the same PR.** For what the product does see the
 
 ## Two processes, one socket
 
+The socket speaks **protocol 2** ([decision 0010](../decisions/0010-the-scripts-contract-is-a-duplex-protocol.md)):
+a request may carry an `id` and its reply carries it back, documents are
+newline-delimited or concatenated, and the script pushes events nobody asked
+for on the same socket. The script's clients are read **on Live's main-thread
+tick**, which is 100.0 ms — jitter 9.6 ms, measured over 600 samples by the
+script itself and reported in `get_script_info` and `--check`. That is the
+whole latency budget: a round trip is one tick, whether or not it touches
+Live's API. Before the reader moved onto the tick it was 200 ms, or 400 ms
+with an API touch, because a message waited once to be read by a Python thread
+and again to reach the main thread.
+
+A server from before protocol 2 sends no ids; the script answers those in
+order, without ids, exactly as it always did — and gets the faster round trip
+anyway, because the speed is the script's, not the server's.
+
+The socket speaks **protocol 2** ([decision 0010](../decisions/0010-the-scripts-contract-is-a-duplex-protocol.md)):
+a request may carry an `id` and its reply carries it back, documents are
+newline-delimited or concatenated, and the script pushes events nobody asked
+for on the same socket. The script's clients are read **on Live's main-thread
+tick**, which is 100.0 ms (jitter 9.6 ms, measured over 600 samples and
+reported in `get_script_info`). That is the whole latency budget: a round trip
+is one tick, 100 ms, whether or not it touches Live's API. Before the reader
+moved onto the tick it was 200 ms, or 400 ms with an API touch, because a
+message waited once to be read by a Python thread and again to reach the main
+thread.
+
 ```
 MCP client ──stdio (JSON-RPC)──▶ ableton-music-maker ──TCP 9877 (JSON)──▶ Ableton Live
 (Claude Desktop, Claude Code,    Rust binary, runs anywhere          AbletonMusicMaker Remote Script,

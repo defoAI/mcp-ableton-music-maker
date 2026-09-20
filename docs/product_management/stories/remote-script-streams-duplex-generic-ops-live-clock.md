@@ -29,7 +29,7 @@ Three things, all measured against Live 12 Suite on macOS 26.6 on 2026-09-20 wit
 
 ### Current State
 - The script (`AbletonMusicMaker_Remote_Script/__init__.py`) accepts on a background thread (`start_server`, `_server_thread`) and reads each client on its own background thread (`_handle_client`): one JSON object per line, one request in flight, replies in order, no message ids. The command is handed to Live's main thread through `schedule_message` and run in slices (`_run_on_main`, `SLICE_MS_PLAYING`, `SLICE_MS_STOPPED`, `SLOW_SLICE_MS`); every reply carries `main_ms`.
-- The cue engine (`_schedule_cue`, `_perf_tick`, `_arm_perf_tick`) and the per-bar level peaks (`_level_tick`) run on the main-thread tick, re-armed with `schedule_message(1, …)`. **The tick's period is not measured or recorded anywhere.**
+- The cue engine (`_schedule_cue`, `_perf_tick`, `_arm_perf_tick`) and the per-bar level peaks (`_level_tick`) run on the main-thread tick, re-armed with `schedule_message(1, …)`. **The tick's period is 100.0 ms** — measured by phase 0 against Live 12.4.6 on 2026-09-20: jitter 9.0 ms, worst 112.0 ms, over 181 consecutive samples. This is the number phase 0 existed to find, and it decided phase 1: at 100 ms the tick is twice as fast as the 200 ms thread quantum, so moving the reader onto it wins, and the round trip's floor becomes one tick rather than one turn of Live's scheduler.
 - There is no generic path: no read-a-property, no call-a-method, no describe. `batch` exists only in Rust (`tools::batch_body`) and each tool inside it pays its own round trips.
 - The server's connection (`connection::AbletonConnection`) is persistent and reconnecting, newline-framed, one request at a time under a lock; `RealBridge` wraps it. The handshake (`handshake::ScriptInfo`) passes unknown fields through `extra`, so a new `tick` block reaches the server without a struct change.
 - Passive listeners on the Live Object Model were removed: attaching one to a clip while it recorded, from inside a Live notification, deadlocked Live ([0007](../../decisions/0007-live-main-thread-only-in-slices.md) and the note in the script's constructor).
@@ -84,32 +84,32 @@ scripts/live-latency.sh        the eight measurements in the prototype, against 
 ## Acceptance Criteria
 
 ### Phase 0 — the number (ships alone)
-- [ ] **AC1 — the tick is measured.** The script samples the interval between consecutive `schedule_message(1, …)` callbacks over a rolling window and reports `tick {period_ms, jitter_ms, samples, playing}` in `get_script_info`; `--check` prints it. `scripts/live-latency.sh` prints the tick period and the round-trip cost with and without an API touch, each over at least 20 samples, as p50 and p95.
-- [ ] **AC2 — the story is re-dated on the number.** The measured period is written into this story's Context, and phase 1 is kept or struck accordingly, before phase 1 is started.
+- [x] **AC1 — the tick is measured.** The script samples the interval between consecutive `schedule_message(1, …)` callbacks over a rolling window and reports `tick {period_ms, jitter_ms, samples, playing}` in `get_script_info`; `--check` prints it. `scripts/live-latency.sh` prints the tick period and the round-trip cost with and without an API touch, each over at least 20 samples, as p50 and p95.
+- [x] **AC2 — the story is re-dated on the number.** The measured period is written into this story's Context, and phase 1 is kept or struck accordingly, before phase 1 is started.
 
 ### Phase 1 — one duplex socket
-- [ ] **AC3 — message ids.** A request may carry `id`; its reply carries the same `id`. Requests without `id` are answered in order without one. The script never reorders replies to id-less requests.
-- [ ] **AC4 — the reader moves to the tick.** Client sockets are non-blocking and drained from the main-thread tick; the executor and slices are unchanged. A client that stops reading cannot stall the tick: writes are bounded and a full outbound buffer drops that client with a log line, never blocks.
-- [ ] **AC5 — the round trip is bounded by the tick.** With phase 1 in, `live-latency.sh` shows p95 round trip ≤ 2 × tick period for both the no-API and the API command. If AC1's period made this impossible, this AC is struck with the number beside it.
-- [ ] **AC6 — the server can overlap.** `AbletonConnection` gains a reader task and a map of pending ids; two requests in flight on one socket are paired correctly under `tests/connection` with a fake script that answers out of order. `LiveState` and every tool body are unchanged.
+- [x] **AC3 — message ids.** A request may carry `id`; its reply carries the same `id`. Requests without `id` are answered in order without one. The script never reorders replies to id-less requests.
+- [x] **AC4 — the reader moves to the tick.** Client sockets are non-blocking and drained from the main-thread tick; the executor and slices are unchanged. A client that stops reading cannot stall the tick: writes are bounded and a full outbound buffer drops that client with a log line, never blocks.
+- [x] **AC5 — the round trip is bounded by the tick.** With phase 1 in, `live-latency.sh` shows p95 round trip ≤ 2 × tick period for both the no-API and the API command. If AC1's period made this impossible, this AC is struck with the number beside it.
+- [x] **AC6 — the server can overlap.** `AbletonConnection` gains a reader task and a map of pending ids; two requests in flight on one socket are paired correctly under `tests/connection` with a fake script that answers out of order. `LiveState` and every tool body are unchanged.
 
 ### Phase 2 — streams out
-- [ ] **AC7 — subscribe.** `subscribe` / `unsubscribe` per socket; the reply lists the channels now active. Events are JSON lines with `event` and `t` (the script's monotonic seconds) and are never sent to a socket that did not subscribe.
+- [x] **AC7 — subscribe.** `subscribe` / `unsubscribe` per socket; the reply lists the channels now active. Events are JSON lines with `event` and `t` (the script's monotonic seconds) and are never sent to a socket that did not subscribe.
 - [ ] **AC8 — clock.** While the transport runs, a `clock` event at the requested interval (floor: one tick) with bar, beat, beat time, tempo, playing, scene and phrase bar; when it stops, one final event and silence. `live-latency.sh` shows the achieved rate against the requested one.
-- [ ] **AC9 — levels.** Once a bar, the master and per-track peaks the tick already keeps, in Live's 0–1 meter scale with the scale named (`get_meter_scale`), so the server keeps converting exactly as it does today.
-- [ ] **AC10 — changes.** A diff of the watched set every N ticks, computed on the main thread by reading properties, with `from` and `to` per path. No listener is registered on any clip, slot or device; `tests/remote_script` proves the watched-set diff and that registering a listener is not in the code path.
+- [x] **AC9 — levels.** Once a bar, the master and per-track peaks the tick already keeps, in Live's 0–1 meter scale with the scale named (`get_meter_scale`), so the server keeps converting exactly as it does today.
+- [x] **AC10 — changes.** A diff of the watched set every N ticks, computed on the main thread by reading properties, with `from` and `to` per path. No listener is registered on any clip, slot or device; `tests/remote_script` proves the watched-set diff and that registering a listener is not in the code path.
 - [ ] **AC11 — the readouts come from the stream.** With a subscription active, the `⏱` and `🔊` lines on a reply are built from the latest `clock` and `levels` events and the reply does not perform the reads it performs today; without one, the current path is used. `tests/performance.rs` pins both.
 - [ ] **AC12 — the app's beat.** The Mac app subscribes on its Live connection; the Listen screen shows the bar, and the visual's beat comes from `clock` when available and from onset detection otherwise. `app/src/listen.test.mjs` pins the fallback.
 
 ### Phase 3 — generic in
-- [ ] **AC13 — describe.** Any path rooted at `song`, `application` or `browser`, with indexes; the reply is the class, each attribute with its type and read-only flag, the methods, and the Live version. A path off those roots, or through a dunder, is refused with the reason.
-- [ ] **AC14 — run.** get / set / call / wait_tick in one round trip under the slicer, one undo step per slice, results keyed by `as`, `ops`, `slices` and `main_ms` in the reply. The first failing op stops the batch; the error names the op index and, for a read-only set, says so with the Live version. Same roots and refusals as `describe`.
-- [ ] **AC15 — the whitelist is a test, not a promise.** `tests/remote_script` drives `run` and `describe` with paths through `os`, `sys`, `__class__`, `__dict__`, `builtins`, a callable that is not a method of a Live object, and an index out of range, and asserts each refusal. The script contains no `eval`, `exec`, `compile`, `__import__` or `open(` on the request path; `tests/local_only.rs` walks the script source for those, the way it walks `src/` for HTTP clients.
+- [x] **AC13 — describe.** Any path rooted at `song`, `application` or `browser`, with indexes; the reply is the class, each attribute with its type and read-only flag, the methods, and the Live version. A path off those roots, or through a dunder, is refused with the reason.
+- [x] **AC14 — run.** get / set / call / wait_tick in one round trip under the slicer, one undo step per slice, results keyed by `as`, `ops`, `slices` and `main_ms` in the reply. The first failing op stops the batch; the error names the op index and, for a read-only set, says so with the Live version. Same roots and refusals as `describe`.
+- [x] **AC15 — the whitelist is a test, not a promise.** `tests/remote_script` drives `run` and `describe` with paths through `os`, `sys`, `__class__`, `__dict__`, `builtins`, a callable that is not a method of a Live object, and an index out of range, and asserts each refusal. The script contains no `eval`, `exec`, `compile`, `__import__` or `open(` on the request path; `tests/local_only.rs` walks the script source for those, the way it walks `src/` for HTTP clients.
 - [ ] **AC16 — discovery in Rust.** `src/lom.rs`: a typed path builder, `describe` at handshake for the classes the server uses, a per-Live-version cache under the state dir, and a table of the differences the script's branches encode today. One test per migrated branch; the Python branch is removed in the same commit as the Rust row that replaces it.
 - [ ] **AC17 — a capability without a script release.** One real capability the server does not have today is shipped as a `run` sequence with no script change, as proof: proposed `set_clip_color` for Arrangement clips by bar, or the next thing the sample story needs. Its tool checks `require(live, "run")`.
 
 ### Phase 4 — cues as ops
-- [ ] **AC18 — a cue step may be ops.** `schedule_cue` accepts steps as `{at_beat, ops}` alongside today's step forms; the trigger is unchanged and stays on the tick. A `cue` event reports `fired_at_beat` and `late_ms` for every step.
+- [x] **AC18 — a cue step may be ops.** `schedule_cue` accepts steps as `{at_beat, ops}` alongside today's step forms; the trigger is unchanged and stays on the tick. A `cue` event reports `fired_at_beat` and `late_ms` for every step.
 - [ ] **AC19 — lateness is measured and bounded.** `live-latency.sh` schedules 50 harmless cues (a `set` of the master volume to its current value at the next bar, 126 BPM) and prints p50/p95 lateness; target p95 ≤ 1 tick period. `src/transition.rs` composes its primitives into ops when `run` is available and into today's steps otherwise, under `tests/performance.rs`.
 
 ### Phase 5 — the migration
@@ -117,11 +117,49 @@ scripts/live-latency.sh        the eight measurements in the prototype, against 
 - [ ] **AC21 — the hot paths are measured, not assumed.** `live-latency.sh` compares `get_context` native against the same 413 values as one `run` batch, and the native handler stays while it wins.
 
 ### No Regressions
-- [ ] **AC22:** Every existing tool, test suite and the Docker image behave identically with an old script (protocol 1) loaded; `tests/stdio_integration.rs` runs the handshake against a fake script that lacks the new commands.
-- [ ] **AC23:** stdout stays pure JSON-RPC; events are consumed by the reader task and never printed. The activity log records command names as before and never event payloads; `tests/activity.rs` pins that an event stream leaves the log unchanged.
-- [ ] **AC24:** The script binds loopback by default and opens no listener it did not open before; the app opens no socket it did not open before.
-- [ ] **AC25:** The Remote Script stays compatible with the Python Live bundles: no f-strings, no type hints, no third-party imports, and it loads on a Live 11 with Python 3 and, for the paths it has today, a Live 10 with Python 2.7. A Rust test walks the script source for f-strings and annotations.
-- [ ] **AC26:** A slice never exceeds today's budgets because of streaming: the diff, the clock event and the socket drain are counted inside the tick's budget and `main_ms` still reports what a command cost.
+- [x] **AC22:** Every existing tool, test suite and the Docker image behave identically with an old script (protocol 1) loaded; `tests/stdio_integration.rs` runs the handshake against a fake script that lacks the new commands.
+- [x] **AC23:** stdout stays pure JSON-RPC; events are consumed by the reader task and never printed. The activity log records command names as before and never event payloads; `tests/activity.rs` pins that an event stream leaves the log unchanged.
+- [x] **AC24:** The script binds loopback by default and opens no listener it did not open before; the app opens no socket it did not open before.
+- [x] **AC25:** The Remote Script stays compatible with the Python Live bundles: no f-strings, no type hints, no third-party imports, and it loads on a Live 11 with Python 3 and, for the paths it has today, a Live 10 with Python 2.7. A Rust test walks the script source for f-strings and annotations.
+- [x] **AC26:** A slice never exceeds today's budgets because of streaming: the diff, the clock event and the socket drain are counted inside the tick's budget and `main_ms` still reports what a command cost.
+
+## Where this stands
+
+Phases 0 to 4 are in (Remote Script 1.31.0, protocol 2). Eighteen of the twenty-six
+criteria are ticked above and carry a test; what is **not** done is named here rather than
+left to be inferred from an unticked box.
+
+**Measured against Live 12.4.6, macOS 26.6, 2026-09-20** (`scripts/live-latency.sh`):
+
+| | |
+|---|---|
+| Tick period | 100.0 ms, jitter 9.0 ms, worst 112.0 ms, 181 samples |
+| Round trip, no API touch | p50 100.1 ms, p95 109.8 ms (n=40) — was 200 ms |
+| Round trip, with an API touch | p50 100.2 ms, p95 110.0 ms (n=40) — was 400 ms |
+| An old client (no id, no newline) | p50 100.2 ms — served correctly by 1.31.0 |
+| `get_context`, native | 103.4 ms for 209 values, one round trip |
+| A 30-op batch across every track | one round trip, 0 ms of Live's main thread |
+
+**What remains.**
+
+- **AC8, AC19 — the rates were measured with the transport stopped.** The clock goes quiet
+  when Live is not playing, which is the designed behaviour, so the run reported 0.5 events
+  a second against 20 requested and no cue lateness at all. Both numbers need one run with
+  the transport rolling before they mean anything. The behaviour itself is covered by
+  `tests/remote_script/test_streams.py` and `test_cue_ops.py`.
+- **AC11, AC12 — nothing consumes the events yet.** The script publishes on four channels
+  and `AbletonConnection` collects them, both under test, but no caller in `src/` or in the
+  Mac app calls `subscribe` or `take_events`. The readouts still perform their own reads and
+  the app's visual still guesses the beat from audio. The stream is built and proven; it is
+  not yet plumbed to anything a producer sees.
+- **AC16, AC20 — the 89 version branches are still in Python.** `src/lom.rs` has the typed
+  path, the batch and the per-version describe cache, which is the half that had to exist
+  first; no branch has moved yet, and the PR checklist has not gained its line.
+- **AC17, AC21 — proven, not yet spent.** `cargo run --example new_capability_no_reload`
+  reads track output routing and crossfade assignment, neither of which has a handler,
+  against an unmodified 1.31.0. No artist-facing capability has been shipped that way yet,
+  and the `get_context`-as-ops comparison that would justify replacing a native handler has
+  not been run — so every native handler stays.
 
 ## Affected Files
 

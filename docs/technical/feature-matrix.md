@@ -162,6 +162,36 @@ Count the tools before quoting a total; the snapshot in
 | The visual never repeats and never cuts: each visit re-rolls the preset into a variant (palette, warp mode, shape, fold, swirl, ripple, chroma), wanders at random, and cross-dissolves — both warp modes mixed per pixel, both folds crossfaded, the shapes dissolving on one feedback buffer | Built — `node --test app/src/visual.test.mjs` (18), including a simulated twenty minutes in which no field moves more than 6% of its own range in a frame |
 | Signed, notarised download | Not yet |
 
+## The socket, and reaching Live generically
+
+[Decision 0010](../decisions/0010-the-scripts-contract-is-a-duplex-protocol.md). Measured on Live 12.4.6, 2026-09-20, by `scripts/live-latency.sh`.
+
+| | | |
+|---|---|---|
+| Live's main-thread tick | **100.0 ms**, jitter 9.6 | sampled by the script, reported in `get_script_info` and `--check` |
+| A round trip | **100 ms** whether or not it touches Live's API | was 200 / 400 ms before the socket was read on the tick |
+| `subscribe` / `unsubscribe` | `clock`, `levels`, `changes`, `cue`, per socket | the tick fills them; the changes channel is a diff from reads, never a listener |
+| `describe(path)` | what a class has on *this* Live: attributes with types and whether they can be written, and methods | cached per Live version in `src/lom.rs` |
+| `run(ops)` | get / set / call / wait_tick in one round trip under the executor's slices | 30 ops in 102 ms, the same cost as the native handler for the same values |
+| The whitelist | rooted at `song`, `application`, `browser`; no name starting with `_` | closes every dunder; refusals are tests, in the script and in `src/lom.rs` |
+| A cue step | may be a batch of ops; the trigger stays on Live's tick | lateness 34.7 ms p50, 64.7 p95 over 12 cues |
+| A new capability | needs no script release | `cargo run --example new_capability_no_reload` proves it against an unmodified script |
+
+## The socket, and reaching Live generically
+
+[Decision 0010](../decisions/0010-the-scripts-contract-is-a-duplex-protocol.md). Measured on Live 12.4.6, 2026-09-20, by `scripts/live-latency.sh`.
+
+| | | |
+|---|---|---|
+| Live's main-thread tick | **100.0 ms**, jitter 9.6 | sampled by the script; in `get_script_info` and `--check` |
+| A round trip | **100 ms** whether or not it touches Live's API | was 200 / 400 ms before the socket was read on the tick |
+| `subscribe` / `unsubscribe` | `clock`, `levels`, `changes`, `cue`, per socket | the tick fills them; changes is a diff from reads, never a listener |
+| `describe(path)` | what a class has on *this* Live: attributes with types and whether they can be written, and methods | cached per Live version in `src/lom.rs`; the `describe_live` tool |
+| `run(ops)` | get / set / call / wait_tick in one round trip under the executor's slices | 30 ops in 102 ms, the same cost as the native handler for the same values; the `run_ops` tool |
+| The whitelist | rooted at `song`, `application`, `browser`; no name starting with `_` | closes every dunder; the refusals are tests, in the script and in `src/lom.rs` |
+| A cue step | may be a batch of ops; the trigger stays on Live's tick | lateness 34.7 ms p50, 64.7 p95 over 12 cues |
+| A new capability | needs no script release | `cargo run --example new_capability_no_reload` proves it against an unmodified script |
+
 ## The image contract
 
 Checked by `docker/verify-image.sh`, run by hand since CI builds only the Mac app

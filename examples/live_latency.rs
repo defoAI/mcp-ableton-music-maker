@@ -9,6 +9,7 @@
 
 use mcp_ableton_music_maker::connection::{live_address, AbletonConnection};
 use mcp_ableton_music_maker::handshake::ScriptInfoCache;
+use mcp_ableton_music_maker::lom::{Batch, Op, Path};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
@@ -128,16 +129,60 @@ fn main() {
         "phase 3",
     );
     if has("run") {
+        let tracks = conn
+            .send_command("get_session_info", None)
+            .ok()
+            .and_then(|v| v.get("track_count").and_then(Value::as_i64))
+            .unwrap_or(0);
+        let mut batch = Batch::new();
+        for i in 0..tracks {
+            let t = Path::track(i);
+            for attr in ["name", "mute", "solo", "is_visible"] {
+                batch = batch.push(Op::get(&t.clone().attr(attr), &format!("t{i}_{attr}")));
+            }
+            batch = batch.push(Op::get(&Path::track_volume(i), &format!("t{i}_vol")));
+        }
+        let ops = batch.len();
+        let t = Instant::now();
+        match conn.send_command("run", Some(batch.params())) {
+            Ok(v) => {
+                let ms = t.elapsed().as_secs_f64() * 1000.0;
+                line(
+                    "run: a generic batch",
+                    format!(
+                        "{ms:.1} ms for {ops} ops, 1 round trip (main thread {} ms)",
+                        v.get("main_ms").and_then(Value::as_f64).unwrap_or(0.0)
+                    ),
+                    "phase 3",
+                );
+            }
+            Err(e) => line("run: a generic batch", format!("failed: {e}"), "phase 3"),
+        }
+    } else {
         line(
-            "run: same values",
-            "TODO once phase 3 lands".into(),
+            "run: a generic batch",
+            "not on this script".into(),
             "phase 3",
         );
-    } else {
-        line("run: same values", "not on this script".into(), "phase 3");
     }
 
-    // Phase 2 and 4 report only once their commands exist.
+    // The clock and the cues only mean anything while the transport runs.
+    // Start it if it is stopped and put it back after, the way listen_probe
+    // does; --no-transport leaves the set entirely alone.
+    let leave_alone = std::env::args().any(|a| a == "--no-transport");
+    let was_playing = conn
+        .send_command("get_session_info", None)
+        .ok()
+        .and_then(|v| v.get("is_playing").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let started = if !was_playing && !leave_alone {
+        let ok = conn.send_command("start_playback", None).is_ok();
+        std::thread::sleep(Duration::from_millis(400));
+        ok
+    } else {
+        false
+    };
+
     if has("subscribe") {
         let _ = conn.subscribe(&["clock", "levels"], Some(50.0));
         let t = Instant::now();
@@ -154,13 +199,22 @@ fn main() {
             }
         }
         let secs = t.elapsed().as_secs_f64();
+        let playing_now = conn
+            .send_command("get_session_info", None)
+            .ok()
+            .and_then(|v| v.get("is_playing").and_then(Value::as_bool))
+            .unwrap_or(false);
         line(
             "clock events / s",
-            format!(
-                "{:.1} (asked 20/s) · levels {:.1}/s",
-                clocks as f64 / secs,
-                levels as f64 / secs
-            ),
+            if playing_now {
+                format!(
+                    "{:.1}/s · levels {:.1}/s (asked 20/s; the tick is the floor)",
+                    clocks as f64 / secs,
+                    levels as f64 / secs
+                )
+            } else {
+                "the transport is stopped, so the clock is quiet by design".into()
+            },
             "phase 2",
         );
         let _ = conn.send_command("unsubscribe", Some(json!({})));
@@ -236,6 +290,10 @@ fn main() {
             "not on this script".into(),
             "phase 4",
         );
+    }
+    if started {
+        let _ = conn.send_command("stop_playback", None);
+        println!("\n  (the transport was stopped; it was started for the clock and put back)");
     }
     conn.disconnect();
 }
