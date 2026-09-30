@@ -1,0 +1,35 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Python bytecode from the Remote Script (Live writes it next to the source)
+__pycache__/
+*.py[oc]
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables (Supabase credentials live here, never in the repo)
+.env
+.env.local
+.env.*.local
+
+# Local activity logs, if a server is ever pointed at the checkout
+*.jsonl
+
+# Mac app build output
+app/node_modules/
+app/src-tauri/target/
+app/src-tauri/gen/
+app/src-tauri/binaries/

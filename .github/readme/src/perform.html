@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Performing</title>
+<link rel="stylesheet" href="base.css">
+<style>
+.frame { width: 1280px; height: 560px; padding: 56px 72px; display: flex; flex-direction: column; gap: 28px; }
+.timeline { position: relative; height: 170px; margin-top: 8px; }
+.blocks { position: absolute; left: 0; right: 0; top: 74px; height: 72px; display: flex; }
+.block { flex-shrink: 0; padding: 0 2px; }
+.block > div { height: 72px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); padding: 10px 12px; display: flex; flex-direction: column; justify-content: space-between; }
+.block b { font-size: 15px; }
+.block span { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.readout { padding: 18px 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; font-family: var(--mono); font-size: 15px; line-height: 1.9; color: var(--ink-2); }
+.readout div { display: flex; align-items: center; gap: 10px; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div style="display: flex; align-items: flex-end; gap: 24px">
+    <div style="display: flex; flex-direction: column; gap: 10px"><div class="eyebrow">PLAY</div><div class="title">It performs on Live’s clock.</div></div>
+    <div style="flex-grow: 1"></div>
+    <div style="display: flex; gap: 10px"><span class="say">play the song.</span><span class="say">go to the drop.</span></div>
+  </div>
+  <div class="timeline">
+    <svg width="1136" height="70" viewBox="0 0 1136 70" style="position: absolute; left: 0; top: 0"><path d="M508 66 C 530 4, 614 4, 636 62" fill="none" stroke="#EBA83A" stroke-width="2" stroke-dasharray="5 5"/><path d="M629 55l7 9 3-11" fill="none" stroke="#EBA83A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <div class="mono" style="position: absolute; left: 650px; top: 6px; font-size: 13px; color: var(--accent)">lands on bar 33 — the end of the phrase</div>
+    <div class="blocks" id="blocks"></div>
+    <div style="position: absolute; left: 477px; top: 64px; width: 2px; height: 92px; background: #FFFFFF"></div>
+    <div class="mono" style="position: absolute; left: 466px; top: 154px; font-size: 11px; color: #CFC8BB">31.1</div>
+  </div>
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px">
+    <div class="readout">
+      <div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#EBA83A" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/></svg>bar 31.1 · next bar in 1.9 s</div>
+      <div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#EBA83A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M17 8a5 5 0 0 1 0 8"/></svg>master −4.0 dB peak this bar · Kick −6 · Bass −7</div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 12px; justify-content: center">
+      <span style="font-size: 15px; color: var(--muted); line-height: 1.5">Every reply while performing carries the clock and the level. Steer with plain verbs:</span>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px"><span class="key">go</span><span class="key">jump_to</span><span class="key">back</span><span class="key">hold_section</span><span class="key">next_section</span><span class="key">previous_section</span></div>
+    </div>
+  </div>
+</div>
+<script>
+  // The setlist at 126 BPM, one pixel scale for every bar; Groove (bars 25–32) is playing, the cue skips Break.
+  const perBar = 15.875;
+  const spec = [['Intro', 16, 'bars 1–16 · ×2'], ['Verse', 8, '17–24'], ['Groove', 8, 'playing', '#7A6BC4'], ['Break', 8, 'skipped'], ['Drop', 16, '33–48'], ['Groove', 0, 'until go']];
+  document.getElementById('blocks').innerHTML = spec.map(([name, bars, note, fill]) => {
+    const w = bars ? Math.round(bars * perBar) : 120;
+    const inner = fill ? `background:${fill};border-color:${fill};color:#0F0E0C` : name === 'Drop' ? 'border-color:#EBA83A' : '';
+    return `<div class="block" style="width:${w}px;opacity:${note === 'skipped' ? 0.4 : 1}"><div style="${inner}"><b>${name}</b><span style="${fill ? 'color:#1A1916' : ''}">${note}</span></div></div>`;
+  }).join('');
+</script>
+</body>
+</html>

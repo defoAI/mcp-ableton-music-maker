@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Ableton Music Maker",
+  "version": "0.1.0",
+  "identifier": "com.defoai.ableton-music-maker",
+  "build": {
+    "frontendDist": "../src",
+    "beforeDevCommand": "./scripts/build-sidecar.sh debug",
+    "beforeBuildCommand": "./scripts/build-sidecar.sh release"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Ableton Music Maker",
+        "width": 1040,
+        "height": 720,
+        "minWidth": 760,
+        "minHeight": 540,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": ["icons/icon.icns", "icons/icon.png"],
+    "externalBin": ["binaries/ableton-music-maker"],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  }
+}

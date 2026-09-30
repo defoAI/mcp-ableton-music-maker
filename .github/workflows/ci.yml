@@ -1,0 +1,130 @@
+name: ci
+
+# The README, its images and docs/ are read by no test and built into nothing, so a
+# change to them alone costs no macOS minutes. prompts/, TERMS.md and CLAUDE.md
+# are read by the suite and stay in.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - README.md
+      - app/README.md
+      - .github/readme/**
+      - docs/**
+  pull_request:
+    paths-ignore:
+      - README.md
+      - app/README.md
+      - .github/readme/**
+      - docs/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # On macOS because that is the only platform the product ships for: the app
+  # is Mac-only and the Remote Script runs inside Live. Nothing here is
+  # platform-specific, so this is about matching where it is used, not about
+  # needing a Mac to run it.
+  rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --locked
+      - name: No HTTP client in the dependency tree
+        run: |
+          if cargo tree -e normal --locked | grep -E '^[^a-zA-Z0-9_-]*(ureq|reqwest|hyper|curl|isahc|attohttpc) '; then
+            echo "an HTTP client entered the dependency tree; the server must have no upload path"; exit 1
+          fi
+      - name: Remote Script tests (Live stubbed)
+        run: scripts/test-remote-script.sh
+
+  # macos-latest is Apple Silicon, and the app ships for M-series Macs. The
+  # bundle is signed ad-hoc here, not with a Developer ID and not notarised:
+  # it runs, but a Mac that downloads it refuses it until the quarantine flag
+  # is removed. A tag does it properly — .github/workflows/release.yml.
+  mac-app:
+    runs-on: macos-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      # shared-key instead of the automatic per-job one, so the tag build in
+      # release.yml reuses what this job compiled rather than starting cold.
+      # Only main writes it: a 600 MB cache per branch would push the
+      # repository past its 10 GB of Actions cache and evict the useful ones.
+      # Branches and pull requests still read main's.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            app/src-tauri -> target
+          shared-key: mac-dmg
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Tauri CLI
+        run: npm ci
+        working-directory: app
+      # The UI's own suites: the Listen state machine, the visual's wander, and
+      # the Prompts screen. They need no bundle and no Live, so they run before
+      # the twenty-minute build rather than after it.
+      - name: Front-end tests
+        run: node --test *.test.mjs
+        working-directory: app/src
+      # Two things make this reliable, and both are easy to lose:
+      # GitHub sets CI=true, which is what makes Tauri pass --skip-jenkins to
+      # bundle_dmg.sh — a runner has no Finder to send the cosmetic AppleScript
+      # to, and that step exits 64 when it cannot. And the ad-hoc identity "-"
+      # makes Tauri seal the bundle inside out; without it the app carries only
+      # the linker's own signature, has no _CodeSignature, and `codesign
+      # --verify` refuses it. Notarisation is skipped with a warning here.
+      - name: Bundle the app and the disk image
+        working-directory: app
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: npm run tauri -- build --target aarch64-apple-darwin
+      - name: Verify the disk image
+        run: app/scripts/verify-dmg.sh "$(ls app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ableton-music-maker-dmg-testing-only
+          path: app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+      - name: Say how to open it
+        run: |
+          {
+            echo "### Mac app disk image"
+            echo
+            echo "Artifact \`ableton-music-maker-dmg-testing-only\` — Apple Silicon, ad-hoc"
+            echo "signed, **not notarised**. macOS refuses a downloaded copy until the"
+            echo "quarantine flag is off:"
+            echo
+            echo '```bash'
+            echo 'xattr -dr com.apple.quarantine "/Applications/Ableton Music Maker.app"'
+            echo '```'
+            echo
+            echo "A \`v*\` tag builds the signed, notarised image that needs none of this."
+          } >> "$GITHUB_STEP_SUMMARY"

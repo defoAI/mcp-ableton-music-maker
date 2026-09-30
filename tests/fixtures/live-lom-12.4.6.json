@@ -1,0 +1,3446 @@
+{
+  "live_version": "12.4.6",
+  "paths": {
+    "application": {
+      "attrs": {
+        "average_process_usage": {
+          "readonly": true,
+          "type": "float"
+        },
+        "browser": {
+          "readonly": true,
+          "type": "Browser"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "none"
+        },
+        "control_surfaces": {
+          "readonly": true,
+          "type": "ObjectVector"
+        },
+        "current_dialog_button_count": {
+          "readonly": true,
+          "type": "int"
+        },
+        "current_dialog_message": {
+          "readonly": true,
+          "type": "str"
+        },
+        "number_of_push_apps_running": {
+          "readonly": true,
+          "type": "int"
+        },
+        "open_dialog_count": {
+          "readonly": true,
+          "type": "int"
+        },
+        "peak_process_usage": {
+          "readonly": true,
+          "type": "float"
+        },
+        "unavailable_features": {
+          "readonly": true,
+          "type": "UnavailableFeatureVector"
+        },
+        "view": {
+          "readonly": true,
+          "type": "View"
+        }
+      },
+      "class": "Application",
+      "methods": [
+        "View",
+        "add_average_process_usage_listener",
+        "add_control_surfaces_listener",
+        "add_open_dialog_count_listener",
+        "add_peak_process_usage_listener",
+        "add_unavailable_features_listener",
+        "average_process_usage_has_listener",
+        "control_surfaces_has_listener",
+        "get_bugfix_version",
+        "get_build_id",
+        "get_document",
+        "get_major_version",
+        "get_minor_version",
+        "get_variant",
+        "get_version_string",
+        "has_option",
+        "open_dialog_count_has_listener",
+        "peak_process_usage_has_listener",
+        "press_current_dialog_button",
+        "remove_average_process_usage_listener",
+        "remove_control_surfaces_listener",
+        "remove_open_dialog_count_listener",
+        "remove_peak_process_usage_listener",
+        "remove_unavailable_features_listener",
+        "show_message",
+        "show_on_the_fly_message",
+        "unavailable_features_has_listener"
+      ],
+      "reads": {
+        "average_process_usage": 0.7843828201293945,
+        "browser": "<Browser.Browser object at 0x124ad0140>",
+        "control_surfaces": [
+          "<AbletonMusicMaker_body_1.Body object at 0x164e08a90>",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "current_dialog_button_count": 0,
+        "current_dialog_message": "",
+        "number_of_push_apps_running": 0,
+        "open_dialog_count": 0,
+        "ops": 10,
+        "peak_process_usage": 0.947460949420929,
+        "unavailable_features": [],
+        "view": "<Application.View object at 0x124ad2040>"
+      }
+    },
+    "application.view": {
+      "attrs": {
+        "browse_mode": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "Application"
+        },
+        "focused_document_view": {
+          "readonly": true,
+          "type": "str"
+        }
+      },
+      "class": "View",
+      "methods": [
+        "NavDirection",
+        "add_browse_mode_listener",
+        "add_focused_document_view_listener",
+        "add_is_view_visible_listener",
+        "add_view_focus_changed_listener",
+        "available_main_views",
+        "browse_mode_has_listener",
+        "focus_view",
+        "focused_document_view_has_listener",
+        "hide_view",
+        "is_view_visible",
+        "is_view_visible_has_listener",
+        "remove_browse_mode_listener",
+        "remove_focused_document_view_listener",
+        "remove_is_view_visible_listener",
+        "remove_view_focus_changed_listener",
+        "scroll_view",
+        "show_view",
+        "toggle_browse",
+        "view_focus_changed_has_listener",
+        "zoom_view"
+      ],
+      "reads": {
+        "browse_mode": false,
+        "focused_document_view": "Arranger",
+        "ops": 2
+      }
+    },
+    "browser": {
+      "attrs": {
+        "audio_effects": {
+          "readonly": true,
+          "type": "BrowserItem"
+        },
+        "clips": {
+          "readonly": true,
+          "type": "BrowserItem"
+        },
+        "colors": {
+          "readonly": true,
+          "type": "BrowserItemVector"
+        },
+        "current_project": {
+          "readonly": true,
+          "type": "BrowserItem"
+        },
+        "drums": {
+          "readonly": true,
+          "type": "BrowserItem"
+        },
+        "filter_type": {
+          "readonly": false,
+          "type": "int"
+        },
+        "hotswap_target": {
+          "readonly": false,
+          "type": "none"
+        },
+        "instruments": {
+          "readonly": true,
+          "type": "BrowserItem"
+        },
+        "legacy_libraries": {
+          "readonly": true,
+          "type": "BrowserItemVector"
+        },
+        "max_for_live": {
+          "readonly": true,
+          "type": "BrowserItem"
+        },
+        "midi_effects": {
+          "readonly": true,
+          "type": "BrowserItem"
+        },
+        "packs": {
+          "readonly": true,
+          "type": "BrowserItem"
+        },
+        "plugins": {
+          "readonly": true,
+          "type": "BrowserItem"
+        },
+        "samples": {
+          "readonly": true,
+          "type": "BrowserItem"
+        },
+        "sounds": {
+          "readonly": true,
+          "type": "BrowserItem"
+        },
+        "user_folders": {
+          "readonly": true,
+          "type": "BrowserItemVector"
+        },
+        "user_library": {
+          "readonly": true,
+          "type": "BrowserItem"
+        }
+      },
+      "class": "Browser",
+      "methods": [
+        "add_filter_type_listener",
+        "add_full_refresh_listener",
+        "add_hotswap_target_listener",
+        "filter_type_has_listener",
+        "full_refresh_has_listener",
+        "hotswap_target_has_listener",
+        "load_item",
+        "preview_item",
+        "relation_to_hotswap_target",
+        "remove_filter_type_listener",
+        "remove_full_refresh_listener",
+        "remove_hotswap_target_listener",
+        "stop_preview"
+      ],
+      "reads": {
+        "audio_effects": "<TPythonBrowserItem Audio Effects>",
+        "clips": "<TPythonBrowserItem Clips>",
+        "colors": [
+          "<TPythonBrowserItem Favorites>"
+        ],
+        "current_project": "<TPythonBrowserItem Current Project>",
+        "drums": "<TPythonBrowserItem Drums>",
+        "filter_type": -1,
+        "hotswap_target": null,
+        "instruments": "<TPythonBrowserItem Instruments>",
+        "legacy_libraries": [],
+        "max_for_live": "<TPythonBrowserItem Max for Live>",
+        "midi_effects": "<TPythonBrowserItem MIDI Effects>",
+        "ops": 17,
+        "packs": "<TPythonBrowserItem Packs>",
+        "plugins": "<TPythonBrowserItem Plug-Ins>",
+        "samples": "<TPythonBrowserItem Samples>",
+        "sounds": "<TPythonBrowserItem Sounds>",
+        "user_folders": [],
+        "user_library": "<TPythonBrowserItem User Library>"
+      }
+    },
+    "browser.instruments": {
+      "attrs": {
+        "children": {
+          "readonly": true,
+          "type": "BrowserItemVector"
+        },
+        "is_device": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_folder": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_loadable": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_selected": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "iter_children": {
+          "readonly": true,
+          "type": "BrowserItemIterator"
+        },
+        "name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "source": {
+          "readonly": true,
+          "type": "str"
+        },
+        "uri": {
+          "readonly": true,
+          "type": "str"
+        }
+      },
+      "class": "BrowserItem",
+      "methods": [],
+      "reads": {
+        "children": [
+          "<TPythonBrowserItem Analog>",
+          "<TPythonBrowserItem Collision>",
+          "<TPythonBrowserItem Drift>",
+          "<TPythonBrowserItem Drum Rack>",
+          "<TPythonBrowserItem Drum Sampler>",
+          "<TPythonBrowserItem DS Clang>",
+          "<TPythonBrowserItem DS Clap>",
+          "<TPythonBrowserItem DS Cymbal>",
+          "<TPythonBrowserItem DS FM>",
+          "<TPythonBrowserItem DS HH>",
+          "<TPythonBrowserItem DS Kick>",
+          "<TPythonBrowserItem DS Snare>",
+          "<TPythonBrowserItem DS Tom>",
+          "<TPythonBrowserItem Electric>",
+          "<TPythonBrowserItem External Instrument>",
+          "<TPythonBrowserItem Impulse>",
+          "<TPythonBrowserItem Instrument Rack>",
+          "<TPythonBrowserItem Meld>",
+          "<TPythonBrowserItem Operator>",
+          "<TPythonBrowserItem Sampler>",
+          "<TPythonBrowserItem Simpler>",
+          "<TPythonBrowserItem Tension>",
+          "<TPythonBrowserItem Wavetable>"
+        ],
+        "is_device": false,
+        "is_folder": false,
+        "is_loadable": false,
+        "is_selected": false,
+        "iter_children": "<Browser.BrowserItemIterator object at 0x124a92c20>",
+        "name": "Instruments",
+        "ops": 9,
+        "source": "",
+        "uri": "query:Synths"
+      }
+    },
+    "song": {
+      "attrs": {
+        "appointed_device": {
+          "readonly": false,
+          "type": "none"
+        },
+        "arrangement_overdub": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "back_to_arranger": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "can_capture_midi": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_jump_to_next_cue": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_jump_to_prev_cue": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_redo": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_undo": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "none"
+        },
+        "clip_trigger_quantization": {
+          "readonly": false,
+          "type": "Quantization"
+        },
+        "count_in_duration": {
+          "readonly": true,
+          "type": "int"
+        },
+        "cue_points": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "current_song_time": {
+          "readonly": false,
+          "type": "float"
+        },
+        "exclusive_arm": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "exclusive_solo": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "file_path": {
+          "readonly": true,
+          "type": "str"
+        },
+        "groove_amount": {
+          "readonly": false,
+          "type": "float"
+        },
+        "groove_pool": {
+          "readonly": true,
+          "type": "GroovePool"
+        },
+        "is_ableton_link_enabled": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "is_ableton_link_start_stop_sync_enabled": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "is_counting_in": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_playing": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "last_event_time": {
+          "readonly": true,
+          "type": "float"
+        },
+        "loop": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "loop_length": {
+          "readonly": false,
+          "type": "float"
+        },
+        "loop_start": {
+          "readonly": false,
+          "type": "float"
+        },
+        "master_track": {
+          "readonly": true,
+          "type": "Track"
+        },
+        "metronome": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "midi_recording_quantization": {
+          "readonly": false,
+          "type": "RecordingQuantization"
+        },
+        "name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "nudge_down": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "nudge_up": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "overdub": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "punch_in": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "punch_out": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "re_enable_automation_enabled": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "record_mode": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "return_tracks": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "root_note": {
+          "readonly": false,
+          "type": "int"
+        },
+        "scale_intervals": {
+          "readonly": true,
+          "type": "IntVector"
+        },
+        "scale_mode": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "scale_name": {
+          "readonly": false,
+          "type": "str"
+        },
+        "scenes": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "select_on_launch": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "session_automation_record": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "session_record": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "session_record_status": {
+          "readonly": true,
+          "type": "int"
+        },
+        "signature_denominator": {
+          "readonly": false,
+          "type": "int"
+        },
+        "signature_numerator": {
+          "readonly": false,
+          "type": "int"
+        },
+        "song_length": {
+          "readonly": true,
+          "type": "float"
+        },
+        "start_time": {
+          "readonly": false,
+          "type": "float"
+        },
+        "swing_amount": {
+          "readonly": false,
+          "type": "float"
+        },
+        "tempo": {
+          "readonly": false,
+          "type": "float"
+        },
+        "tempo_follower_enabled": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "tracks": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "tuning_system": {
+          "readonly": true,
+          "type": "none"
+        },
+        "view": {
+          "readonly": true,
+          "type": "View"
+        },
+        "visible_tracks": {
+          "readonly": true,
+          "type": "Vector"
+        }
+      },
+      "class": "Song",
+      "methods": [
+        "View",
+        "add_appointed_device_listener",
+        "add_arrangement_overdub_listener",
+        "add_back_to_arranger_listener",
+        "add_can_capture_midi_listener",
+        "add_can_jump_to_next_cue_listener",
+        "add_can_jump_to_prev_cue_listener",
+        "add_clip_trigger_quantization_listener",
+        "add_count_in_duration_listener",
+        "add_cue_points_listener",
+        "add_current_song_time_listener",
+        "add_data_listener",
+        "add_exclusive_arm_listener",
+        "add_groove_amount_listener",
+        "add_is_ableton_link_enabled_listener",
+        "add_is_ableton_link_start_stop_sync_enabled_listener",
+        "add_is_counting_in_listener",
+        "add_is_playing_listener",
+        "add_loop_length_listener",
+        "add_loop_listener",
+        "add_loop_start_listener",
+        "add_metronome_listener",
+        "add_midi_recording_quantization_listener",
+        "add_nudge_down_listener",
+        "add_nudge_up_listener",
+        "add_overdub_listener",
+        "add_punch_in_listener",
+        "add_punch_out_listener",
+        "add_re_enable_automation_enabled_listener",
+        "add_record_mode_listener",
+        "add_return_tracks_listener",
+        "add_root_note_listener",
+        "add_scale_information_listener",
+        "add_scale_intervals_listener",
+        "add_scale_mode_listener",
+        "add_scale_name_listener",
+        "add_scenes_listener",
+        "add_session_automation_record_listener",
+        "add_session_record_listener",
+        "add_session_record_status_listener",
+        "add_signature_denominator_listener",
+        "add_signature_numerator_listener",
+        "add_song_length_listener",
+        "add_start_time_listener",
+        "add_swing_amount_listener",
+        "add_tempo_follower_enabled_listener",
+        "add_tempo_listener",
+        "add_tracks_listener",
+        "add_tuning_system_listener",
+        "add_visible_tracks_listener",
+        "appointed_device_has_listener",
+        "arrangement_overdub_has_listener",
+        "back_to_arranger_has_listener",
+        "begin_undo_step",
+        "can_capture_midi_has_listener",
+        "can_jump_to_next_cue_has_listener",
+        "can_jump_to_prev_cue_has_listener",
+        "capture_and_insert_scene",
+        "capture_midi",
+        "clip_trigger_quantization_has_listener",
+        "continue_playing",
+        "count_in_duration_has_listener",
+        "create_audio_track",
+        "create_midi_track",
+        "create_return_track",
+        "create_scene",
+        "cue_points_has_listener",
+        "current_song_time_has_listener",
+        "data_has_listener",
+        "delete_return_track",
+        "delete_scene",
+        "delete_track",
+        "duplicate_scene",
+        "duplicate_track",
+        "end_undo_step",
+        "exclusive_arm_has_listener",
+        "find_device_position",
+        "force_link_beat_time",
+        "get_beats_loop_length",
+        "get_beats_loop_start",
+        "get_current_beats_song_time",
+        "get_current_smpte_song_time",
+        "get_data",
+        "groove_amount_has_listener",
+        "is_ableton_link_enabled_has_listener",
+        "is_ableton_link_start_stop_sync_enabled_has_listener",
+        "is_counting_in_has_listener",
+        "is_cue_point_selected",
+        "is_playing_has_listener",
+        "jump_by",
+        "jump_to_next_cue",
+        "jump_to_prev_cue",
+        "loop_has_listener",
+        "loop_length_has_listener",
+        "loop_start_has_listener",
+        "metronome_has_listener",
+        "midi_recording_quantization_has_listener",
+        "move_device",
+        "nudge_down_has_listener",
+        "nudge_up_has_listener",
+        "overdub_has_listener",
+        "play_selection",
+        "punch_in_has_listener",
+        "punch_out_has_listener",
+        "re_enable_automation",
+        "re_enable_automation_enabled_has_listener",
+        "record_mode_has_listener",
+        "redo",
+        "remove_appointed_device_listener",
+        "remove_arrangement_overdub_listener",
+        "remove_back_to_arranger_listener",
+        "remove_can_capture_midi_listener",
+        "remove_can_jump_to_next_cue_listener",
+        "remove_can_jump_to_prev_cue_listener",
+        "remove_clip_trigger_quantization_listener",
+        "remove_count_in_duration_listener",
+        "remove_cue_points_listener",
+        "remove_current_song_time_listener",
+        "remove_data_listener",
+        "remove_exclusive_arm_listener",
+        "remove_groove_amount_listener",
+        "remove_is_ableton_link_enabled_listener",
+        "remove_is_ableton_link_start_stop_sync_enabled_listener",
+        "remove_is_counting_in_listener",
+        "remove_is_playing_listener",
+        "remove_loop_length_listener",
+        "remove_loop_listener",
+        "remove_loop_start_listener",
+        "remove_metronome_listener",
+        "remove_midi_recording_quantization_listener",
+        "remove_nudge_down_listener",
+        "remove_nudge_up_listener",
+        "remove_overdub_listener",
+        "remove_punch_in_listener",
+        "remove_punch_out_listener",
+        "remove_re_enable_automation_enabled_listener",
+        "remove_record_mode_listener",
+        "remove_return_tracks_listener",
+        "remove_root_note_listener",
+        "remove_scale_information_listener",
+        "remove_scale_intervals_listener",
+        "remove_scale_mode_listener",
+        "remove_scale_name_listener",
+        "remove_scenes_listener",
+        "remove_session_automation_record_listener",
+        "remove_session_record_listener",
+        "remove_session_record_status_listener",
+        "remove_signature_denominator_listener",
+        "remove_signature_numerator_listener",
+        "remove_song_length_listener",
+        "remove_start_time_listener",
+        "remove_swing_amount_listener",
+        "remove_tempo_follower_enabled_listener",
+        "remove_tempo_listener",
+        "remove_tracks_listener",
+        "remove_tuning_system_listener",
+        "remove_visible_tracks_listener",
+        "return_tracks_has_listener",
+        "root_note_has_listener",
+        "scale_information_has_listener",
+        "scale_intervals_has_listener",
+        "scale_mode_has_listener",
+        "scale_name_has_listener",
+        "scenes_has_listener",
+        "scrub_by",
+        "session_automation_record_has_listener",
+        "session_record_has_listener",
+        "session_record_status_has_listener",
+        "set_data",
+        "set_or_delete_cue",
+        "signature_denominator_has_listener",
+        "signature_numerator_has_listener",
+        "song_length_has_listener",
+        "start_playing",
+        "start_time_has_listener",
+        "stop_all_clips",
+        "stop_playing",
+        "swing_amount_has_listener",
+        "sync_parameter_changes",
+        "tap_tempo",
+        "tempo_follower_enabled_has_listener",
+        "tempo_has_listener",
+        "tracks_has_listener",
+        "trigger_session_record",
+        "tuning_system_has_listener",
+        "undo",
+        "visible_tracks_has_listener"
+      ],
+      "reads": {
+        "appointed_device": null,
+        "arrangement_overdub": false,
+        "back_to_arranger": false,
+        "can_capture_midi": false,
+        "can_jump_to_next_cue": true,
+        "can_jump_to_prev_cue": true,
+        "can_redo": false,
+        "can_undo": true,
+        "clip_trigger_quantization": 4,
+        "count_in_duration": 0,
+        "cue_points": [],
+        "current_song_time": 12.64481325965701,
+        "exclusive_arm": true,
+        "exclusive_solo": true,
+        "file_path": "",
+        "groove_amount": 0.0,
+        "groove_pool": "<GroovePool.GroovePool object at 0x1240b2f40>",
+        "is_ableton_link_enabled": false,
+        "is_ableton_link_start_stop_sync_enabled": false,
+        "is_counting_in": false,
+        "is_playing": false,
+        "last_event_time": 16.0,
+        "loop": false,
+        "loop_length": 16.0,
+        "loop_start": 0.0,
+        "master_track": "<Track.Track object at 0x1240b0cc0>",
+        "metronome": false,
+        "midi_recording_quantization": 0,
+        "name": "",
+        "nudge_down": false,
+        "nudge_up": false,
+        "ops": 57,
+        "overdub": false,
+        "punch_in": false,
+        "punch_out": false,
+        "re_enable_automation_enabled": false,
+        "record_mode": false,
+        "return_tracks": [
+          "<Track.Track object at 0x1240b28c0>",
+          "<Track.Track object at 0x1240b2340>"
+        ],
+        "root_note": 2,
+        "scale_intervals": [
+          0,
+          2,
+          3,
+          5,
+          7,
+          8,
+          10
+        ],
+        "scale_mode": true,
+        "scale_name": "Minor",
+        "scenes": [
+          "<Scene.Scene object at 0x1240b28c0>",
+          "<Scene.Scene object at 0x1240b0cc0>",
+          "<Scene.Scene object at 0x1240b2c40>",
+          "<Scene.Scene object at 0x1240b26c0>",
+          "<Scene.Scene object at 0x1240b1bc0>",
+          "<Scene.Scene object at 0x1240b04c0>",
+          "<Scene.Scene object at 0x1240b36c0>",
+          "<Scene.Scene object at 0x1240b1a40>",
+          "<Scene.Scene object at 0x1240b1dc0>"
+        ],
+        "select_on_launch": true,
+        "session_automation_record": true,
+        "session_record": false,
+        "session_record_status": 0,
+        "signature_denominator": 4,
+        "signature_numerator": 4,
+        "song_length": 232.0,
+        "start_time": 0.0,
+        "swing_amount": 0.0,
+        "tempo": 124.0,
+        "tempo_follower_enabled": false,
+        "tracks": [
+          "<Track.Track object at 0x1240b28c0>",
+          "<Track.Track object at 0x1240b0cc0>",
+          "<Track.Track object at 0x1240b2c40>",
+          "<Track.Track object at 0x1240b26c0>",
+          "<Track.Track object at 0x1240b1bc0>",
+          "<Track.Track object at 0x1240b04c0>",
+          "<Track.Track object at 0x1240b36c0>"
+        ],
+        "tuning_system": null,
+        "view": "<Song.View object at 0x1240b36c0>",
+        "visible_tracks": [
+          "<Track.Track object at 0x1240b1dc0>",
+          "<Track.Track object at 0x1240b0cc0>",
+          "<Track.Track object at 0x1240b2c40>",
+          "<Track.Track object at 0x1240b26c0>",
+          "<Track.Track object at 0x1240b1bc0>",
+          "<Track.Track object at 0x1240b04c0>",
+          "<Track.Track object at 0x1240b2f40>"
+        ]
+      }
+    },
+    "song.cue_points[0]": {
+      "missing": "song.cue_points: index 0 is out of range (0)",
+      "optional": true
+    },
+    "song.master_track": {
+      "attrs": {
+        "available_input_routing_channels": {
+          "readonly": true,
+          "type": "RoutingChannelVector"
+        },
+        "available_input_routing_types": {
+          "readonly": true,
+          "type": "RoutingTypeVector"
+        },
+        "available_output_routing_channels": {
+          "readonly": true,
+          "type": "RoutingChannelVector"
+        },
+        "available_output_routing_types": {
+          "readonly": true,
+          "type": "RoutingTypeVector"
+        },
+        "back_to_arranger": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "can_be_armed": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_be_frozen": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_show_chains": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "Song"
+        },
+        "clip_slots": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "color": {
+          "readonly": false,
+          "type": "int"
+        },
+        "color_index": {
+          "readonly": false,
+          "type": "int"
+        },
+        "current_input_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "current_input_sub_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "current_output_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "current_output_sub_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "devices": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "group_track": {
+          "readonly": true,
+          "type": "none"
+        },
+        "has_audio_input": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "has_audio_output": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "has_midi_input": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "has_midi_output": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "input_meter_left": {
+          "readonly": true,
+          "type": "float"
+        },
+        "input_meter_level": {
+          "readonly": true,
+          "type": "float"
+        },
+        "input_meter_right": {
+          "readonly": true,
+          "type": "float"
+        },
+        "input_routing_channel": {
+          "readonly": false,
+          "type": "RoutingChannel"
+        },
+        "input_routing_type": {
+          "readonly": false,
+          "type": "RoutingType"
+        },
+        "input_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "input_sub_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "is_foldable": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_frozen": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_grouped": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_part_of_selection": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_showing_chains": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "is_visible": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "mixer_device": {
+          "readonly": true,
+          "type": "MixerDevice"
+        },
+        "name": {
+          "readonly": false,
+          "type": "str"
+        },
+        "output_meter_left": {
+          "readonly": true,
+          "type": "float"
+        },
+        "output_meter_level": {
+          "readonly": true,
+          "type": "float"
+        },
+        "output_meter_right": {
+          "readonly": true,
+          "type": "float"
+        },
+        "output_routing_channel": {
+          "readonly": false,
+          "type": "RoutingChannel"
+        },
+        "output_routing_type": {
+          "readonly": false,
+          "type": "RoutingType"
+        },
+        "output_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "output_sub_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "performance_impact": {
+          "readonly": true,
+          "type": "float"
+        },
+        "take_lanes": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "view": {
+          "readonly": true,
+          "type": "View"
+        }
+      },
+      "class": "Track",
+      "methods": [
+        "View",
+        "add_arm_listener",
+        "add_arrangement_clips_listener",
+        "add_available_input_routing_channels_listener",
+        "add_available_input_routing_types_listener",
+        "add_available_output_routing_channels_listener",
+        "add_available_output_routing_types_listener",
+        "add_back_to_arranger_listener",
+        "add_clip_slots_listener",
+        "add_color_index_listener",
+        "add_color_listener",
+        "add_current_input_routing_listener",
+        "add_current_input_sub_routing_listener",
+        "add_current_monitoring_state_listener",
+        "add_current_output_routing_listener",
+        "add_current_output_sub_routing_listener",
+        "add_data_listener",
+        "add_devices_listener",
+        "add_fired_slot_index_listener",
+        "add_has_audio_input_listener",
+        "add_has_audio_output_listener",
+        "add_has_midi_input_listener",
+        "add_has_midi_output_listener",
+        "add_implicit_arm_listener",
+        "add_input_meter_left_listener",
+        "add_input_meter_level_listener",
+        "add_input_meter_right_listener",
+        "add_input_routing_channel_listener",
+        "add_input_routing_type_listener",
+        "add_input_routings_listener",
+        "add_input_sub_routings_listener",
+        "add_is_frozen_listener",
+        "add_is_showing_chains_listener",
+        "add_mute_listener",
+        "add_muted_via_solo_listener",
+        "add_name_listener",
+        "add_output_meter_left_listener",
+        "add_output_meter_level_listener",
+        "add_output_meter_right_listener",
+        "add_output_routing_channel_listener",
+        "add_output_routing_type_listener",
+        "add_output_routings_listener",
+        "add_output_sub_routings_listener",
+        "add_performance_impact_listener",
+        "add_playing_slot_index_listener",
+        "add_solo_listener",
+        "add_take_lanes_listener",
+        "arm_has_listener",
+        "arrangement_clips_has_listener",
+        "available_input_routing_channels_has_listener",
+        "available_input_routing_types_has_listener",
+        "available_output_routing_channels_has_listener",
+        "available_output_routing_types_has_listener",
+        "back_to_arranger_has_listener",
+        "clip_slots_has_listener",
+        "color_has_listener",
+        "color_index_has_listener",
+        "create_audio_clip",
+        "create_midi_clip",
+        "create_take_lane",
+        "current_input_routing_has_listener",
+        "current_input_sub_routing_has_listener",
+        "current_monitoring_state_has_listener",
+        "current_output_routing_has_listener",
+        "current_output_sub_routing_has_listener",
+        "data_has_listener",
+        "delete_clip",
+        "delete_device",
+        "devices_has_listener",
+        "duplicate_clip_slot",
+        "duplicate_clip_to_arrangement",
+        "duplicate_device",
+        "fired_slot_index_has_listener",
+        "get_data",
+        "has_audio_input_has_listener",
+        "has_audio_output_has_listener",
+        "has_midi_input_has_listener",
+        "has_midi_output_has_listener",
+        "implicit_arm_has_listener",
+        "input_meter_left_has_listener",
+        "input_meter_level_has_listener",
+        "input_meter_right_has_listener",
+        "input_routing_channel_has_listener",
+        "input_routing_type_has_listener",
+        "input_routings_has_listener",
+        "input_sub_routings_has_listener",
+        "insert_device",
+        "is_frozen_has_listener",
+        "is_showing_chains_has_listener",
+        "jump_in_running_session_clip",
+        "monitoring_states",
+        "mute_has_listener",
+        "muted_via_solo_has_listener",
+        "name_has_listener",
+        "output_meter_left_has_listener",
+        "output_meter_level_has_listener",
+        "output_meter_right_has_listener",
+        "output_routing_channel_has_listener",
+        "output_routing_type_has_listener",
+        "output_routings_has_listener",
+        "output_sub_routings_has_listener",
+        "performance_impact_has_listener",
+        "playing_slot_index_has_listener",
+        "remove_arm_listener",
+        "remove_arrangement_clips_listener",
+        "remove_available_input_routing_channels_listener",
+        "remove_available_input_routing_types_listener",
+        "remove_available_output_routing_channels_listener",
+        "remove_available_output_routing_types_listener",
+        "remove_back_to_arranger_listener",
+        "remove_clip_slots_listener",
+        "remove_color_index_listener",
+        "remove_color_listener",
+        "remove_current_input_routing_listener",
+        "remove_current_input_sub_routing_listener",
+        "remove_current_monitoring_state_listener",
+        "remove_current_output_routing_listener",
+        "remove_current_output_sub_routing_listener",
+        "remove_data_listener",
+        "remove_devices_listener",
+        "remove_fired_slot_index_listener",
+        "remove_has_audio_input_listener",
+        "remove_has_audio_output_listener",
+        "remove_has_midi_input_listener",
+        "remove_has_midi_output_listener",
+        "remove_implicit_arm_listener",
+        "remove_input_meter_left_listener",
+        "remove_input_meter_level_listener",
+        "remove_input_meter_right_listener",
+        "remove_input_routing_channel_listener",
+        "remove_input_routing_type_listener",
+        "remove_input_routings_listener",
+        "remove_input_sub_routings_listener",
+        "remove_is_frozen_listener",
+        "remove_is_showing_chains_listener",
+        "remove_mute_listener",
+        "remove_muted_via_solo_listener",
+        "remove_name_listener",
+        "remove_output_meter_left_listener",
+        "remove_output_meter_level_listener",
+        "remove_output_meter_right_listener",
+        "remove_output_routing_channel_listener",
+        "remove_output_routing_type_listener",
+        "remove_output_routings_listener",
+        "remove_output_sub_routings_listener",
+        "remove_performance_impact_listener",
+        "remove_playing_slot_index_listener",
+        "remove_solo_listener",
+        "remove_take_lanes_listener",
+        "set_data",
+        "solo_has_listener",
+        "stop_all_clips",
+        "take_lanes_has_listener"
+      ],
+      "reads": {
+        "available_input_routing_channels": [],
+        "available_input_routing_types": [
+          "<Track.RoutingType object at 0x11fa3eae0>",
+          "<Track.RoutingType object at 0x1691e8b40>",
+          "<Track.RoutingType object at 0x1691e87d0>",
+          "<Track.RoutingType object at 0x1691e8a90>",
+          "<Track.RoutingType object at 0x1691e9bc0>",
+          "<Track.RoutingType object at 0x1691ea350>",
+          "<Track.RoutingType object at 0x1691e9640>",
+          "<Track.RoutingType object at 0x1691e9d20>",
+          "<Track.RoutingType object at 0x1691ea770>"
+        ],
+        "available_output_routing_channels": [
+          "<Track.RoutingChannel object at 0x124aa7a60>",
+          "<Track.RoutingChannel object at 0x124aa77e0>",
+          "<Track.RoutingChannel object at 0x124aa7880>"
+        ],
+        "available_output_routing_types": [
+          "<Track.RoutingType object at 0x11fa3eae0>",
+          "<Track.RoutingType object at 0x1691ea770>",
+          "<Track.RoutingType object at 0x1691e8b40>",
+          "<Track.RoutingType object at 0x1691e87d0>",
+          "<Track.RoutingType object at 0x1691e8a90>",
+          "<Track.RoutingType object at 0x1691e9bc0>"
+        ],
+        "back_to_arranger": false,
+        "can_be_armed": false,
+        "can_be_frozen": false,
+        "can_show_chains": false,
+        "clip_slots": [],
+        "color": 8912743,
+        "color_index": 18,
+        "current_input_routing": "Ext. In",
+        "current_input_sub_routing": "1/2",
+        "current_output_routing": "Ext. Out",
+        "current_output_sub_routing": "1/2",
+        "devices": [],
+        "group_track": null,
+        "has_audio_input": true,
+        "has_audio_output": true,
+        "has_midi_input": false,
+        "has_midi_output": false,
+        "input_meter_left": 0.0,
+        "input_meter_level": 0.0,
+        "input_meter_right": 0.0,
+        "input_routing_channel": "<Track.RoutingChannel object at 0x165043420>",
+        "input_routing_type": "<Track.RoutingType object at 0x11fa3eae0>",
+        "input_routings": [
+          "Ext. In",
+          "Resampling",
+          "3-Audio",
+          "4-Audio",
+          "T Kick",
+          "T Bass",
+          "T Vox",
+          "A-Reverb",
+          "B-Delay",
+          "No Input"
+        ],
+        "input_sub_routings": [],
+        "is_foldable": false,
+        "is_frozen": false,
+        "is_grouped": false,
+        "is_part_of_selection": false,
+        "is_showing_chains": false,
+        "is_visible": true,
+        "mixer_device": "<MixerDevice.MixerDevice object at 0x124ac18c0>",
+        "name": "Main",
+        "ops": 46,
+        "output_meter_left": 0.0,
+        "output_meter_level": 0.0,
+        "output_meter_right": 0.0,
+        "output_routing_channel": "<Track.RoutingChannel object at 0x165043420>",
+        "output_routing_type": "<Track.RoutingType object at 0x11fa3eae0>",
+        "output_routings": [
+          "Ext. Out",
+          "Main",
+          "3-Audio",
+          "4-Audio",
+          "T Vox",
+          "Sends Only"
+        ],
+        "output_sub_routings": [
+          "1/2",
+          "1",
+          "2"
+        ],
+        "performance_impact": 0.00012500899902079254,
+        "take_lanes": [],
+        "view": "<Track.View object at 0x124ac1840>"
+      }
+    },
+    "song.master_track.mixer_device": {
+      "attrs": {
+        "canonical_parent": {
+          "readonly": true,
+          "type": "Track"
+        },
+        "crossfader": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "cue_volume": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "left_split_stereo": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "panning": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "panning_mode": {
+          "readonly": false,
+          "type": "int"
+        },
+        "right_split_stereo": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "sends": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "song_tempo": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "track_activator": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "volume": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        }
+      },
+      "class": "MixerDevice",
+      "methods": [
+        "add_crossfade_assign_listener",
+        "add_panning_mode_listener",
+        "add_sends_listener",
+        "crossfade_assign_has_listener",
+        "crossfade_assignments",
+        "panning_mode_has_listener",
+        "panning_modes",
+        "remove_crossfade_assign_listener",
+        "remove_panning_mode_listener",
+        "remove_sends_listener",
+        "sends_has_listener"
+      ],
+      "reads": {
+        "crossfader": "0",
+        "cue_volume": "-6.0 dB",
+        "left_split_stereo": "50L",
+        "ops": 10,
+        "panning": "C",
+        "panning_mode": 0,
+        "right_split_stereo": "50R",
+        "sends": [],
+        "song_tempo": "124.00",
+        "track_activator": "On",
+        "volume": "0.0 dB"
+      }
+    },
+    "song.master_track.mixer_device.crossfader": {
+      "attrs": {
+        "automation_state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "MixerDevice"
+        },
+        "default_value": {
+          "readonly": true,
+          "type": "float"
+        },
+        "display_value": {
+          "readonly": false,
+          "type": "float"
+        },
+        "is_enabled": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_quantized": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "max": {
+          "readonly": true,
+          "type": "float"
+        },
+        "min": {
+          "readonly": true,
+          "type": "float"
+        },
+        "name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "original_name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "value": {
+          "readonly": false,
+          "type": "float"
+        }
+      },
+      "class": "DeviceParameter",
+      "methods": [
+        "add_automation_state_listener",
+        "add_display_value_listener",
+        "add_name_listener",
+        "add_state_listener",
+        "add_value_listener",
+        "automation_state_has_listener",
+        "begin_gesture",
+        "display_value_has_listener",
+        "end_gesture",
+        "name_has_listener",
+        "re_enable_automation",
+        "remove_automation_state_listener",
+        "remove_display_value_listener",
+        "remove_name_listener",
+        "remove_state_listener",
+        "remove_value_listener",
+        "state_has_listener",
+        "str_for_value",
+        "value_has_listener"
+      ],
+      "reads": {
+        "automation_state": 0,
+        "default_value": 0.0,
+        "display_value": 0.0,
+        "is_enabled": true,
+        "is_quantized": false,
+        "max": 1.0,
+        "min": -1.0,
+        "name": "Crossfade",
+        "ops": 11,
+        "original_name": "Crossfade",
+        "state": 0,
+        "value": 0.0
+      }
+    },
+    "song.master_track.mixer_device.panning": {
+      "attrs": {
+        "automation_state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "MixerDevice"
+        },
+        "default_value": {
+          "readonly": true,
+          "type": "float"
+        },
+        "display_value": {
+          "readonly": false,
+          "type": "float"
+        },
+        "is_enabled": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_quantized": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "max": {
+          "readonly": true,
+          "type": "float"
+        },
+        "min": {
+          "readonly": true,
+          "type": "float"
+        },
+        "name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "original_name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "value": {
+          "readonly": false,
+          "type": "float"
+        }
+      },
+      "class": "DeviceParameter",
+      "methods": [
+        "add_automation_state_listener",
+        "add_display_value_listener",
+        "add_name_listener",
+        "add_state_listener",
+        "add_value_listener",
+        "automation_state_has_listener",
+        "begin_gesture",
+        "display_value_has_listener",
+        "end_gesture",
+        "name_has_listener",
+        "re_enable_automation",
+        "remove_automation_state_listener",
+        "remove_display_value_listener",
+        "remove_name_listener",
+        "remove_state_listener",
+        "remove_value_listener",
+        "state_has_listener",
+        "str_for_value",
+        "value_has_listener"
+      ],
+      "reads": {
+        "automation_state": 0,
+        "default_value": 0.0,
+        "display_value": 0.0,
+        "is_enabled": true,
+        "is_quantized": false,
+        "max": 1.0,
+        "min": -1.0,
+        "name": "Track Panning",
+        "ops": 11,
+        "original_name": "Track Panning",
+        "state": 0,
+        "value": 0.0
+      }
+    },
+    "song.master_track.mixer_device.volume": {
+      "attrs": {
+        "automation_state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "MixerDevice"
+        },
+        "default_value": {
+          "readonly": true,
+          "type": "float"
+        },
+        "display_value": {
+          "readonly": false,
+          "type": "float"
+        },
+        "is_enabled": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_quantized": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "max": {
+          "readonly": true,
+          "type": "float"
+        },
+        "min": {
+          "readonly": true,
+          "type": "float"
+        },
+        "name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "original_name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "value": {
+          "readonly": false,
+          "type": "float"
+        }
+      },
+      "class": "DeviceParameter",
+      "methods": [
+        "add_automation_state_listener",
+        "add_display_value_listener",
+        "add_name_listener",
+        "add_state_listener",
+        "add_value_listener",
+        "automation_state_has_listener",
+        "begin_gesture",
+        "display_value_has_listener",
+        "end_gesture",
+        "name_has_listener",
+        "re_enable_automation",
+        "remove_automation_state_listener",
+        "remove_display_value_listener",
+        "remove_name_listener",
+        "remove_state_listener",
+        "remove_value_listener",
+        "state_has_listener",
+        "str_for_value",
+        "value_has_listener"
+      ],
+      "reads": {
+        "automation_state": 0,
+        "default_value": 0.8500000238418579,
+        "display_value": 0.0,
+        "is_enabled": true,
+        "is_quantized": false,
+        "max": 1.0,
+        "min": 0.0,
+        "name": "Track Volume",
+        "ops": 11,
+        "original_name": "Track Volume",
+        "state": 0,
+        "value": 0.8500000238418579
+      }
+    },
+    "song.return_tracks[0]": {
+      "attrs": {
+        "available_input_routing_channels": {
+          "readonly": true,
+          "type": "RoutingChannelVector"
+        },
+        "available_input_routing_types": {
+          "readonly": true,
+          "type": "RoutingTypeVector"
+        },
+        "available_output_routing_channels": {
+          "readonly": true,
+          "type": "RoutingChannelVector"
+        },
+        "available_output_routing_types": {
+          "readonly": true,
+          "type": "RoutingTypeVector"
+        },
+        "back_to_arranger": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "can_be_armed": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_be_frozen": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_show_chains": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "Song"
+        },
+        "clip_slots": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "color": {
+          "readonly": false,
+          "type": "int"
+        },
+        "color_index": {
+          "readonly": false,
+          "type": "int"
+        },
+        "current_input_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "current_input_sub_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "current_output_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "current_output_sub_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "devices": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "group_track": {
+          "readonly": true,
+          "type": "none"
+        },
+        "has_audio_input": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "has_audio_output": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "has_midi_input": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "has_midi_output": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "input_meter_left": {
+          "readonly": true,
+          "type": "float"
+        },
+        "input_meter_level": {
+          "readonly": true,
+          "type": "float"
+        },
+        "input_meter_right": {
+          "readonly": true,
+          "type": "float"
+        },
+        "input_routing_channel": {
+          "readonly": false,
+          "type": "RoutingChannel"
+        },
+        "input_routing_type": {
+          "readonly": false,
+          "type": "RoutingType"
+        },
+        "input_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "input_sub_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "is_foldable": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_frozen": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_grouped": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_part_of_selection": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_showing_chains": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "is_visible": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "mixer_device": {
+          "readonly": true,
+          "type": "MixerDevice"
+        },
+        "mute": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "muted_via_solo": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "name": {
+          "readonly": false,
+          "type": "str"
+        },
+        "output_meter_left": {
+          "readonly": true,
+          "type": "float"
+        },
+        "output_meter_level": {
+          "readonly": true,
+          "type": "float"
+        },
+        "output_meter_right": {
+          "readonly": true,
+          "type": "float"
+        },
+        "output_routing_channel": {
+          "readonly": false,
+          "type": "RoutingChannel"
+        },
+        "output_routing_type": {
+          "readonly": false,
+          "type": "RoutingType"
+        },
+        "output_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "output_sub_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "performance_impact": {
+          "readonly": true,
+          "type": "float"
+        },
+        "solo": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "take_lanes": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "view": {
+          "readonly": true,
+          "type": "View"
+        }
+      },
+      "class": "Track",
+      "methods": [
+        "View",
+        "add_arm_listener",
+        "add_arrangement_clips_listener",
+        "add_available_input_routing_channels_listener",
+        "add_available_input_routing_types_listener",
+        "add_available_output_routing_channels_listener",
+        "add_available_output_routing_types_listener",
+        "add_back_to_arranger_listener",
+        "add_clip_slots_listener",
+        "add_color_index_listener",
+        "add_color_listener",
+        "add_current_input_routing_listener",
+        "add_current_input_sub_routing_listener",
+        "add_current_monitoring_state_listener",
+        "add_current_output_routing_listener",
+        "add_current_output_sub_routing_listener",
+        "add_data_listener",
+        "add_devices_listener",
+        "add_fired_slot_index_listener",
+        "add_has_audio_input_listener",
+        "add_has_audio_output_listener",
+        "add_has_midi_input_listener",
+        "add_has_midi_output_listener",
+        "add_implicit_arm_listener",
+        "add_input_meter_left_listener",
+        "add_input_meter_level_listener",
+        "add_input_meter_right_listener",
+        "add_input_routing_channel_listener",
+        "add_input_routing_type_listener",
+        "add_input_routings_listener",
+        "add_input_sub_routings_listener",
+        "add_is_frozen_listener",
+        "add_is_showing_chains_listener",
+        "add_mute_listener",
+        "add_muted_via_solo_listener",
+        "add_name_listener",
+        "add_output_meter_left_listener",
+        "add_output_meter_level_listener",
+        "add_output_meter_right_listener",
+        "add_output_routing_channel_listener",
+        "add_output_routing_type_listener",
+        "add_output_routings_listener",
+        "add_output_sub_routings_listener",
+        "add_performance_impact_listener",
+        "add_playing_slot_index_listener",
+        "add_solo_listener",
+        "add_take_lanes_listener",
+        "arm_has_listener",
+        "arrangement_clips_has_listener",
+        "available_input_routing_channels_has_listener",
+        "available_input_routing_types_has_listener",
+        "available_output_routing_channels_has_listener",
+        "available_output_routing_types_has_listener",
+        "back_to_arranger_has_listener",
+        "clip_slots_has_listener",
+        "color_has_listener",
+        "color_index_has_listener",
+        "create_audio_clip",
+        "create_midi_clip",
+        "create_take_lane",
+        "current_input_routing_has_listener",
+        "current_input_sub_routing_has_listener",
+        "current_monitoring_state_has_listener",
+        "current_output_routing_has_listener",
+        "current_output_sub_routing_has_listener",
+        "data_has_listener",
+        "delete_clip",
+        "delete_device",
+        "devices_has_listener",
+        "duplicate_clip_slot",
+        "duplicate_clip_to_arrangement",
+        "duplicate_device",
+        "fired_slot_index_has_listener",
+        "get_data",
+        "has_audio_input_has_listener",
+        "has_audio_output_has_listener",
+        "has_midi_input_has_listener",
+        "has_midi_output_has_listener",
+        "implicit_arm_has_listener",
+        "input_meter_left_has_listener",
+        "input_meter_level_has_listener",
+        "input_meter_right_has_listener",
+        "input_routing_channel_has_listener",
+        "input_routing_type_has_listener",
+        "input_routings_has_listener",
+        "input_sub_routings_has_listener",
+        "insert_device",
+        "is_frozen_has_listener",
+        "is_showing_chains_has_listener",
+        "jump_in_running_session_clip",
+        "monitoring_states",
+        "mute_has_listener",
+        "muted_via_solo_has_listener",
+        "name_has_listener",
+        "output_meter_left_has_listener",
+        "output_meter_level_has_listener",
+        "output_meter_right_has_listener",
+        "output_routing_channel_has_listener",
+        "output_routing_type_has_listener",
+        "output_routings_has_listener",
+        "output_sub_routings_has_listener",
+        "performance_impact_has_listener",
+        "playing_slot_index_has_listener",
+        "remove_arm_listener",
+        "remove_arrangement_clips_listener",
+        "remove_available_input_routing_channels_listener",
+        "remove_available_input_routing_types_listener",
+        "remove_available_output_routing_channels_listener",
+        "remove_available_output_routing_types_listener",
+        "remove_back_to_arranger_listener",
+        "remove_clip_slots_listener",
+        "remove_color_index_listener",
+        "remove_color_listener",
+        "remove_current_input_routing_listener",
+        "remove_current_input_sub_routing_listener",
+        "remove_current_monitoring_state_listener",
+        "remove_current_output_routing_listener",
+        "remove_current_output_sub_routing_listener",
+        "remove_data_listener",
+        "remove_devices_listener",
+        "remove_fired_slot_index_listener",
+        "remove_has_audio_input_listener",
+        "remove_has_audio_output_listener",
+        "remove_has_midi_input_listener",
+        "remove_has_midi_output_listener",
+        "remove_implicit_arm_listener",
+        "remove_input_meter_left_listener",
+        "remove_input_meter_level_listener",
+        "remove_input_meter_right_listener",
+        "remove_input_routing_channel_listener",
+        "remove_input_routing_type_listener",
+        "remove_input_routings_listener",
+        "remove_input_sub_routings_listener",
+        "remove_is_frozen_listener",
+        "remove_is_showing_chains_listener",
+        "remove_mute_listener",
+        "remove_muted_via_solo_listener",
+        "remove_name_listener",
+        "remove_output_meter_left_listener",
+        "remove_output_meter_level_listener",
+        "remove_output_meter_right_listener",
+        "remove_output_routing_channel_listener",
+        "remove_output_routing_type_listener",
+        "remove_output_routings_listener",
+        "remove_output_sub_routings_listener",
+        "remove_performance_impact_listener",
+        "remove_playing_slot_index_listener",
+        "remove_solo_listener",
+        "remove_take_lanes_listener",
+        "set_data",
+        "solo_has_listener",
+        "stop_all_clips",
+        "take_lanes_has_listener"
+      ],
+      "reads": {
+        "available_input_routing_channels": [],
+        "available_input_routing_types": [
+          "<Track.RoutingType object at 0x11fa3eae0>",
+          "<Track.RoutingType object at 0x1691ea770>",
+          "<Track.RoutingType object at 0x1691e8a90>",
+          "<Track.RoutingType object at 0x1691e9bc0>",
+          "<Track.RoutingType object at 0x1691e8b40>",
+          "<Track.RoutingType object at 0x1691e87d0>",
+          "<Track.RoutingType object at 0x1691ea350>",
+          "<Track.RoutingType object at 0x1691e9640>",
+          "<Track.RoutingType object at 0x1691e9d20>"
+        ],
+        "available_output_routing_channels": [
+          "<Track.RoutingChannel object at 0x124aa6a20>"
+        ],
+        "available_output_routing_types": [
+          "<Track.RoutingType object at 0x11fa3eae0>",
+          "<Track.RoutingType object at 0x1691e9d20>",
+          "<Track.RoutingType object at 0x1691ea770>",
+          "<Track.RoutingType object at 0x1691e8a90>",
+          "<Track.RoutingType object at 0x1691e9bc0>",
+          "<Track.RoutingType object at 0x1691e8b40>"
+        ],
+        "back_to_arranger": false,
+        "can_be_armed": false,
+        "can_be_frozen": false,
+        "can_show_chains": false,
+        "clip_slots": [],
+        "color": 4047616,
+        "color_index": 19,
+        "current_input_routing": "Ext. In",
+        "current_input_sub_routing": "1/2",
+        "current_output_routing": "Master",
+        "current_output_sub_routing": "",
+        "devices": [
+          "<Device.Device object at 0x124ac20c0>"
+        ],
+        "group_track": null,
+        "has_audio_input": true,
+        "has_audio_output": true,
+        "has_midi_input": false,
+        "has_midi_output": false,
+        "input_meter_left": 0.0,
+        "input_meter_level": 0.0,
+        "input_meter_right": 0.0,
+        "input_routing_channel": "<Track.RoutingChannel object at 0x124aa6840>",
+        "input_routing_type": "<Track.RoutingType object at 0x11fa3eae0>",
+        "input_routings": [
+          "Ext. In",
+          "Resampling",
+          "3-Audio",
+          "4-Audio",
+          "T Kick",
+          "T Bass",
+          "T Vox",
+          "B-Delay",
+          "Main",
+          "No Input"
+        ],
+        "input_sub_routings": [],
+        "is_foldable": false,
+        "is_frozen": false,
+        "is_grouped": false,
+        "is_part_of_selection": false,
+        "is_showing_chains": false,
+        "is_visible": true,
+        "mixer_device": "<MixerDevice.MixerDevice object at 0x124ac2f40>",
+        "mute": false,
+        "muted_via_solo": false,
+        "name": "A-Reverb",
+        "ops": 49,
+        "output_meter_left": 0.0,
+        "output_meter_level": 0.0,
+        "output_meter_right": 0.0,
+        "output_routing_channel": "<Track.RoutingChannel object at 0x124aa6840>",
+        "output_routing_type": "<Track.RoutingType object at 0x11fa3eae0>",
+        "output_routings": [
+          "Ext. Out",
+          "Main",
+          "3-Audio",
+          "4-Audio",
+          "T Vox",
+          "Sends Only"
+        ],
+        "output_sub_routings": [
+          ""
+        ],
+        "performance_impact": 0.0,
+        "solo": false,
+        "take_lanes": [],
+        "view": "<Track.View object at 0x124ac2f40>"
+      }
+    },
+    "song.return_tracks[0].devices[0]": {
+      "attrs": {
+        "can_compare_ab": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_have_chains": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_have_drum_pads": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "Track"
+        },
+        "class_display_name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "class_name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "is_active": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_using_compare_preset_b": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "latency_in_ms": {
+          "readonly": true,
+          "type": "float"
+        },
+        "latency_in_samples": {
+          "readonly": true,
+          "type": "int"
+        },
+        "name": {
+          "readonly": false,
+          "type": "str"
+        },
+        "parameters": {
+          "readonly": true,
+          "type": "ATimeableValueVector"
+        },
+        "type": {
+          "readonly": true,
+          "type": "DeviceType"
+        },
+        "view": {
+          "readonly": true,
+          "type": "View"
+        }
+      },
+      "class": "Device",
+      "methods": [
+        "View",
+        "add_is_active_listener",
+        "add_is_using_compare_preset_b_listener",
+        "add_latency_in_ms_listener",
+        "add_latency_in_samples_listener",
+        "add_name_listener",
+        "add_parameters_listener",
+        "is_active_has_listener",
+        "is_using_compare_preset_b_has_listener",
+        "latency_in_ms_has_listener",
+        "latency_in_samples_has_listener",
+        "name_has_listener",
+        "parameters_has_listener",
+        "remove_is_active_listener",
+        "remove_is_using_compare_preset_b_listener",
+        "remove_latency_in_ms_listener",
+        "remove_latency_in_samples_listener",
+        "remove_name_listener",
+        "remove_parameters_listener",
+        "save_preset_to_compare_ab_slot",
+        "store_chosen_bank"
+      ],
+      "reads": {
+        "can_compare_ab": true,
+        "can_have_chains": false,
+        "can_have_drum_pads": false,
+        "class_display_name": "Reverb",
+        "class_name": "Reverb",
+        "is_active": true,
+        "is_using_compare_preset_b": false,
+        "latency_in_ms": 0.0,
+        "latency_in_samples": 0,
+        "name": "Reverb",
+        "ops": 13,
+        "parameters": [
+          "On",
+          "2.50 ms",
+          "On",
+          "On",
+          "830 Hz",
+          "5.85 ",
+          "On",
+          "0.25 Hz",
+          "3.00 ",
+          "0.50 ",
+          "On",
+          "Shelf",
+          "4.50 kHz",
+          "0.70 ",
+          "Off",
+          "90.0 Hz",
+          "0.75 ",
+          "On",
+          "0.02 Hz",
+          "0.02 ",
+          "2.50 s",
+          "60 %",
+          "40 %",
+          "Off",
+          "On",
+          "On",
+          "100.00 ",
+          "None",
+          "100.00 ",
+          "High",
+          "0.0 dB",
+          "0.0 dB",
+          "100 %"
+        ],
+        "type": 2,
+        "view": "<Device.View object at 0x12409ac40>"
+      }
+    },
+    "song.return_tracks[0].mixer_device": {
+      "attrs": {
+        "canonical_parent": {
+          "readonly": true,
+          "type": "Track"
+        },
+        "crossfade_assign": {
+          "readonly": false,
+          "type": "int"
+        },
+        "left_split_stereo": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "panning": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "panning_mode": {
+          "readonly": false,
+          "type": "int"
+        },
+        "right_split_stereo": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "sends": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "track_activator": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "volume": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        }
+      },
+      "class": "MixerDevice",
+      "methods": [
+        "add_crossfade_assign_listener",
+        "add_panning_mode_listener",
+        "add_sends_listener",
+        "crossfade_assign_has_listener",
+        "crossfade_assignments",
+        "panning_mode_has_listener",
+        "panning_modes",
+        "remove_crossfade_assign_listener",
+        "remove_panning_mode_listener",
+        "remove_sends_listener",
+        "sends_has_listener"
+      ],
+      "reads": {
+        "crossfade_assign": 1,
+        "left_split_stereo": "50L",
+        "ops": 8,
+        "panning": "C",
+        "panning_mode": 0,
+        "right_split_stereo": "50R",
+        "sends": [
+          "-inf dB",
+          "-inf dB"
+        ],
+        "track_activator": "On",
+        "volume": "0.0 dB"
+      }
+    },
+    "song.scenes[0]": {
+      "attrs": {
+        "canonical_parent": {
+          "readonly": true,
+          "type": "Song"
+        },
+        "clip_slots": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "color": {
+          "readonly": false,
+          "type": "int"
+        },
+        "color_index": {
+          "readonly": false,
+          "type": "none"
+        },
+        "is_empty": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_triggered": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "name": {
+          "readonly": false,
+          "type": "str"
+        },
+        "tempo": {
+          "readonly": false,
+          "type": "float"
+        },
+        "tempo_enabled": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "time_signature_denominator": {
+          "readonly": false,
+          "type": "int"
+        },
+        "time_signature_enabled": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "time_signature_numerator": {
+          "readonly": false,
+          "type": "int"
+        }
+      },
+      "class": "Scene",
+      "methods": [
+        "add_clip_slots_listener",
+        "add_color_index_listener",
+        "add_color_listener",
+        "add_is_triggered_listener",
+        "add_name_listener",
+        "add_tempo_enabled_listener",
+        "add_tempo_listener",
+        "add_time_signature_denominator_listener",
+        "add_time_signature_enabled_listener",
+        "add_time_signature_numerator_listener",
+        "clip_slots_has_listener",
+        "color_has_listener",
+        "color_index_has_listener",
+        "fire",
+        "fire_as_selected",
+        "is_triggered_has_listener",
+        "name_has_listener",
+        "remove_clip_slots_listener",
+        "remove_color_index_listener",
+        "remove_color_listener",
+        "remove_is_triggered_listener",
+        "remove_name_listener",
+        "remove_tempo_enabled_listener",
+        "remove_tempo_listener",
+        "remove_time_signature_denominator_listener",
+        "remove_time_signature_enabled_listener",
+        "remove_time_signature_numerator_listener",
+        "set_fire_button_state",
+        "tempo_enabled_has_listener",
+        "tempo_has_listener",
+        "time_signature_denominator_has_listener",
+        "time_signature_enabled_has_listener",
+        "time_signature_numerator_has_listener"
+      ],
+      "reads": {
+        "clip_slots": [
+          "<ClipSlot.ClipSlot object at 0x1240b36c0>",
+          "<ClipSlot.ClipSlot object at 0x1240b0cc0>",
+          "<ClipSlot.ClipSlot object at 0x1240b0ec0>",
+          "<ClipSlot.ClipSlot object at 0x1240b04c0>",
+          "<ClipSlot.ClipSlot object at 0x1240b1c40>",
+          "<ClipSlot.ClipSlot object at 0x1240b2c40>",
+          "<ClipSlot.ClipSlot object at 0x1240b2f40>"
+        ],
+        "color": 0,
+        "color_index": null,
+        "is_empty": false,
+        "is_triggered": false,
+        "name": "",
+        "ops": 11,
+        "tempo": -1.0,
+        "tempo_enabled": false,
+        "time_signature_denominator": -1,
+        "time_signature_enabled": false,
+        "time_signature_numerator": -1
+      }
+    },
+    "song.tracks[0]": {
+      "attrs": {
+        "arm": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "arrangement_clips": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "available_input_routing_channels": {
+          "readonly": true,
+          "type": "RoutingChannelVector"
+        },
+        "available_input_routing_types": {
+          "readonly": true,
+          "type": "RoutingTypeVector"
+        },
+        "available_output_routing_channels": {
+          "readonly": true,
+          "type": "RoutingChannelVector"
+        },
+        "available_output_routing_types": {
+          "readonly": true,
+          "type": "RoutingTypeVector"
+        },
+        "back_to_arranger": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "can_be_armed": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_be_frozen": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "can_show_chains": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "Song"
+        },
+        "clip_slots": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "color": {
+          "readonly": false,
+          "type": "int"
+        },
+        "color_index": {
+          "readonly": false,
+          "type": "int"
+        },
+        "current_input_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "current_input_sub_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "current_monitoring_state": {
+          "readonly": false,
+          "type": "int"
+        },
+        "current_output_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "current_output_sub_routing": {
+          "readonly": false,
+          "type": "str"
+        },
+        "devices": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "fired_slot_index": {
+          "readonly": true,
+          "type": "int"
+        },
+        "group_track": {
+          "readonly": true,
+          "type": "none"
+        },
+        "has_audio_input": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "has_audio_output": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "has_midi_input": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "has_midi_output": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "implicit_arm": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "input_meter_level": {
+          "readonly": true,
+          "type": "float"
+        },
+        "input_routing_channel": {
+          "readonly": false,
+          "type": "RoutingChannel"
+        },
+        "input_routing_type": {
+          "readonly": false,
+          "type": "RoutingType"
+        },
+        "input_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "input_sub_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "is_foldable": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_frozen": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_grouped": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_part_of_selection": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_showing_chains": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "is_visible": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "mixer_device": {
+          "readonly": true,
+          "type": "MixerDevice"
+        },
+        "mute": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "muted_via_solo": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "name": {
+          "readonly": false,
+          "type": "str"
+        },
+        "output_meter_level": {
+          "readonly": true,
+          "type": "float"
+        },
+        "output_routing_channel": {
+          "readonly": false,
+          "type": "RoutingChannel"
+        },
+        "output_routing_type": {
+          "readonly": false,
+          "type": "RoutingType"
+        },
+        "output_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "output_sub_routings": {
+          "readonly": true,
+          "type": "StringVector"
+        },
+        "performance_impact": {
+          "readonly": true,
+          "type": "float"
+        },
+        "playing_slot_index": {
+          "readonly": true,
+          "type": "int"
+        },
+        "solo": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "take_lanes": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "view": {
+          "readonly": true,
+          "type": "View"
+        }
+      },
+      "class": "Track",
+      "methods": [
+        "View",
+        "add_arm_listener",
+        "add_arrangement_clips_listener",
+        "add_available_input_routing_channels_listener",
+        "add_available_input_routing_types_listener",
+        "add_available_output_routing_channels_listener",
+        "add_available_output_routing_types_listener",
+        "add_back_to_arranger_listener",
+        "add_clip_slots_listener",
+        "add_color_index_listener",
+        "add_color_listener",
+        "add_current_input_routing_listener",
+        "add_current_input_sub_routing_listener",
+        "add_current_monitoring_state_listener",
+        "add_current_output_routing_listener",
+        "add_current_output_sub_routing_listener",
+        "add_data_listener",
+        "add_devices_listener",
+        "add_fired_slot_index_listener",
+        "add_has_audio_input_listener",
+        "add_has_audio_output_listener",
+        "add_has_midi_input_listener",
+        "add_has_midi_output_listener",
+        "add_implicit_arm_listener",
+        "add_input_meter_left_listener",
+        "add_input_meter_level_listener",
+        "add_input_meter_right_listener",
+        "add_input_routing_channel_listener",
+        "add_input_routing_type_listener",
+        "add_input_routings_listener",
+        "add_input_sub_routings_listener",
+        "add_is_frozen_listener",
+        "add_is_showing_chains_listener",
+        "add_mute_listener",
+        "add_muted_via_solo_listener",
+        "add_name_listener",
+        "add_output_meter_left_listener",
+        "add_output_meter_level_listener",
+        "add_output_meter_right_listener",
+        "add_output_routing_channel_listener",
+        "add_output_routing_type_listener",
+        "add_output_routings_listener",
+        "add_output_sub_routings_listener",
+        "add_performance_impact_listener",
+        "add_playing_slot_index_listener",
+        "add_solo_listener",
+        "add_take_lanes_listener",
+        "arm_has_listener",
+        "arrangement_clips_has_listener",
+        "available_input_routing_channels_has_listener",
+        "available_input_routing_types_has_listener",
+        "available_output_routing_channels_has_listener",
+        "available_output_routing_types_has_listener",
+        "back_to_arranger_has_listener",
+        "clip_slots_has_listener",
+        "color_has_listener",
+        "color_index_has_listener",
+        "create_audio_clip",
+        "create_midi_clip",
+        "create_take_lane",
+        "current_input_routing_has_listener",
+        "current_input_sub_routing_has_listener",
+        "current_monitoring_state_has_listener",
+        "current_output_routing_has_listener",
+        "current_output_sub_routing_has_listener",
+        "data_has_listener",
+        "delete_clip",
+        "delete_device",
+        "devices_has_listener",
+        "duplicate_clip_slot",
+        "duplicate_clip_to_arrangement",
+        "duplicate_device",
+        "fired_slot_index_has_listener",
+        "get_data",
+        "has_audio_input_has_listener",
+        "has_audio_output_has_listener",
+        "has_midi_input_has_listener",
+        "has_midi_output_has_listener",
+        "implicit_arm_has_listener",
+        "input_meter_left_has_listener",
+        "input_meter_level_has_listener",
+        "input_meter_right_has_listener",
+        "input_routing_channel_has_listener",
+        "input_routing_type_has_listener",
+        "input_routings_has_listener",
+        "input_sub_routings_has_listener",
+        "insert_device",
+        "is_frozen_has_listener",
+        "is_showing_chains_has_listener",
+        "jump_in_running_session_clip",
+        "monitoring_states",
+        "mute_has_listener",
+        "muted_via_solo_has_listener",
+        "name_has_listener",
+        "output_meter_left_has_listener",
+        "output_meter_level_has_listener",
+        "output_meter_right_has_listener",
+        "output_routing_channel_has_listener",
+        "output_routing_type_has_listener",
+        "output_routings_has_listener",
+        "output_sub_routings_has_listener",
+        "performance_impact_has_listener",
+        "playing_slot_index_has_listener",
+        "remove_arm_listener",
+        "remove_arrangement_clips_listener",
+        "remove_available_input_routing_channels_listener",
+        "remove_available_input_routing_types_listener",
+        "remove_available_output_routing_channels_listener",
+        "remove_available_output_routing_types_listener",
+        "remove_back_to_arranger_listener",
+        "remove_clip_slots_listener",
+        "remove_color_index_listener",
+        "remove_color_listener",
+        "remove_current_input_routing_listener",
+        "remove_current_input_sub_routing_listener",
+        "remove_current_monitoring_state_listener",
+        "remove_current_output_routing_listener",
+        "remove_current_output_sub_routing_listener",
+        "remove_data_listener",
+        "remove_devices_listener",
+        "remove_fired_slot_index_listener",
+        "remove_has_audio_input_listener",
+        "remove_has_audio_output_listener",
+        "remove_has_midi_input_listener",
+        "remove_has_midi_output_listener",
+        "remove_implicit_arm_listener",
+        "remove_input_meter_left_listener",
+        "remove_input_meter_level_listener",
+        "remove_input_meter_right_listener",
+        "remove_input_routing_channel_listener",
+        "remove_input_routing_type_listener",
+        "remove_input_routings_listener",
+        "remove_input_sub_routings_listener",
+        "remove_is_frozen_listener",
+        "remove_is_showing_chains_listener",
+        "remove_mute_listener",
+        "remove_muted_via_solo_listener",
+        "remove_name_listener",
+        "remove_output_meter_left_listener",
+        "remove_output_meter_level_listener",
+        "remove_output_meter_right_listener",
+        "remove_output_routing_channel_listener",
+        "remove_output_routing_type_listener",
+        "remove_output_routings_listener",
+        "remove_output_sub_routings_listener",
+        "remove_performance_impact_listener",
+        "remove_playing_slot_index_listener",
+        "remove_solo_listener",
+        "remove_take_lanes_listener",
+        "set_data",
+        "solo_has_listener",
+        "stop_all_clips",
+        "take_lanes_has_listener"
+      ],
+      "reads": {
+        "arm": false,
+        "arrangement_clips": [],
+        "available_input_routing_channels": [
+          "<Track.RoutingChannel object at 0x124aa62a0>",
+          "<Track.RoutingChannel object at 0x124aa6340>",
+          "<Track.RoutingChannel object at 0x124aa6160>",
+          "<Track.RoutingChannel object at 0x124aa6020>",
+          "<Track.RoutingChannel object at 0x124aa60c0>",
+          "<Track.RoutingChannel object at 0x124aa5f80>",
+          "<Track.RoutingChannel object at 0x165042020>",
+          "<Track.RoutingChannel object at 0x165043420>",
+          "<Track.RoutingChannel object at 0x1650427a0>",
+          "<Track.RoutingChannel object at 0x165042660>",
+          "<Track.RoutingChannel object at 0x165040220>",
+          "<Track.RoutingChannel object at 0x165041c60>",
+          "<Track.RoutingChannel object at 0x1650420c0>",
+          "<Track.RoutingChannel object at 0x165040400>",
+          "<Track.RoutingChannel object at 0x165041ee0>",
+          "<Track.RoutingChannel object at 0x165041bc0>",
+          "<Track.RoutingChannel object at 0x11f959800>"
+        ],
+        "available_input_routing_types": [
+          "<Track.RoutingType object at 0x11fa3eae0>",
+          "<Track.RoutingType object at 0x1691e9bc0>",
+          "<Track.RoutingType object at 0x1691ea770>",
+          "<Track.RoutingType object at 0x1691e8b40>",
+          "<Track.RoutingType object at 0x1691e87d0>",
+          "<Track.RoutingType object at 0x1691e8a90>"
+        ],
+        "available_output_routing_channels": [
+          "<Track.RoutingChannel object at 0x165042020>"
+        ],
+        "available_output_routing_types": [
+          "<Track.RoutingType object at 0x11fa3eae0>",
+          "<Track.RoutingType object at 0x1691e8a90>",
+          "<Track.RoutingType object at 0x1691e9bc0>",
+          "<Track.RoutingType object at 0x1691ea770>"
+        ],
+        "back_to_arranger": false,
+        "can_be_armed": true,
+        "can_be_frozen": false,
+        "can_show_chains": false,
+        "clip_slots": [
+          "<ClipSlot.ClipSlot object at 0x1240a0540>",
+          "<ClipSlot.ClipSlot object at 0x1240a2bc0>",
+          "<ClipSlot.ClipSlot object at 0x1240a2c40>",
+          "<ClipSlot.ClipSlot object at 0x1240a1cc0>",
+          "<ClipSlot.ClipSlot object at 0x1240a1840>",
+          "<ClipSlot.ClipSlot object at 0x1240a2b40>",
+          "<ClipSlot.ClipSlot object at 0x1240a1bc0>",
+          "<ClipSlot.ClipSlot object at 0x1240a06c0>",
+          "<ClipSlot.ClipSlot object at 0x1240a32c0>"
+        ],
+        "color": 4047616,
+        "color_index": 19,
+        "current_input_routing": "Ext: All Ins",
+        "current_input_sub_routing": "",
+        "current_monitoring_state": 1,
+        "current_output_routing": "None",
+        "current_output_sub_routing": "",
+        "devices": [],
+        "fired_slot_index": -1,
+        "group_track": null,
+        "has_audio_input": false,
+        "has_audio_output": false,
+        "has_midi_input": true,
+        "has_midi_output": true,
+        "implicit_arm": false,
+        "input_meter_level": 0.0,
+        "input_routing_channel": "<Track.RoutingChannel object at 0x11f959800>",
+        "input_routing_type": "<Track.RoutingType object at 0x11fa3eae0>",
+        "input_routings": [
+          "All Ins",
+          "Computer Keyboard",
+          "2-MIDI",
+          "T Kick",
+          "T Bass",
+          "No Input"
+        ],
+        "input_sub_routings": [
+          "All Channels",
+          "Ch. 1",
+          "Ch. 2",
+          "Ch. 3",
+          "Ch. 4",
+          "Ch. 5",
+          "Ch. 6",
+          "Ch. 7",
+          "Ch. 8",
+          "Ch. 9",
+          "Ch. 10",
+          "Ch. 11",
+          "Ch. 12",
+          "Ch. 13",
+          "Ch. 14",
+          "Ch. 15",
+          "Ch. 16"
+        ],
+        "is_foldable": false,
+        "is_frozen": false,
+        "is_grouped": false,
+        "is_part_of_selection": false,
+        "is_showing_chains": false,
+        "is_visible": true,
+        "mixer_device": "<MixerDevice.MixerDevice object at 0x1240a2b40>",
+        "mute": false,
+        "muted_via_solo": false,
+        "name": "1-MIDI",
+        "ops": 51,
+        "output_meter_level": 0.0,
+        "output_routing_channel": "<Track.RoutingChannel object at 0x11f959800>",
+        "output_routing_type": "<Track.RoutingType object at 0x11fa3eae0>",
+        "output_routings": [
+          "2-MIDI",
+          "T Kick",
+          "T Bass",
+          "No Output"
+        ],
+        "output_sub_routings": [
+          ""
+        ],
+        "performance_impact": 0.0,
+        "playing_slot_index": -1,
+        "solo": false,
+        "take_lanes": [],
+        "view": "<Track.View object at 0x1240a32c0>"
+      }
+    },
+    "song.tracks[0].clip_slots[0]": {
+      "attrs": {
+        "canonical_parent": {
+          "readonly": true,
+          "type": "Track"
+        },
+        "clip": {
+          "readonly": true,
+          "type": "none"
+        },
+        "color": {
+          "readonly": true,
+          "type": "none"
+        },
+        "color_index": {
+          "readonly": true,
+          "type": "none"
+        },
+        "controls_other_clips": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "has_clip": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "has_stop_button": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "is_group_slot": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_playing": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_recording": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_triggered": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "playing_status": {
+          "readonly": true,
+          "type": "ClipSlotPlayingState"
+        },
+        "will_record_on_start": {
+          "readonly": true,
+          "type": "bool"
+        }
+      },
+      "class": "ClipSlot",
+      "methods": [
+        "add_color_index_listener",
+        "add_color_listener",
+        "add_controls_other_clips_listener",
+        "add_has_clip_listener",
+        "add_has_stop_button_listener",
+        "add_is_triggered_listener",
+        "add_playing_status_listener",
+        "color_has_listener",
+        "color_index_has_listener",
+        "controls_other_clips_has_listener",
+        "create_audio_clip",
+        "create_clip",
+        "delete_clip",
+        "duplicate_clip_to",
+        "fire",
+        "has_clip_has_listener",
+        "has_stop_button_has_listener",
+        "is_triggered_has_listener",
+        "playing_status_has_listener",
+        "remove_color_index_listener",
+        "remove_color_listener",
+        "remove_controls_other_clips_listener",
+        "remove_has_clip_listener",
+        "remove_has_stop_button_listener",
+        "remove_is_triggered_listener",
+        "remove_playing_status_listener",
+        "set_fire_button_state",
+        "stop"
+      ],
+      "reads": {
+        "clip": null,
+        "color": null,
+        "color_index": null,
+        "controls_other_clips": false,
+        "has_clip": false,
+        "has_stop_button": true,
+        "is_group_slot": false,
+        "is_playing": false,
+        "is_recording": false,
+        "is_triggered": false,
+        "ops": 12,
+        "playing_status": 0,
+        "will_record_on_start": false
+      }
+    },
+    "song.tracks[0].clip_slots[0].clip": {
+      "attrs": {},
+      "class": "NoneType",
+      "methods": [],
+      "reads": {}
+    },
+    "song.tracks[0].devices[0]": {
+      "missing": "song.tracks[0].devices: index 0 is out of range (0)",
+      "optional": true
+    },
+    "song.tracks[0].devices[0].parameters[0]": {
+      "missing": "song.tracks[0].devices: index 0 is out of range (0)",
+      "optional": true
+    },
+    "song.tracks[0].mixer_device": {
+      "attrs": {
+        "canonical_parent": {
+          "readonly": true,
+          "type": "Track"
+        },
+        "crossfade_assign": {
+          "readonly": false,
+          "type": "int"
+        },
+        "left_split_stereo": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "panning": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "panning_mode": {
+          "readonly": false,
+          "type": "int"
+        },
+        "right_split_stereo": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "sends": {
+          "readonly": true,
+          "type": "Vector"
+        },
+        "track_activator": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        },
+        "volume": {
+          "readonly": true,
+          "type": "DeviceParameter"
+        }
+      },
+      "class": "MixerDevice",
+      "methods": [
+        "add_crossfade_assign_listener",
+        "add_panning_mode_listener",
+        "add_sends_listener",
+        "crossfade_assign_has_listener",
+        "crossfade_assignments",
+        "panning_mode_has_listener",
+        "panning_modes",
+        "remove_crossfade_assign_listener",
+        "remove_panning_mode_listener",
+        "remove_sends_listener",
+        "sends_has_listener"
+      ],
+      "reads": {
+        "crossfade_assign": 1,
+        "left_split_stereo": "50L",
+        "ops": 8,
+        "panning": "C",
+        "panning_mode": 0,
+        "right_split_stereo": "50R",
+        "sends": [
+          "-inf dB",
+          "-inf dB"
+        ],
+        "track_activator": "On",
+        "volume": "0.0 dB"
+      }
+    },
+    "song.tracks[0].mixer_device.panning": {
+      "attrs": {
+        "automation_state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "MixerDevice"
+        },
+        "default_value": {
+          "readonly": true,
+          "type": "float"
+        },
+        "display_value": {
+          "readonly": false,
+          "type": "float"
+        },
+        "is_enabled": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_quantized": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "max": {
+          "readonly": true,
+          "type": "float"
+        },
+        "min": {
+          "readonly": true,
+          "type": "float"
+        },
+        "name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "original_name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "value": {
+          "readonly": false,
+          "type": "float"
+        }
+      },
+      "class": "DeviceParameter",
+      "methods": [
+        "add_automation_state_listener",
+        "add_display_value_listener",
+        "add_name_listener",
+        "add_state_listener",
+        "add_value_listener",
+        "automation_state_has_listener",
+        "begin_gesture",
+        "display_value_has_listener",
+        "end_gesture",
+        "name_has_listener",
+        "re_enable_automation",
+        "remove_automation_state_listener",
+        "remove_display_value_listener",
+        "remove_name_listener",
+        "remove_state_listener",
+        "remove_value_listener",
+        "state_has_listener",
+        "str_for_value",
+        "value_has_listener"
+      ],
+      "reads": {
+        "automation_state": 0,
+        "default_value": 0.0,
+        "display_value": 0.0,
+        "is_enabled": true,
+        "is_quantized": false,
+        "max": 1.0,
+        "min": -1.0,
+        "name": "Track Panning",
+        "ops": 11,
+        "original_name": "Track Panning",
+        "state": 0,
+        "value": 0.0
+      }
+    },
+    "song.tracks[0].mixer_device.sends[0]": {
+      "attrs": {
+        "automation_state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "MixerDevice"
+        },
+        "default_value": {
+          "readonly": true,
+          "type": "float"
+        },
+        "display_value": {
+          "readonly": false,
+          "type": "float"
+        },
+        "is_enabled": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_quantized": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "max": {
+          "readonly": true,
+          "type": "float"
+        },
+        "min": {
+          "readonly": true,
+          "type": "float"
+        },
+        "name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "original_name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "value": {
+          "readonly": false,
+          "type": "float"
+        }
+      },
+      "class": "DeviceParameter",
+      "methods": [
+        "add_automation_state_listener",
+        "add_display_value_listener",
+        "add_name_listener",
+        "add_state_listener",
+        "add_value_listener",
+        "automation_state_has_listener",
+        "begin_gesture",
+        "display_value_has_listener",
+        "end_gesture",
+        "name_has_listener",
+        "re_enable_automation",
+        "remove_automation_state_listener",
+        "remove_display_value_listener",
+        "remove_name_listener",
+        "remove_state_listener",
+        "remove_value_listener",
+        "state_has_listener",
+        "str_for_value",
+        "value_has_listener"
+      ],
+      "reads": {
+        "automation_state": 0,
+        "default_value": 0.0,
+        "display_value": -70.0,
+        "is_enabled": true,
+        "is_quantized": false,
+        "max": 1.0,
+        "min": 0.0,
+        "name": "A-Reverb",
+        "ops": 11,
+        "original_name": "A-Reverb",
+        "state": 0,
+        "value": 0.0
+      }
+    },
+    "song.tracks[0].mixer_device.volume": {
+      "attrs": {
+        "automation_state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "canonical_parent": {
+          "readonly": true,
+          "type": "MixerDevice"
+        },
+        "default_value": {
+          "readonly": true,
+          "type": "float"
+        },
+        "display_value": {
+          "readonly": false,
+          "type": "float"
+        },
+        "is_enabled": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "is_quantized": {
+          "readonly": true,
+          "type": "bool"
+        },
+        "max": {
+          "readonly": true,
+          "type": "float"
+        },
+        "min": {
+          "readonly": true,
+          "type": "float"
+        },
+        "name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "original_name": {
+          "readonly": true,
+          "type": "str"
+        },
+        "state": {
+          "readonly": true,
+          "type": "int"
+        },
+        "value": {
+          "readonly": false,
+          "type": "float"
+        }
+      },
+      "class": "DeviceParameter",
+      "methods": [
+        "add_automation_state_listener",
+        "add_display_value_listener",
+        "add_name_listener",
+        "add_state_listener",
+        "add_value_listener",
+        "automation_state_has_listener",
+        "begin_gesture",
+        "display_value_has_listener",
+        "end_gesture",
+        "name_has_listener",
+        "re_enable_automation",
+        "remove_automation_state_listener",
+        "remove_display_value_listener",
+        "remove_name_listener",
+        "remove_state_listener",
+        "remove_value_listener",
+        "state_has_listener",
+        "str_for_value",
+        "value_has_listener"
+      ],
+      "reads": {
+        "automation_state": 0,
+        "default_value": 0.8500000238418579,
+        "display_value": 0.0,
+        "is_enabled": true,
+        "is_quantized": false,
+        "max": 1.0,
+        "min": 0.0,
+        "name": "Track Volume",
+        "ops": 11,
+        "original_name": "Track Volume",
+        "state": 0,
+        "value": 0.8500000238418579
+      }
+    },
+    "song.view": {
+      "attrs": {
+        "canonical_parent": {
+          "readonly": true,
+          "type": "Song"
+        },
+        "detail_clip": {
+          "readonly": false,
+          "type": "none"
+        },
+        "draw_mode": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "follow_song": {
+          "readonly": false,
+          "type": "bool"
+        },
+        "highlighted_clip_slot": {
+          "readonly": false,
+          "type": "ClipSlot"
+        },
+        "mod_mapping_device": {
+          "readonly": false,
+          "type": "none"
+        },
+        "mod_mapping_parameter": {
+          "readonly": true,
+          "type": "none"
+        },
+        "selected_chain": {
+          "readonly": false,
+          "type": "none"
+        },
+        "selected_parameter": {
+          "readonly": true,
+          "type": "none"
+        },
+        "selected_scene": {
+          "readonly": false,
+          "type": "Scene"
+        },
+        "selected_track": {
+          "readonly": false,
+          "type": "Track"
+        }
+      },
+      "class": "View",
+      "methods": [
+        "add_detail_clip_listener",
+        "add_draw_mode_listener",
+        "add_follow_song_listener",
+        "add_mod_mapping_device_listener",
+        "add_mod_mapping_parameter_listener",
+        "add_selected_chain_listener",
+        "add_selected_parameter_listener",
+        "add_selected_scene_listener",
+        "add_selected_track_listener",
+        "detail_clip_has_listener",
+        "draw_mode_has_listener",
+        "follow_song_has_listener",
+        "mod_mapping_device_has_listener",
+        "mod_mapping_parameter_has_listener",
+        "remove_detail_clip_listener",
+        "remove_draw_mode_listener",
+        "remove_follow_song_listener",
+        "remove_mod_mapping_device_listener",
+        "remove_mod_mapping_parameter_listener",
+        "remove_selected_chain_listener",
+        "remove_selected_parameter_listener",
+        "remove_selected_scene_listener",
+        "remove_selected_track_listener",
+        "select_device",
+        "selected_chain_has_listener",
+        "selected_parameter_has_listener",
+        "selected_scene_has_listener",
+        "selected_track_has_listener"
+      ],
+      "reads": {
+        "detail_clip": null,
+        "draw_mode": false,
+        "follow_song": true,
+        "highlighted_clip_slot": "<ClipSlot.ClipSlot object at 0x1240b1a40>",
+        "mod_mapping_device": null,
+        "mod_mapping_parameter": null,
+        "ops": 10,
+        "selected_chain": null,
+        "selected_parameter": null,
+        "selected_scene": "<Scene.Scene object at 0x1240b2440>",
+        "selected_track": "<Track.Track object at 0x1240b1a40>"
+      }
+    }
+  },
+  "recorded_at": "2026-09-21T08:37:00Z",
+  "script_version": "1.37.0"
+}

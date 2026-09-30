@@ -1,0 +1,15 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+# The Dockerfile in this repo builds the server; this only names the command.
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties: {}
+  commandFunction:
+    |-
+    (config) => ({
+      command: '/app/ableton-music-maker',
+      args: []
+    })
+  exampleConfig: {}

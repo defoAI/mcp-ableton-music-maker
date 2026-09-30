@@ -1,0 +1,34 @@
+/* The README images: one look, shared. Rendered by scripts/render-readme-images.sh. */
+@import url("https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  --bg: #0F0E0C;
+  --panel: #151412;
+  --panel-2: #181714;
+  --line: #2E2B26;
+  --line-2: #3A3731;
+  --bubble: #2A2722;
+  --ink: #EDE8DF;
+  --ink-2: #D6D0C4;
+  --muted: #A8A196;
+  --faint: #8C857A;
+  --accent: #EBA83A;
+  --hot: #F25A4F;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --display: "Bricolage Grotesque", sans-serif;
+  --ui: "IBM Plex Sans", sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); }
+body { color: var(--ink); font-family: var(--ui); overflow: hidden; }
+
+.frame { position: relative; overflow: hidden; background: var(--bg); }
+.mono { font-family: var(--mono); }
+.eyebrow { font-family: var(--mono); font-size: 13px; letter-spacing: 0.14em; color: var(--accent); }
+.title { font-family: var(--display); font-weight: 800; font-size: 48px; letter-spacing: -0.03em; line-height: 1; }
+.say { padding: 10px 16px; background: var(--bubble); border-radius: 14px 14px 4px 14px; font-size: 16px; line-height: 1.45; }
+.chip { font-family: var(--mono); font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line-2); color: var(--accent); align-self: flex-start; }
+.window { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: 0 40px 80px rgba(0, 0, 0, 0.5); }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: var(--line-2); display: inline-block; }
+.key { padding: 6px 10px; border: 1px solid var(--line-2); border-bottom-width: 3px; border-radius: 8px; font-family: var(--mono); font-size: 13px; }

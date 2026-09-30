@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The Mac app, Listen</title>
+<link rel="stylesheet" href="base.css">
+<style>
+/* The app's own dark tokens, from app/src/app.css. */
+.frame { width: 1280px; height: 800px; padding: 48px; display: flex; color: #EDEBE6; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "IBM Plex Sans", sans-serif; }
+.window { flex-grow: 1; display: flex; background: #1B1A18; border-color: #34322E; }
+.side { width: 210px; flex-shrink: 0; background: #262523; border-right: 1px solid #34322E; display: flex; flex-direction: column; padding: 16px 12px; gap: 2px; }
+.side .dot { background: #4A4740; }
+.nav { padding: 8px 10px; border-radius: 7px; font-size: 14px; color: #D8D5CE; }
+.nav.on { background: #253549; color: #FFFFFF; }
+.chain { display: flex; flex-direction: column; gap: 8px; padding: 12px 10px; border-top: 1px solid #34322E; font-size: 12px; color: #A8A59E; }
+.chain span { display: flex; align-items: center; gap: 8px; }
+.chain i { width: 8px; height: 8px; border-radius: 50%; background: #4CC95F; }
+.main { flex-grow: 1; display: flex; flex-direction: column; padding: 24px 28px; gap: 18px; min-width: 0; }
+.scope { flex-grow: 1; position: relative; height: 330px; background: #0E0D0B; border-radius: 10px; overflow: hidden; }
+.bars { position: absolute; left: 40px; right: 12px; top: 20px; bottom: 34px; display: flex; align-items: flex-end; gap: 2px; }
+.bars div { flex: 1; position: relative; border-radius: 1px 1px 0 0; }
+.bars i { position: absolute; left: 0; right: 0; height: 2px; background: #EDEBE6; }
+.axis { position: absolute; left: 40px; right: 12px; bottom: 10px; display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; color: #8A877F; }
+.meter { width: 150px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px; padding: 16px; background: #232220; border-radius: 10px; }
+.lane { width: 18px; background: #0E0D0B; border-radius: 3px; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
+.lane div { background: #EBA83A; }
+.range { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: #232220; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="window">
+    <div class="side">
+      <div style="display: flex; gap: 8px; padding: 0 4px 20px"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <div class="nav">Overview</div><div class="nav">Activity</div><div class="nav on">Listen</div><div class="nav">Prompts</div><div class="nav">Setup</div><div class="nav">Settings</div>
+      <div style="flex-grow: 1"></div>
+      <div class="chain"><span><i></i>Claude Desktop</span><span><i></i>Server</span><span><i></i>Live</span></div>
+    </div>
+    <div class="main">
+      <div style="display: flex; align-items: baseline; gap: 12px"><span style="font-size: 22px; font-weight: 600">Listen</span><span style="font-size: 14px; color: #A8A59E">What Live is putting out, right now</span></div>
+      <div style="display: flex; gap: 16px">
+        <div class="scope" id="scope">
+          <div class="bars" id="bars"></div>
+          <div class="axis"><span>20</span><span>50</span><span>100</span><span>200</span><span>500</span><span>1k</span><span>2k</span><span>5k</span><span>10k</span><span>20k</span></div>
+          <div style="position: absolute; right: 16px; top: 12px; font-size: 12px; color: #8A877F">loudest band <b style="color: #EDEBE6">bass</b></div>
+        </div>
+        <div class="meter">
+          <div style="display: flex; justify-content: space-between; font-size: 12px; color: #A8A59E"><span>Master</span><span style="display: flex; align-items: center; gap: 6px">clip<span style="width: 8px; height: 8px; border-radius: 50%; background: #4A4740"></span></span></div>
+          <div style="flex-grow: 1; display: flex; gap: 10px; justify-content: center"><div class="lane"><div style="height: 82%"></div></div><div class="lane"><div style="height: 85%"></div></div></div>
+          <div class="mono" style="display: flex; justify-content: space-between; font-size: 12px"><span>−4.3</span><span>−4.0</span></div>
+          <div style="border-top: 1px solid #34322E; padding-top: 10px; display: flex; flex-direction: column; gap: 2px"><span style="font-size: 12px; color: #A8A59E">Correlation</span><span class="mono" style="font-size: 18px">+0.62</span></div>
+        </div>
+      </div>
+      <div style="font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #A8A59E">In words · the six ranges of a mix</div>
+      <div style="display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px" id="ranges"></div>
+    </div>
+  </div>
+</div>
+<script>
+  // A drawn spectrum, not a capture: a mix's usual slope with a bass bump.
+  const H = 276;
+  const pts = [[0, -30], [4, -14], [8, -8], [12, -10], [18, -13], [24, -17], [30, -19], [36, -22], [42, -24], [48, -27], [54, -31], [60, -36], [66, -44], [71, -54]];
+  let bars = '';
+  for (let i = 0; i < 72; i++) {
+    let k = 0;
+    while (k < pts.length - 2 && pts[k + 1][0] < i) k++;
+    const [a, b] = [pts[k], pts[k + 1]];
+    const db = a[1] + (b[1] - a[1]) * (i - a[0]) / (b[0] - a[0]) + Math.sin(i * 1.7) * 2.2;
+    const hold = 4 + Math.round(Math.abs(Math.sin(i * 0.9)) * 12);
+    bars += `<div style="height:${Math.max(4, Math.round((db + 72) / 72 * H))}px;background:${db > -12 ? '#F25A4F' : '#EBA83A'}"><i style="top:-${hold}px"></i></div>`;
+  }
+  document.getElementById('bars').innerHTML = bars;
+  const scope = document.getElementById('scope');
+  for (const d of [0, -24, -48, -72]) {
+    const y = 20 + Math.round(-d / 72 * H);
+    scope.insertAdjacentHTML('afterbegin', `<div style="position:absolute;left:40px;right:12px;top:${y}px;border-top:1px solid #26251F"></div><span class="mono" style="position:absolute;left:8px;top:${y - 6}px;font-size:10px;color:#8A877F">${d ? '−' + -d : '0'}</span>`);
+  }
+  // The names are the app's own: RANGES in app/src-tauri/src/listen/analysis.rs.
+  const ranges = [['sub', -9.1], ['bass', -4.2], ['low mids', -8.8], ['mids', -10.5], ['presence', -14.2], ['air', -19.6]];
+  document.getElementById('ranges').innerHTML = ranges.map(([n, v]) =>
+    `<div class="range"><span style="font-size:13px;color:#A8A59E">${n}</span><span class="mono" style="font-size:18px">−${(-v).toFixed(1)} dB</span><div style="height:4px;background:#0E0D0B;border-radius:2px;overflow:hidden"><div style="height:4px;width:${Math.round((24 + v) / 24 * 100)}%;background:#EBA83A"></div></div></div>`).join('');
+</script>
+</body>
+</html>

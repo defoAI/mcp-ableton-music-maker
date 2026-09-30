@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "AbletonMusicMaker": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "--read-only", "--tmpfs", "/tmp",
+        "--security-opt", "no-new-privileges:true",
+        "--cap-drop", "ALL",
+        "-v", "ableton-music-maker-state:/state",
+        "mcp-ableton-music-maker:local"
+      ]
+    }
+  }
+}

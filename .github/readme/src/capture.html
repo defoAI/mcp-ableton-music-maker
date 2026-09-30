@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>How loud is it</title>
+<link rel="stylesheet" href="base.css">
+<style>
+.frame { width: 1280px; height: 560px; padding: 56px 72px; display: flex; gap: 64px; }
+.side { width: 420px; flex-shrink: 0; display: flex; flex-direction: column; gap: 24px; }
+.card { flex-grow: 1; display: flex; flex-direction: column; gap: 20px; padding: 28px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+.stat { display: flex; flex-direction: column; gap: 4px; }
+.stat > span:first-child { font-size: 13px; color: var(--muted); }
+.big { font-family: var(--display); font-weight: 600; font-size: 40px; letter-spacing: -0.02em; }
+.big small { font-size: 18px; color: var(--muted); }
+.chart { flex-grow: 1; display: flex; gap: 12px; align-items: flex-end; position: relative; border-bottom: 1px solid var(--line-2); }
+.col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.col span { font-family: var(--mono); font-size: 12px; color: #CFC8BB; }
+.col div { width: 100%; border-radius: 4px 4px 0 0; }
+.labels { display: flex; gap: 12px; font-family: var(--mono); font-size: 12px; color: var(--faint); }
+.labels span { flex: 1; text-align: center; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="side">
+    <div class="eyebrow">HEAR IT</div>
+    <div class="title">It hears what it made.</div>
+    <span class="say" style="align-self: flex-start">how loud is it?</span>
+    <p style="margin: 0; font-size: 15px; line-height: 1.55; color: var(--muted)">Eight bars of the master, recorded through Live’s own Resampling, then measured the way a mastering engineer would.</p>
+    <div style="flex-grow: 1"></div>
+    <span class="mono" style="font-size: 12px; color: #7A7469">an example readout · capture_mix</span>
+  </div>
+  <div class="card">
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px">
+      <div class="stat"><span>Peak</span><span class="big">−3.8 <small>dBFS</small></span></div>
+      <div class="stat"><span>Clipping</span><span class="big">none</span></div>
+      <div class="stat"><span>Bars 5–8 vs 1–4</span><span class="big" style="color: var(--accent)">+5.3 <small style="color: var(--accent)">dB</small></span></div>
+    </div>
+    <div style="font-size: 13px; color: var(--muted)">RMS per bar</div>
+    <div class="chart" id="chart"></div>
+    <div class="labels" id="labels"></div>
+  </div>
+</div>
+<script>
+  // An example: bars 5–8 average 5.3 dB above bars 1–4, the README's own sample reply.
+  const rms = [-15.1, -14.9, -15.3, -15.0, -9.8, -9.6, -9.9, -9.7];
+  document.getElementById('chart').innerHTML = rms.map((v, i) =>
+    `<div class="col"><span>${'−' + (-v).toFixed(1)}</span><div style="height:${Math.round((v + 24) / 24 * 240)}px;background:${i < 4 ? '#4A463F' : '#EBA83A'}"></div></div>`).join('');
+  document.getElementById('labels').innerHTML = rms.map((_, i) => `<span>bar ${i + 1}</span>`).join('');
+</script>
+</body>
+</html>

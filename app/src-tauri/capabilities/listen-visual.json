@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "listen-visual",
+  "description": "The visual window may draw from the app's events, go full screen, and close.",
+  "windows": [
+    "listen-visual"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging"
+  ]
+}

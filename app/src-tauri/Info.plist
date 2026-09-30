@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.defoai.ableton-music-maker</string>
+	<key>CFBundleName</key>
+	<string>Ableton Music Maker</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>To draw a spectrum and meters of what Ableton Live is playing. The audio stays in memory on this Mac and is never saved or sent.</string>
+</dict>
+</plist>

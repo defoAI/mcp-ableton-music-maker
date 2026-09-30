@@ -1,0 +1,14 @@
+{
+  "name": "ableton-music-maker-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Mac companion app for MCP Ableton Music Maker",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0"
+  }
+}

@@ -1,0 +1,43 @@
+[package]
+name = "mcp-ableton-music-maker"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Ableton Live integration through the Model Context Protocol"
+license = "LGPL-3.0-or-later"
+repository = "https://github.com/defoAI/mcp-ableton-music-maker"
+default-run = "ableton-music-maker"
+publish = false
+
+[[bin]]
+name = "ableton-music-maker"
+path = "src/bin/ableton-music-maker.rs"
+
+[[bin]]
+name = "ableton-music-maker-install-script"
+path = "src/bin/ableton-music-maker-install-script.rs"
+
+[dependencies]
+rmcp = { version = "3.4", features = ["server", "macros", "transport-io", "schemars"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "time", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+schemars = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+roxmltree = "0.20"
+dirs = "6"
+chrono = "0.4"
+thiserror = "2"
+hound = "3"
+
+[dev-dependencies]
+rmcp = { version = "3.4", features = ["client", "transport-child-process"] }
+tempfile = "3"
+hound = "3"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

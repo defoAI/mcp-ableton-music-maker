@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ableton Music Maker</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="drag" data-tauri-drag-region></div>
+    <nav class="nav" aria-label="Sections">
+      <button data-go="overview" aria-current="page"><span class="glyph">◉</span>Overview</button>
+      <button data-go="activity"><span class="glyph">≡</span>Activity <span class="badge num" id="actbadge" hidden></span></button>
+      <button data-go="listen"><span class="glyph">∿</span>Listen <span class="led live" id="listen-led" hidden></span></button>
+      <button data-go="prompts"><span class="glyph">❝</span>Prompts</button>
+      <button data-go="setup"><span class="glyph">⇩</span>Setup <span class="badge" id="setupbadge" hidden>needs you</span></button>
+      <button data-go="settings"><span class="glyph">⚙</span>Settings</button>
+    </nav>
+    <div class="side-foot" id="sidefoot">
+      <span>Loading…</span>
+    </div>
+  </aside>
+
+  <main class="content">
+    <!-- OVERVIEW -->
+    <section class="screen" id="s-overview">
+      <div class="head"><h2>Overview</h2><span class="sub" id="ovsub"></span></div>
+      <div>
+        <div class="eyebrow">The chain</div>
+        <div class="chain" id="chain"></div>
+      </div>
+      <div>
+        <div class="eyebrow" id="tiles-title">This session</div>
+        <div class="tiles" id="tiles"></div>
+      </div>
+      <div>
+        <div class="eyebrow">Recent calls</div>
+        <div class="tablewrap"><div class="tscroll"><table>
+          <thead><tr><th>Time</th><th>Tool</th><th>What it did</th><th class="r">Live</th><th>Result</th><th class="r">Tokens (est.)</th></tr></thead>
+          <tbody id="recent"></tbody>
+        </table></div></div>
+      </div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section class="screen" id="s-activity" hidden>
+      <div class="head"><h2>Activity</h2><span class="sub">Every tool call the server handled, kept on this Mac</span></div>
+      <div class="toolbar">
+        <button class="chip" data-filter="all" aria-pressed="true">All</button>
+        <button class="chip" data-filter="write" aria-pressed="false">Changes to the set</button>
+        <button class="chip" data-filter="read" aria-pressed="false">Reads</button>
+        <button class="chip" data-filter="error" aria-pressed="false">Errors</button>
+        <span class="spacer"></span>
+        <select id="session"></select>
+        <button class="btn small" id="clearlog">Clear log</button>
+      </div>
+      <div class="tablewrap"><div class="tscroll"><table>
+        <thead><tr><th>Time</th><th>Tool</th><th>What it did</th><th class="r">Live</th><th>Result</th><th class="r">Tokens (est.)</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table></div></div>
+      <div class="detail" id="detail" hidden></div>
+      <div>
+        <div class="eyebrow">Captures</div>
+        <div class="tablewrap"><div class="tscroll"><table>
+          <thead><tr><th>Slot</th><th>Name</th><th class="r">Beats</th><th>File</th><th></th></tr></thead>
+          <tbody id="captures"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+        </table></div></div>
+        <p class="note">Captures are clips Live recorded into its own project folder through the Capture track. The app plays them in place and never deletes them.</p>
+      </div>
+      <p class="note">Tokens are estimated from the size of what the tool received and returned, about four characters per token. The model's own context is not visible to the server, so this is the cost each call adds, not a bill.</p>
+    </section>
+
+    <!-- LISTEN -->
+    <section class="screen" id="s-listen" hidden>
+      <div class="head"><h2>Listen</h2><span class="sub">What Live is putting out, right now</span></div>
+      <div class="listenbar" id="listenbar"></div>
+      <div id="listen-gate" hidden></div>
+      <div id="listen-scope" hidden>
+        <div class="scope">
+          <div class="spec">
+            <canvas id="spec" aria-label="Spectrum of Live's output, 20 Hz to 20 kHz, in dBFS"></canvas>
+            <div class="legend"><span><i class="sw-band"></i>now</span><span><i class="sw-hold"></i>peak hold</span></div>
+            <div class="peakbox">loudest band <b id="peakband">—</b></div>
+          </div>
+          <div class="meters">
+            <div class="mh"><span>MASTER</span><span class="clip"><i id="clipled"></i>clip</span></div>
+            <canvas id="meter" aria-label="Master level, left and right, in dBFS"></canvas>
+            <div class="readout">
+              <div><span>peak L / R</span><b id="pk" class="num">—</b></div>
+              <div><span>RMS</span><b id="rms" class="num">—</b></div>
+              <div><span>correlation</span><b id="corr" class="num">—</b></div>
+              <div><span>peak hold</span><b id="tph" class="num">—</b></div>
+            </div>
+          </div>
+        </div>
+        <div class="listen-words">
+          <div class="eyebrow">In words · the six ranges of a mix</div>
+          <div class="words" id="words"></div>
+          <p class="note">The ranges are named the way people talk about a mix, so what you see is what you can say to Claude. Each number is that range’s share of the whole, in dB; 0 dB would be all of it. Nothing here is recorded: the audio is measured in memory and thrown away.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- PROMPTS -->
+    <section class="screen" id="s-prompts" hidden>
+      <div class="head"><h2>Prompts</h2><span class="sub">Copy one, paste it into Claude. It asks you the rest.</span></div>
+      <div class="pbanner" id="pbanner" hidden></div>
+      <div>
+        <div class="eyebrow">Pick where you are</div>
+        <div class="prail" id="prail"></div>
+      </div>
+      <div class="pdetail">
+        <div class="pdhead">
+          <h3 id="p-title">—</h3>
+          <span class="why" id="p-why"></span>
+          <span class="pactions"><button class="btn small primary" data-act="copyprompt">Copy prompt</button></span>
+        </div>
+        <pre class="prompt" id="p-text" tabindex="0"></pre>
+        <div>
+          <div class="eyebrow">What happens after you paste</div>
+          <div class="psteps" id="p-steps"></div>
+        </div>
+        <div class="pdfoot">
+          <span>This text lives in <span class="path" id="p-path"></span> — the app ships the same file the repository does.</span>
+          <span id="p-len"></span>
+        </div>
+      </div>
+      <p class="note">The app never talks to Claude: your client starts the server, and copying is all this screen does. Nothing is recorded when you copy.</p>
+    </section>
+
+    <!-- SETUP -->
+    <section class="screen" id="s-setup" hidden>
+      <div class="head"><h2>Setup</h2><span class="sub">Four steps. The app checks each one for you.</span></div>
+      <div class="steps" id="steps"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="screen" id="s-settings" hidden>
+      <div class="head"><h2>Settings</h2></div>
+      <div class="group">
+        <h3>Live</h3>
+        <div class="srow"><label class="l" for="host">Host</label><input type="text" id="host"><span class="h">Where Live is running. Leave as is unless the server runs on another machine.</span></div>
+        <div class="srow"><label class="l" for="port">Port</label><input type="text" id="port"><span class="h">Must match the Remote Script.</span></div>
+      </div>
+      <div class="group">
+        <h3>Activity log</h3>
+        <div class="srow"><span class="l">Keep a log of tool calls</span><button class="switch" id="sw-log" role="switch" aria-checked="true"></button><span class="h">Tool names, timings, sizes and results. Stored in <span class="path" id="activity-path"></span> on this Mac. Never uploaded.</span></div>
+        <div class="srow"><span class="l">Keep the payloads too</span><button class="switch" id="sw-payload" role="switch" aria-checked="false"></button><span class="h">Parameters and results include your MIDI notes and track names. Off by default. When off, Activity shows sizes only.</span></div>
+        <div class="srow"><label class="l" for="retention">Delete entries after</label><span><input type="text" id="retention" style="width:60px"> days</span><span class="h">Applied when the app starts.</span></div>
+        <div class="srow"><span class="l"></span><span></span><span class="h" id="settings-note">These switches reach the server through your client's config, so a change applies to the next session your client starts.</span></div>
+      </div>
+      <div class="group">
+        <h3>Your data</h3>
+        <div class="srow"><span class="l">Activity log</span><span class="mono" id="data-activity">—</span><span class="h"><span class="path" id="data-activity-path"></span> — tool names, timings, sizes, results. Payloads only if you turned them on above.</span></div>
+        <div class="srow"><span class="l">Running servers</span><span class="mono" id="data-sessions">—</span><span class="h"><span class="path" id="data-sessions-path"></span> — which client started a server, and when. Removed when it exits.</span></div>
+        <div class="srow"><span class="l">Remote Script</span><span class="mono" id="data-script">—</span><span class="h"><span class="path" id="data-script-path"></span> — left alone by the button below.</span></div>
+        <div class="srow"><span class="l">Listening</span><span class="pill off">Nothing stored</span><span class="h">When you start listening, Live’s audio is analysed in memory about thirty times a second and discarded. Only Live’s process is heard; the float window’s position is the one thing remembered.</span></div>
+        <div class="srow"><span class="l">Nothing is uploaded</span><span class="pill off">No upload path exists</span><span class="h">The server and this app have no network code except the connection to Live. <a href="#" data-open="https://github.com/defoAI/mcp-ableton-music-maker/blob/main/TERMS.md">Terms &amp; data use</a></span></div>
+        <div class="srow"><span class="l">Delete all local data</span><button class="btn small" id="deletedata">Delete…</button><span class="h">Removes the activity log and heartbeats. Keeps the Remote Script, your client config, and the captures in Live's project folder.</span></div>
+      </div>
+      <div class="group">
+        <h3>General</h3>
+        <div class="srow"><span class="l">Check for updates</span><button class="btn small" data-open="https://github.com/defoAI/mcp-ableton-music-maker/releases">Open releases</button><span class="h" id="about">…</span></div>
+        <div class="srow"><span class="l">About</span><span></span><span class="h">Third-party integration, not made by Ableton. Derived from AbletonMCP by Siddharth Ahuja (MIT). Maintained by DefoAI UG.</span></div>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<script src="spectrum.js"></script>
+<script src="app.js"></script>
+<script src="listen.js"></script>
+</body>
+</html>
