@@ -348,6 +348,9 @@
     $('#sw-log').setAttribute('aria-checked', s.activity);
     $('#sw-payload').setAttribute('aria-checked', s.payloads);
     $('#sw-payload').disabled = !s.activity;
+    $('#sw-remember').setAttribute('aria-checked', !!s.remember);
+    $('#listen-retention').value = s.listening_retention_days;
+    $('#away-minutes').value = s.away_minutes;
     const st = state.status || {};
     const bytes = state.sessions.reduce((a, x) => a + (x.bytes || 0), 0);
     $('#activity-path').textContent = (st.state_dir || '~/.ableton-music-maker') + '/activity/';
@@ -355,6 +358,9 @@
     $('#data-activity-path').textContent = (st.state_dir || '') + '/activity/';
     $('#data-sessions').textContent = `${(st.sessions || []).length} heartbeat${(st.sessions || []).length === 1 ? '' : 's'}`;
     $('#data-sessions-path').textContent = (st.state_dir || '') + '/sessions/';
+    $('#data-listening').textContent = s.remember ? 'Measurements, no audio' : 'No audio stored';
+    $('#data-listening-path').textContent = (st.state_dir || '') + '/listening/';
+    $('#data-feedback-path').textContent = (st.state_dir || '') + '/feedback/';
     const target = st.script?.targets?.[0];
     $('#data-script').textContent = target?.installed || 'not installed';
     $('#data-script-path').textContent = target?.script || '';
@@ -513,6 +519,7 @@
     if (screen === 'activity') { renderActivity(); loadCaptures(); }
     if (screen === 'prompts') { if (state.prompts) renderPrompts(); else loadPrompts(); }
     if (window.__listen) window.__listen.onScreen(screen);
+    if (window.__feedback) window.__feedback.onScreen(screen);
   }
   window.__goto = go;
 
@@ -533,6 +540,7 @@
       const on = sw.getAttribute('aria-checked') !== 'true';
       if (sw.id === 'sw-log') saveSettings({ activity: on, payloads: on ? state.settings.payloads : false });
       if (sw.id === 'sw-payload') saveSettings({ payloads: on });
+      if (sw.id === 'sw-remember') saveSettings({ remember: on });
       return;
     }
     if (e.target.id === 'clearlog') {
@@ -541,11 +549,13 @@
       invoke('clear_session', { session: state.sessionId }).then(() => { state.sessionId = null; return loadSessions(); }).then(() => { toast('Log cleared'); renderOverview(); }, (err) => toast(String(err)));
     }
     if (e.target.id === 'deletedata') {
-      if (!confirm('Delete the activity log and heartbeats? The Remote Script and your client config stay.')) return;
+      if (!confirm('Delete the activity log, heartbeats, what was heard, and your comments and picks? The Remote Script and your client config stay.')) return;
       invoke('delete_local_data').then((r) => { toast(`Deleted ${r.removed} file${r.removed === 1 ? '' : 's'}`); return refreshStatus(); }).then(renderSettings, (err) => toast(String(err)));
     }
   });
   $('#session').addEventListener('change', (e) => { state.sessionId = e.target.value || null; state.selected = null; loadSessions().then(renderOverview); });
+  $('#listen-retention').addEventListener('change', (e) => { const d = parseInt(e.target.value, 10); if (d >= 1) saveSettings({ listening_retention_days: d }); else renderSettings(); });
+  $('#away-minutes').addEventListener('change', (e) => { const m = parseInt(e.target.value, 10); if (m >= 1 && m <= 1440) saveSettings({ away_minutes: m }); else { toast('Minutes must be 1–1440'); renderSettings(); } });
   for (const id of ['host', 'port', 'retention']) {
     $('#' + id).addEventListener('change', (e) => {
       const v = e.target.value.trim();

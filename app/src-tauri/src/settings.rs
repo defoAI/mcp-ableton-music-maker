@@ -23,6 +23,18 @@ pub struct Settings {
     pub float_y: Option<f64>,
     pub float_w: Option<f64>,
     pub float_h: Option<f64>,
+    /// Remember what Live plays: keep listening while the app is open and
+    /// Live plays, and write measurements (never audio). Off until the
+    /// producer turns it on.
+    pub remember: bool,
+    /// Days a remembered take is kept.
+    pub listening_retention_days: u32,
+    /// The away switch's time limit, in minutes.
+    pub away_minutes: u32,
+    /// How far the tap's audio trails Live's reported position beyond the
+    /// device buffer, in ms: measured with `examples/listen_probe.rs`
+    /// against a real Live, 0 until it is.
+    pub clock_offset_ms: f64,
 }
 
 impl Default for Settings {
@@ -39,6 +51,10 @@ impl Default for Settings {
             float_y: None,
             float_w: None,
             float_h: None,
+            remember: false,
+            listening_retention_days: 30,
+            away_minutes: 20,
+            clock_offset_ms: 0.0,
         }
     }
 }
@@ -82,6 +98,18 @@ pub fn save(app: &AppHandle, s: &Settings) -> Result<(), String> {
     }
     std::fs::write(&p, serde_json::to_vec_pretty(s).map_err(|e| e.to_string())?)
         .map_err(|e| format!("{}: {e}", p.display()))
+}
+
+/// The tap's extra offset against Live's clock, for any runtime's handle (the
+/// listen module is generic over it).
+pub fn offset_ms<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> f64 {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .and_then(|d| std::fs::read(d.join("settings.json")).ok())
+        .and_then(|b| serde_json::from_slice::<Settings>(&b).ok())
+        .map(|s| s.clock_offset_ms)
+        .unwrap_or(0.0)
 }
 
 /// The crate reads Live's address from the environment; set it for this

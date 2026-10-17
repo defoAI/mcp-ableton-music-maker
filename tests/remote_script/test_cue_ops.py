@@ -68,6 +68,9 @@ class CueOps(unittest.TestCase):
             {"op": "set", "path": "song.tracks[0].mute", "value": True}]}])
         self.sock.feed('{"id": 1, "type": "subscribe", "params": {"channels": ["cue"]}}\n')
         self.script.tick()
+        # The seek stands in for time passing, so it must land where it is
+        # put: a seek while playing snaps to the global quantization in Live.
+        self.song.clip_trigger_quantization = 0
         self.song.current_song_time = 4.05          # a twentieth of a beat late
         self.script.tick(2)
         cues = self.events("cue")

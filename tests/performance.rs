@@ -10,8 +10,8 @@ use common::{is_error, server_with, text_of, FakeBridge};
 use mcp_ableton_music_maker::performance::CueParams;
 use mcp_ableton_music_maker::tools::{
     self, CancelCueParams, CaptureMixParams, ClipParams, CreateSceneParams, Empty,
-    EndPerformanceParams, FireClipParams, FireSceneParams, KeepTrackPlayingParams, ListenParams,
-    PanicParams, RecordClipParams, RestoreMixParams, SetCrossfaderParams,
+    EndPerformanceParams, FireClipParams, FireSceneParams, KeepTrackPlayingParams,
+    ListenMetersParams, PanicParams, RecordClipParams, RestoreMixParams, SetCrossfaderParams,
     SetLaunchQuantizationParams, SetTempoParams, StartPerformanceParams, TrackParams,
     UndoVaryParams, VaryClipParams,
 };
@@ -1213,12 +1213,12 @@ async fn listen_reads_meters_over_a_bar_without_touching_the_transport() {
     let server = server_with(b.clone());
     let r = server
         .run(
-            &tools::LISTEN,
-            ListenParams {
+            &tools::LISTEN_METERS,
+            ListenMetersParams {
                 bars: 0.25,
                 capture: false,
             },
-            tools::listen_body,
+            tools::listen_meters_body,
         )
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));

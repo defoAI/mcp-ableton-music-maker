@@ -6,6 +6,7 @@
 
 mod activity;
 mod clients;
+mod feedback;
 pub mod listen;
 mod prompts;
 mod settings;
@@ -267,6 +268,76 @@ fn listen_visual(app: AppHandle, open: bool, fullscreen: Option<bool>) -> Result
     Ok(json!({"open": true}))
 }
 
+// ── the producer answers: the Feedback screen ───────────────────────────────
+
+#[tauri::command]
+async fn feedback_state() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(feedback::state).await.map_err(err)
+}
+
+#[tauri::command]
+async fn feedback_comment(app: AppHandle, text: String, bar: Option<i64>) -> Result<Value, String> {
+    let out = tauri::async_runtime::spawn_blocking(move || feedback::comment(&text, bar))
+        .await
+        .map_err(err)?;
+    let _ = app.emit("feedback:changed", json!({"comment": true}));
+    out
+}
+
+#[tauri::command]
+async fn feedback_pick(app: AppHandle, offer: String, option: usize, note: Option<String>) -> Result<Value, String> {
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        feedback::pick(&offer, option, note.as_deref().unwrap_or(""))
+    })
+    .await
+    .map_err(err)?;
+    let _ = app.emit("feedback:changed", json!({"pick": true}));
+    out
+}
+
+#[tauri::command]
+async fn feedback_play(offer: String, option: usize) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || feedback::play(&offer, option))
+        .await
+        .map_err(err)?
+}
+
+#[tauri::command]
+fn feedback_away(app: AppHandle, on: bool, minutes: Option<u32>) -> Result<Value, String> {
+    let minutes = minutes.unwrap_or_else(|| settings::load(&app).away_minutes);
+    let out = feedback::away(on, minutes);
+    let _ = app.emit("feedback:changed", json!({"away": on}));
+    out
+}
+
+const FEEDBACK_FLOAT_LABEL: &str = "feedback-float";
+
+/// The small always-on-top window for a comment while Live plays: it stamps
+/// the bar playing when the comment is sent.
+#[tauri::command]
+fn feedback_float(app: AppHandle, open: bool) -> Result<Value, String> {
+    if !open {
+        if let Some(w) = app.get_webview_window(FEEDBACK_FLOAT_LABEL) {
+            let _ = w.close();
+        }
+        return Ok(json!({"open": false}));
+    }
+    if let Some(w) = app.get_webview_window(FEEDBACK_FLOAT_LABEL) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(json!({"open": true}));
+    }
+    WebviewWindowBuilder::new(&app, FEEDBACK_FLOAT_LABEL, WebviewUrl::App("feedback-float.html".into()))
+        .title("Note on this bar")
+        .inner_size(380.0, 96.0)
+        .min_inner_size(260.0, 80.0)
+        .always_on_top(true)
+        .resizable(true)
+        .build()
+        .map_err(err)?;
+    Ok(json!({"open": true}))
+}
+
 /// Where the float window was left, so it comes back in the same place.
 fn save_float_geometry(app: &AppHandle, w: &tauri::WebviewWindow) {
     let mut s = settings::load(app);
@@ -317,14 +388,23 @@ pub fn run() {
             listen_status,
             listen_float,
             listen_visual,
+            feedback_state,
+            feedback_comment,
+            feedback_pick,
+            feedback_play,
+            feedback_away,
+            feedback_float,
         ])
         .setup(|app| {
             app.manage(listen::Listen::default());
             let s = settings::load(app.handle());
             settings::apply_env(&s);
             activity::prune(app.handle(), s.retention_days);
+            mcp_ableton_music_maker::listening::prune(s.listening_retention_days);
             tray::install(app.handle())?;
             tray::start_refresh(app.handle().clone());
+            // Remember what Live plays, when the producer turned it on.
+            listen::remember::start(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -335,6 +415,9 @@ pub fn run() {
                 // stops as soon as no window is showing it.
                 tauri::WindowEvent::CloseRequested { api, .. } => {
                     let label = window.label().to_string();
+                    if label == FEEDBACK_FLOAT_LABEL {
+                        return;
+                    }
                     if label == FLOAT_LABEL || label == VISUAL_LABEL {
                         if label == FLOAT_LABEL {
                             if let Some(w) = app.get_webview_window(FLOAT_LABEL) {

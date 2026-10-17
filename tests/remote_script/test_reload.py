@@ -217,6 +217,14 @@ class WhatIsKept(ReloadCase):
         self.assertEqual(self.script._scene_started, {0: 1})
         self.assertEqual(self.script._library_key_cache, "a key")
 
+    def test_sidechain_undo_survives_a_reload(self):
+        # set_sidechain's description says a reload keeps what undo puts back.
+        saved = {"tracks[1].devices[0]": {"source": None, "on": False}}
+        self.script._sidechain_undo = saved
+        self.write_body("second")
+        self.reload()
+        self.assertIs(self.script._sidechain_undo, saved)
+
     def test_a_body_that_needs_a_new_attribute_gets_one_and_only_one(self):
         self.script._performance_mode = True
         self.write_body("second", defaults='{"_performance_mode": False, "_brand_new": 7}')

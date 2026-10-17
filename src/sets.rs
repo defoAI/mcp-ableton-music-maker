@@ -20,7 +20,8 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ExportSetParams {
-    /// A name for the file (letters, digits, - and _), e.g. "techno-friday"
+    /// A name for the export, kept as given ("before-C#m130 · take 2");
+    /// import_set takes the same name back
     pub name: String,
 }
 
@@ -57,6 +58,44 @@ pub struct SetTrack {
     pub sends: BTreeMap<String, f64>,
     #[serde(default)]
     pub mute: bool,
+    /// The audio effects after the instrument, in chain order, with their
+    /// settings and their sidechains — what an import loads back
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<SetEffect>,
+    /// Where the track's audio goes, when not the master ("Sends Only")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+/// One audio effect as exported: enough to load it back and set it as it was.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SetEffect {
+    /// Live's name for it
+    pub device: String,
+    /// Its browser URI, when the library index (or this repo) knows it
+    #[serde(default)]
+    pub uri: Option<String>,
+    /// Every parameter's raw value, by name
+    #[serde(default)]
+    pub params: BTreeMap<String, f64>,
+    /// What keys it, when anything does: the source by track name, and the tap
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidechain: Option<SetSidechain>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SetSidechain {
+    /// The source track's (or return's) name; null for No Input
+    pub source: Option<String>,
+    #[serde(default)]
+    pub tap: Option<String>,
+}
+
+/// A return's effects, by the return's name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SetReturnEffects {
+    pub name: String,
+    pub effects: Vec<SetEffect>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -179,10 +218,175 @@ pub struct SetDocument {
     pub returns: Vec<String>,
     #[serde(default)]
     pub master_volume: Option<f64>,
+    /// The returns' audio effects
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub return_effects: Vec<SetReturnEffects>,
+    /// The master's audio effects
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub master_effects: Vec<SetEffect>,
+    /// Tracks that shared a name in Live, and the name each has here: an
+    /// import needs every track's name to be its own, so the second "Twin"
+    /// is written "Twin 2" — and so is every sidechain it keyed
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renamed_tracks: Vec<SetRename>,
+    /// Racks the export could not write ("Bass › Audio Effect Rack"): a
+    /// rack's devices, and any sidechain inside it, are not rebuilt
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_racks: Vec<String>,
 }
 
-/// A file name from a set name: letters, digits, `-` and `_` only.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SetRename {
+    /// The track's position in the set it was exported from
+    pub index: i64,
+    /// What Live called it
+    pub live_name: String,
+    /// What this document calls it
+    pub name: String,
+}
+
+/// Every track's name made its own: the first of a name keeps it, the next
+/// is "<name> 2", then "<name> 3", skipping any the set already uses.
+pub fn unique_track_names(names: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(names.len());
+    for (i, n) in names.iter().enumerate() {
+        let taken = |c: &str, out: &Vec<String>| {
+            out.iter().any(|o| o == c) || names[i + 1..].iter().any(|o| o == c)
+        };
+        if !out.iter().any(|o| o == n) {
+            out.push(n.clone());
+            continue;
+        }
+        let mut k = 2;
+        while taken(&format!("{n} {k}"), &out) {
+            k += 1;
+        }
+        out.push(format!("{n} {k}"));
+    }
+    out
+}
+
+/// The audio effects of one device list from a snapshot (Live's Device.type
+/// 2, at the top of the chain): name, URI, raw parameters and sidechain.
+/// Instruments load through `instrument`; a rack's inside is not rebuilt.
+fn effects_of(
+    devices: &Value,
+    uri_of: &dyn Fn(&str) -> Option<String>,
+    track_name: &dyn Fn(i64) -> Option<String>,
+    racks: &mut Vec<String>,
+) -> Vec<SetEffect> {
+    let mut out = Vec::new();
+    for d in devices.as_array().into_iter().flatten() {
+        if d.get("type_code").and_then(Value::as_i64) != Some(2) {
+            continue;
+        }
+        if d.get("chains").is_some() {
+            racks.push(crate::tools::get_display(d, "name", "a rack"));
+            continue;
+        }
+        let name = crate::tools::get_display(d, "name", "");
+        let amm = d.pointer("/sidechain/amm").is_some_and(Value::is_object);
+        let params: BTreeMap<String, f64> = d
+            .get("parameters")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|p| {
+                Some((
+                    crate::tools::get_display(p, "name", ""),
+                    p.get("value")?.as_f64()?,
+                ))
+            })
+            .collect();
+        let sidechain = d.get("sidechain").filter(|v| v.is_object()).and_then(|sc| {
+            // A track source by its position, so a renamed duplicate is
+            // still the track it was; anything else by the name Live gave.
+            let by_index = (sc.get("source_kind").and_then(Value::as_str) == Some("track"))
+                .then(|| sc.get("source_index").and_then(Value::as_i64))
+                .flatten()
+                .and_then(track_name);
+            let source =
+                by_index.or_else(|| sc.get("source").and_then(Value::as_str).map(str::to_string));
+            source.as_ref()?;
+            Some(SetSidechain {
+                source,
+                tap: sc.get("tap").and_then(Value::as_str).map(str::to_string),
+            })
+        });
+        out.push(SetEffect {
+            uri: if amm {
+                Some(crate::sidechain::AMM_URI.to_string())
+            } else {
+                uri_of(&name)
+            },
+            device: name,
+            params,
+            sidechain,
+        });
+    }
+    out
+}
+
+/// A document's effects as build_song takes them.
+fn song_effects(effects: &[SetEffect]) -> Vec<crate::effects::SongEffect> {
+    effects
+        .iter()
+        .map(|e| crate::effects::SongEffect {
+            device: e.uri.clone().unwrap_or_else(|| e.device.clone()),
+            params: e
+                .params
+                .iter()
+                .map(|(k, v)| (k.clone(), json!(v)))
+                .collect(),
+            sidechain: e
+                .sidechain
+                .as_ref()
+                .map(|sc| crate::effects::SongSidechain {
+                    source: sc.source.clone().map(Value::String).unwrap_or(Value::Null),
+                    tap: sc.tap.clone(),
+                    ..Default::default()
+                }),
+        })
+        .collect()
+}
+
+/// A file name from a set name, keeping the name as given: `before-C#m130`
+/// is stored as `before-C#m130.json`. Only what a file name cannot hold —
+/// `/`, `\`, `:`, control characters, a leading `.` — and `%` itself are
+/// written as `%XX`, so two different names never share a file and the name
+/// can always be read back from it. Export and import both go through here,
+/// so the name given to one is the name the other takes.
 pub fn file_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("give a name for the set, e.g. \"techno-friday\"".into());
+    }
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        let escape = matches!(c, '/' | '\\' | ':' | '%') || c.is_control() || (i == 0 && c == '.');
+        if escape {
+            let mut buf = [0u8; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    // Most file systems stop at 255 bytes; ".json" needs five of them.
+    if out.len() > 250 {
+        return Err(format!(
+            "the set name is too long to be a file name ({} bytes stored, 250 at most); give a shorter one",
+            out.len()
+        ));
+    }
+    Ok(out)
+}
+
+/// The file name exports had before names were kept as given (letters,
+/// digits, `-` and `_`; anything else became `-`). Only read: an export
+/// made then is still found under the name it was given.
+fn legacy_file_name(name: &str) -> Result<String, String> {
     let clean: String = name
         .trim()
         .chars()
@@ -203,6 +407,22 @@ pub fn file_name(name: &str) -> Result<String, String> {
 
 pub fn path_for(name: &str) -> Result<PathBuf, String> {
     Ok(crate::state::sets_dir().join(format!("{}.json", file_name(name)?)))
+}
+
+/// Where an export of this name is: under the name as given, or, for an
+/// export made before names were kept, under the old cleaned-up name.
+fn existing_path_for(name: &str) -> Result<PathBuf, String> {
+    let path = path_for(name)?;
+    if path.exists() {
+        return Ok(path);
+    }
+    if let Ok(old) = legacy_file_name(name) {
+        let legacy = crate::state::sets_dir().join(format!("{old}.json"));
+        if legacy.exists() {
+            return Ok(legacy);
+        }
+    }
+    Ok(path)
 }
 
 /// Build the document from a session snapshot (tracks, clips with notes,
@@ -234,13 +454,28 @@ pub fn document(
     let mut tracks = Vec::new();
     let mut clips = Vec::new();
     let mut placements: Vec<SetPlacement> = Vec::new();
-    for t in snapshot
+    let snap_tracks = snapshot
         .get("tracks")
         .and_then(Value::as_array)
         .cloned()
-        .unwrap_or_default()
-    {
-        let name = s(&t, "name");
+        .unwrap_or_default();
+    let live_names: Vec<String> = snap_tracks.iter().map(|t| s(t, "name")).collect();
+    let names = unique_track_names(&live_names);
+    let renamed_tracks: Vec<SetRename> = live_names
+        .iter()
+        .zip(names.iter())
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, (a, b))| SetRename {
+            index: i as i64,
+            live_name: a.clone(),
+            name: b.clone(),
+        })
+        .collect();
+    let track_name = |i: i64| usize::try_from(i).ok().and_then(|i| names.get(i).cloned());
+    let mut skipped_racks: Vec<String> = Vec::new();
+    for (position, t) in snap_tracks.into_iter().enumerate() {
+        let name = names[position].clone();
         let is_audio = t
             .get("is_audio_track")
             .and_then(Value::as_bool)
@@ -251,6 +486,33 @@ pub fn document(
             .map(|a| a.iter().map(|d| s(d, "name")).collect())
             .unwrap_or_default();
         let instrument = devices.iter().find_map(|d| uri_of(d));
+        let mut racks = Vec::new();
+        let effects = effects_of(
+            t.get("devices").unwrap_or(&Value::Null),
+            &uri_of,
+            &track_name,
+            &mut racks,
+        );
+        skipped_racks.extend(racks.into_iter().map(|r| format!("{name} › {r}")));
+        // The output is in the context, not the snapshot: by position, since
+        // two tracks may share a name.
+        let output = context
+            .get("tracks")
+            .and_then(Value::as_array)
+            .and_then(|a| {
+                a.iter()
+                    .find(|c| c.get("index").and_then(Value::as_i64) == Some(position as i64))
+                    .or_else(|| a.get(position))
+            })
+            .and_then(|c| c.get("output").and_then(Value::as_str))
+            .filter(|o| !o.is_empty() && *o != "Main")
+            .map(|o| {
+                if o == "Sends Only" {
+                    "sends_only".to_string()
+                } else {
+                    o.to_string()
+                }
+            });
         let mut sends = BTreeMap::new();
         for send in t
             .get("sends")
@@ -278,6 +540,8 @@ pub fn document(
             color_index: t.get("color_index").and_then(Value::as_i64),
             sends,
             mute: t.get("mute").and_then(Value::as_bool).unwrap_or(false),
+            effects,
+            output,
         });
         for slot in t
             .get("clip_slots")
@@ -388,7 +652,44 @@ pub fn document(
         placements: Vec::new(),
         locators: Vec::new(),
         revision: None,
+        return_effects: snapshot
+            .get("return_tracks")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|r| {
+                // Live puts the letter in front of a return's name itself
+                // ("C-Duck Verb"); the document keeps the name it was given.
+                let name = crate::effects::bare_return_name(&s(r, "name"));
+                let mut racks = Vec::new();
+                let effects = effects_of(
+                    r.get("devices").unwrap_or(&Value::Null),
+                    &uri_of,
+                    &track_name,
+                    &mut racks,
+                );
+                skipped_racks.extend(racks.into_iter().map(|k| format!("{name} › {k}")));
+                SetReturnEffects { name, effects }
+            })
+            .filter(|r| !r.effects.is_empty())
+            .collect(),
+        master_effects: {
+            let mut racks = Vec::new();
+            let effects = effects_of(
+                snapshot
+                    .pointer("/master_track/devices")
+                    .unwrap_or(&Value::Null),
+                &uri_of,
+                &track_name,
+                &mut racks,
+            );
+            skipped_racks.extend(racks.into_iter().map(|k| format!("Master › {k}")));
+            effects
+        },
+        renamed_tracks,
+        skipped_racks: Vec::new(),
     };
+    doc.skipped_racks = skipped_racks;
     doc.placements = placements;
     doc.locators = locators;
     doc.revision = Some(song::context_revision(context));
@@ -494,8 +795,24 @@ pub fn build_params(doc: &SetDocument) -> BuildSongParams {
                 pan: t.pan,
                 color_index: t.color_index,
                 sends: t.sends.clone(),
+                effects: song_effects(&t.effects),
+                sidechain: None,
+                output: t.output.clone(),
             })
             .collect(),
+        returns: doc
+            .return_effects
+            .iter()
+            .filter(|r| !r.effects.is_empty())
+            .map(|r| crate::effects::SongReturn {
+                name: r.name.clone(),
+                effects: song_effects(&r.effects),
+                sidechain: None,
+            })
+            .collect(),
+        master: (!doc.master_effects.is_empty()).then(|| crate::effects::SongMaster {
+            effects: song_effects(&doc.master_effects),
+        }),
         clips: doc
             .clips
             .iter()
@@ -535,10 +852,33 @@ pub fn build_params(doc: &SetDocument) -> BuildSongParams {
             .collect(),
         dry_run: false,
         snapshot: false,
+        replace_placements: true,
     }
 }
 
 /// What the file holds, for the reply.
+/// What the export changed or left out, said where the producer reads it.
+pub fn export_notes(doc: &SetDocument) -> String {
+    let mut out = String::new();
+    if !doc.renamed_tracks.is_empty() {
+        out.push_str(&format!(
+            "\nRenamed in the export, because an import needs every track's name to be its own: {}. A sidechain keyed from one of them names its new name; the Live set is unchanged.",
+            doc.renamed_tracks
+                .iter()
+                .map(|r| format!("track {} '{}' → '{}'", r.index + 1, r.live_name, r.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !doc.skipped_racks.is_empty() {
+        out.push_str(&format!(
+            "\nNot exported: {} — a rack's devices, and any sidechain inside one, are not rebuilt by import_set. Rebuild the rack in Live, or keep its devices on the track's own chain.",
+            doc.skipped_racks.join(", ")
+        ));
+    }
+    out
+}
+
 pub fn summary(doc: &SetDocument) -> String {
     let with_uri = doc.tracks.iter().filter(|t| t.instrument.is_some()).count();
     let notes: usize = doc.clips.iter().map(|c| c.notes().len()).sum();
@@ -566,7 +906,7 @@ pub fn export_set_body(live: &LiveState, p: &ExportSetParams) -> ToolResult {
     let snapshot = live
         .send_command(
             "get_session_snapshot",
-            Some(json!({"include_notes": true, "include_params": false})),
+            Some(json!({"include_notes": true, "include_params": "effects"})),
         )
         .map_err(|e| live_err("read the set", e))?;
     let context = live
@@ -574,7 +914,7 @@ pub fn export_set_body(live: &LiveState, p: &ExportSetParams) -> ToolResult {
         .map_err(|e| live_err("read the scenes", e))?;
     let library = live.library.snapshot();
     let doc = document(
-        &file_name(&p.name)?,
+        p.name.trim(),
         &snapshot,
         &context,
         library.as_ref(),
@@ -586,20 +926,23 @@ pub fn export_set_body(live: &LiveState, p: &ExportSetParams) -> ToolResult {
     }
     let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     std::fs::write(&path, text).map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    Ok(format!(
-        "Exported to {}: {}. import_set {{\"name\": \"{}\"}} rebuilds it into an empty set through build_song and set_song. The file holds your notes and names; delete it from the sets folder or with \"Delete all local data\". The Live set itself is still the memory: save it in Live (Cmd+S).",
+    let mut out = format!(
+        "Exported '{}' to {}: {}. import_set {} rebuilds it into an empty set through build_song and set_song. The file holds your notes and names; delete it from the sets folder or with \"Delete all local data\". The Live set itself is still the memory: save it in Live (Cmd+S).",
+        doc.name,
         path.display(),
         summary(&doc),
-        doc.name
-    ))
+        json!({"name": doc.name})
+    );
+    out.push_str(&export_notes(&doc));
+    Ok(out)
 }
 
 pub fn read_document(name: &str) -> Result<SetDocument, String> {
-    let path = path_for(name)?;
+    let path = existing_path_for(name)?;
     let text = std::fs::read_to_string(&path).map_err(|e| {
         format!(
             "no exported set '{}' ({}: {e}); export_set writes one",
-            file_name(name).unwrap_or_default(),
+            name.trim(),
             path.display()
         )
     })?;

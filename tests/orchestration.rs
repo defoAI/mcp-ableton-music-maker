@@ -80,13 +80,46 @@ async fn load_reports_the_device_it_added() {
     assert!(!is_error(&r), "{}", text_of(&r));
     assert!(
         text_of(&r).starts_with(&format!(
-            "Loaded 'Analog' as device 0 on track {track} ('Bass')"
+            "Loaded 'Analog' (query:Synths#Analog) on track {track} ('Bass'): device 0 'Analog'"
         )),
         "{}",
         text_of(&r)
     );
     // And the device is on the track, in Live.
     assert_eq!(set.devices(track), vec!["Analog".to_string()]);
+}
+
+/// A preset is a browser item, not a device: the reply names the item that
+/// was loaded, by name and URI, beside the device Live made of it, so a
+/// client can tell the right preset arrived (studio report, 2026-10-15:
+/// "Atmos Pad" was reported only as the device "AtmosPad").
+#[tokio::test]
+async fn loading_a_preset_names_the_preset_its_uri_and_the_device() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let track = set.build(&[("Pad", "midi", "")])[0];
+    bridge.clear();
+    let uri = "query:Sounds:Pad#Warm%20Pad.adg";
+    let r = server
+        .run(
+            &tools::LOAD_INSTRUMENT_OR_EFFECT,
+            LoadInstrumentParams {
+                track_index: Some(track as i64),
+                uri: uri.into(),
+                kind: "track".into(),
+                ..Default::default()
+            },
+            tools::load_instrument_or_effect_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    assert!(t.contains("'Warm Pad.adg'"), "the preset by name: {t}");
+    assert!(t.contains(uri), "the preset by URI: {t}");
+    assert!(
+        t.contains("device 0 'Warm Pad'"),
+        "the device Live made of it: {t}"
+    );
 }
 
 #[tokio::test]
@@ -413,13 +446,19 @@ fn song() -> BuildSongParams {
     // "Reverb", which a canned bridge accepted and a real Live refuses.
     sends.insert("A-Reverb".to_string(), 0.3);
     BuildSongParams {
+        returns: Vec::new(),
+        master: None,
         parts: Default::default(),
         tempo: Some(128.0),
         key: None,
         on_existing: String::new(),
+        replace_placements: true,
         scenes: vec![],
         tracks: vec![
             SongTrack {
+                effects: Vec::new(),
+                sidechain: None,
+                output: None,
                 name: "Drums".into(),
                 kind: "midi".into(),
                 instrument: Some("query:Drums#Drum%20Rack".into()),
@@ -432,6 +471,9 @@ fn song() -> BuildSongParams {
                 sends: BTreeMap::new(),
             },
             SongTrack {
+                effects: Vec::new(),
+                sidechain: None,
+                output: None,
                 name: "Pad".into(),
                 kind: "midi".into(),
                 instrument: None,
@@ -502,7 +544,19 @@ async fn build_song_validates_first_and_dry_runs() {
     let r = server
         .run(&tools::BUILD_SONG, bad, tools::build_song_body)
         .await;
-    assert!(is_error(&r) && text_of(&r).contains("Nope") && bridge.sent().is_empty());
+    // A track the document does not define is looked for in the set — one
+    // read — and the document is refused before anything is written.
+    assert!(
+        is_error(&r) && text_of(&r).contains("Nope"),
+        "{}",
+        text_of(&r)
+    );
+    assert_eq!(
+        bridge.commands(),
+        ["get_performance_state"],
+        "a read, no write"
+    );
+    bridge.clear();
 
     // Neither of those built anything: the set is where it started.
     assert_eq!(
@@ -1020,7 +1074,7 @@ async fn get_context_is_one_round_trip_with_the_workflow_footer() {
         t.contains("  0 1-MIDI [midi] no devices · vol 0.85 · no clips\n"),
         "{t}"
     );
-    assert!(t.contains("Scenes: 0 empty\n"), "{t}");
+    assert!(t.contains("Scenes: 0 empty — 1 row in all\n"), "{t}");
     assert!(t.contains("Performance: not running"), "{t}");
     assert!(
         common::without_readout(&t).ends_with(mcp_ableton_music_maker::context::FOOTER),
@@ -1226,7 +1280,8 @@ async fn build_song_can_be_told_to_fail_on_what_exists() {
         .run(&tools::BUILD_SONG, p, tools::build_song_body)
         .await;
     assert!(
-        is_error(&r) && text_of(&r).contains("on_existing must be converge, add or fail"),
+        is_error(&r)
+            && text_of(&r).contains("on_existing must be converge, add, fail or replace_notes"),
         "{}",
         text_of(&r)
     );
@@ -1421,6 +1476,9 @@ fn five_track_song() -> BuildSongParams {
     p.locators.clear();
     p.tracks = (1..=5)
         .map(|n| SongTrack {
+            effects: Vec::new(),
+            sidechain: None,
+            output: None,
             name: format!("T{n}"),
             kind: "midi".into(),
             instrument: Some("query:Synths#Analog".into()),
@@ -1567,6 +1625,9 @@ fn drum_part(pitch: &str, pattern: &str) -> NotesInput {
 
 fn kit_track(name: &str) -> SongTrack {
     SongTrack {
+        effects: Vec::new(),
+        sidechain: None,
+        output: None,
         name: name.into(),
         kind: "midi".into(),
         instrument: None,
@@ -1728,4 +1789,451 @@ async fn a_part_no_clip_plays_is_reported() {
     assert!(!is_error(&r), "{}", text_of(&r));
     let t = text_of(&r);
     assert!(t.contains("No clip plays 'idle'"), "{t}");
+}
+
+/// A studio report (2026-10-15): an envelope written 0.0 -> 1.0 read 0.5499
+/// at time 0 — the fader — and every later sample a step behind. Live's
+/// `value_at_time` answers the value before a breakpoint; the read is now the
+/// value from each time on. The report's own calls, through the tools,
+/// against a fader at -12 dB (0.55).
+#[tokio::test]
+async fn a_clip_envelope_reads_back_what_was_written_at_time_zero() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let track = set.build(&[("Lead", "midi", "")])[0];
+    set.write_clip(
+        track,
+        0,
+        "Theme",
+        json!([{"pitch": 60, "start_time": 0.0, "duration": 1.0}]),
+    );
+    set.ask(
+        "set_clip_loop",
+        json!({"track_index": track, "clip_index": 0, "loop_end": 32.0, "end_marker": 32.0}),
+    );
+    set.ask(
+        "run",
+        json!({"ops": [{"op": "set", "path": format!("song.tracks[{track}].mixer_device.volume.value"), "value": 0.55}]}),
+    );
+    let volume = AutomationTarget {
+        mixer: Some("volume".into()),
+        ..Default::default()
+    };
+    for (first, last) in [(0.0, 1.0), (1.0, 0.0), (0.0, 0.55)] {
+        let r = server
+            .run(
+                &tools::SET_CLIP_AUTOMATION,
+                SetClipAutomationParams {
+                    track_index: track as i64,
+                    clip_index: 0,
+                    arrangement: false,
+                    target: volume.clone(),
+                    points: vec![
+                        tools::AutomationPoint {
+                            time: 0.0,
+                            value: Some(first),
+                            db: None,
+                        },
+                        tools::AutomationPoint {
+                            time: 32.0,
+                            value: Some(last),
+                            db: None,
+                        },
+                    ],
+                    ramp: None,
+                    mode: "linear".into(),
+                    resolution: 0.5,
+                    clear: true,
+                },
+                tools::set_clip_automation_body,
+            )
+            .await;
+        let t = text_of(&r);
+        assert!(!is_error(&r), "{t}");
+        assert!(t.contains("Absolute automation"), "{t}");
+        assert!(
+            t.contains(&format!("beat 0.0: {first:.3}")),
+            "read back: {t}"
+        );
+        let r = server
+            .run(
+                &tools::GET_CLIP_AUTOMATION,
+                tools::GetClipAutomationParams {
+                    track_index: track as i64,
+                    clip_index: 0,
+                    arrangement: false,
+                    target: volume.clone(),
+                    resolution: 4.0,
+                },
+                tools::get_clip_automation_body,
+            )
+            .await;
+        let read: Value = serde_json::from_str(&text_of(&r)).expect("json");
+        let samples = read["samples"].as_array().unwrap();
+        let at = |i: usize| samples[i]["value"].as_f64().unwrap();
+        assert!(
+            (at(0) - first).abs() < 0.01,
+            "time 0 reads {} not {first}",
+            at(0)
+        );
+        let expected_4 = first + (last - first) * 4.0 / 32.0;
+        assert!(
+            (at(1) - expected_4).abs() < 0.01,
+            "beat 4 reads {} not {expected_4}",
+            at(1)
+        );
+    }
+}
+
+// ── The second studio report (2026-10-15, after 1.39.0) ─────────────────────
+
+fn doc(v: Value) -> BuildSongParams {
+    serde_json::from_value(v).expect("a build_song document")
+}
+
+async fn build(server: &mcp_ableton_music_maker::tools::Server, d: Value) -> (bool, String) {
+    let r = server
+        .run(&tools::BUILD_SONG, doc(d), tools::build_song_body)
+        .await;
+    (is_error(&r), text_of(&r))
+}
+
+/// Notes of a Session clip (`arrangement: false`) or of an Arrangement clip
+/// by its position, read through the tool a client uses.
+async fn notes_of(
+    server: &mcp_ableton_music_maker::tools::Server,
+    track: i64,
+    clip: i64,
+    arrangement: bool,
+) -> Vec<(i64, f64)> {
+    let r = server
+        .run(
+            &tools::GET_CLIP_NOTES,
+            tools::GetClipNotesParams {
+                clip: tools::ClipParams {
+                    track_index: Some(track),
+                    clip_index: Some(clip),
+                    ..Default::default()
+                },
+                arrangement,
+            },
+            tools::get_clip_notes_body,
+        )
+        .await;
+    let v: Value = serde_json::from_str(&text_of(&r)).expect("notes json");
+    let mut out: Vec<(i64, f64)> = v["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| {
+            (
+                n["pitch"].as_i64().unwrap(),
+                n["start_time"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    out.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap().then(a.0.cmp(&b.0)));
+    out
+}
+
+/// R1, the report's own test: build a clip, place it at three positions,
+/// change one note through the new path, read the notes of all four copies.
+/// Nothing is deleted, nothing else is touched, and it is one round trip.
+#[tokio::test]
+async fn replace_notes_changes_a_clip_and_every_placement_of_it() {
+    let (server, bridge) = server_on_fake_live();
+    let (err, t) = build(
+        &server,
+        json!({
+            "tracks": [{"name": "Lead", "kind": "midi"}],
+            "clips": [
+                {"track": "Lead", "slot": 0, "name": "Theme", "length": 4.0,
+                 "notes": [{"pitch": 60, "start_time": 0.0, "duration": 1.0, "velocity": 100},
+                           {"pitch": 62, "start_time": 1.0, "duration": 1.0, "velocity": 100}]},
+                {"track": "Lead", "slot": 1, "name": "Call", "length": 4.0,
+                 "notes": [{"pitch": 67, "start_time": 0.0, "duration": 2.0, "velocity": 100}]}
+            ],
+            "placements": [
+                {"track": "Lead", "slot": 0, "times": [0.0, 16.0, 32.0]},
+                {"track": "Lead", "slot": 1, "times": [48.0]}
+            ]
+        }),
+    )
+    .await;
+    assert!(!err, "{t}");
+    let set = LiveSet::of(bridge.as_ref());
+    let lead = set.track_index("Lead").unwrap() as i64;
+    bridge.clear();
+
+    // The melody change: one note, 62 -> 64. Only the clip that changed.
+    let (err, t) = build(
+        &server,
+        json!({
+            "on_existing": "replace_notes",
+            "clips": [{"track": "Lead", "slot": 0, "name": "Theme", "length": 4.0,
+                       "notes": [{"pitch": 60, "start_time": 0.0, "duration": 1.0, "velocity": 100},
+                                 {"pitch": 64, "start_time": 1.0, "duration": 1.0, "velocity": 100}]}]
+        }),
+    )
+    .await;
+    assert!(!err, "{t}");
+    assert!(
+        t.contains("Replaced the notes of 'Theme' on Lead slot 0 (2 notes). Also replaced in its 3 Arrangement copies at bars 1, 5, 9."),
+        "{t}"
+    );
+    assert!(t.contains("one undo step"), "{t}");
+    let cmds = bridge.commands();
+    assert_eq!(
+        cmds.iter().filter(|c| *c == "replace_clip_notes").count(),
+        1,
+        "{cmds:?}"
+    );
+    for gone in [
+        "delete_track",
+        "delete_clip",
+        "write_clips",
+        "create_tracks",
+        "place_clips",
+    ] {
+        assert!(!cmds.iter().any(|c| c == gone), "{gone} in {cmds:?}");
+    }
+
+    let want = vec![(60, 0.0), (64, 1.0)];
+    assert_eq!(
+        notes_of(&server, lead, 0, false).await,
+        want,
+        "the Session clip"
+    );
+    let arranged = set.arrangement(lead as usize);
+    let themes: Vec<usize> = arranged
+        .iter()
+        .enumerate()
+        .filter(|(_, (name, _))| name == "Theme")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(themes.len(), 3, "{arranged:?}");
+    for i in themes {
+        assert_eq!(
+            notes_of(&server, lead, i as i64, true).await,
+            want,
+            "the copy at beat {}",
+            arranged[i].1
+        );
+    }
+    // What was not asked about is as it was.
+    let call = arranged.iter().position(|(n, _)| n == "Call").unwrap();
+    assert_eq!(
+        notes_of(&server, lead, call as i64, true).await,
+        vec![(67, 0.0)]
+    );
+    assert_eq!(notes_of(&server, lead, 1, false).await, vec![(67, 0.0)]);
+}
+
+/// R1: replace_placements: false leaves the Arrangement as it was, and a
+/// clip that is not there yet is simply written, as converge writes it.
+#[tokio::test]
+async fn replace_notes_can_leave_the_arrangement_and_still_writes_new_clips() {
+    let (server, bridge) = server_on_fake_live();
+    let (err, t) = build(
+        &server,
+        json!({
+            "tracks": [{"name": "Pad", "kind": "midi"}],
+            "clips": [{"track": "Pad", "slot": 0, "name": "Chords", "length": 4.0,
+                       "notes": [{"pitch": 48, "start_time": 0.0, "duration": 4.0, "velocity": 100}]}],
+            "placements": [{"track": "Pad", "slot": 0, "times": [0.0]}]
+        }),
+    )
+    .await;
+    assert!(!err, "{t}");
+    let set = LiveSet::of(bridge.as_ref());
+    let pad = set.track_index("Pad").unwrap() as i64;
+    let (err, t) = build(
+        &server,
+        json!({
+            "on_existing": "replace_notes",
+            "replace_placements": false,
+            "clips": [
+                {"track": "Pad", "slot": 0, "name": "Chords", "length": 4.0,
+                 "notes": [{"pitch": 50, "start_time": 0.0, "duration": 4.0, "velocity": 100}]},
+                {"track": "Pad", "slot": 1, "name": "Chords Up", "length": 4.0,
+                 "notes": [{"pitch": 53, "start_time": 0.0, "duration": 4.0, "velocity": 100}]}
+            ]
+        }),
+    )
+    .await;
+    assert!(!err, "{t}");
+    assert!(t.contains("The Arrangement was left as it was"), "{t}");
+    assert_eq!(notes_of(&server, pad, 0, false).await, vec![(50, 0.0)]);
+    assert_eq!(notes_of(&server, pad, 0, true).await, vec![(48, 0.0)]);
+    assert_eq!(notes_of(&server, pad, 1, false).await, vec![(53, 0.0)]);
+}
+
+/// R2: clips and placements may name a track the set already has, with no
+/// `tracks` entry — matched without case — and a name the set lacks or has
+/// twice is refused before anything is written.
+#[tokio::test]
+async fn build_song_takes_an_existing_track_by_name() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    set.build(&[("Lead", "midi", ""), ("Pad", "midi", "")]);
+    let lead = set.track_index("Lead").unwrap() as i64;
+    let tracks_before = set.track_count();
+    let (err, t) = build(
+        &server,
+        json!({
+            "clips": [{"track": "lead", "slot": 2, "name": "Hook", "length": 4.0,
+                       "notes": [{"pitch": 72, "start_time": 0.0, "duration": 1.0, "velocity": 100}]}],
+            "placements": [{"track": "Lead", "slot": 2, "times": [8.0]}]
+        }),
+    )
+    .await;
+    assert!(!err, "{t}");
+    assert_eq!(notes_of(&server, lead, 2, false).await, vec![(72, 0.0)]);
+    assert_eq!(
+        set.arrangement(lead as usize),
+        vec![("Hook".to_string(), 8.0)]
+    );
+    assert_eq!(set.track_count(), tracks_before, "no track was made");
+
+    // Re-running converges on the existing track too: nothing doubled.
+    let (err, t) = build(
+        &server,
+        json!({
+            "clips": [{"track": "Lead", "slot": 2, "name": "Hook", "length": 4.0,
+                       "notes": [{"pitch": 72, "start_time": 0.0, "duration": 1.0, "velocity": 100}]}],
+            "placements": [{"track": "Lead", "slot": 2, "times": [8.0]}]
+        }),
+    )
+    .await;
+    assert!(!err, "{t}");
+    assert!(
+        t.contains("1 clip(s) and 1 placement(s) were already there"),
+        "{t}"
+    );
+
+    // A name the set does not have.
+    bridge.clear();
+    let (err, t) = build(
+        &server,
+        json!({"clips": [{"track": "Bass", "slot": 0, "name": "Sub", "length": 4.0, "notes": []}]}),
+    )
+    .await;
+    assert!(err, "{t}");
+    let names = set
+        .track_names()
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        t.contains(&format!(
+            "track 'Bass' is not defined in `tracks` and the set has no track by that name (it has: {names})"
+        )),
+        "{t}"
+    );
+    assert!(!bridge.commands().iter().any(|c| c == "write_clips"));
+
+    // A name two tracks share.
+    set.ask(
+        "create_tracks",
+        json!({"tracks": [{"name": "Pad", "kind": "midi"}], "on_existing": "add"}),
+    );
+    let (err, t) = build(
+        &server,
+        json!({"clips": [{"track": "Pad", "slot": 0, "name": "X", "length": 4.0, "notes": []}]}),
+    )
+    .await;
+    assert!(err, "{t}");
+    let pads: Vec<String> = set
+        .track_names()
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.as_str() == "Pad")
+        .map(|(i, _)| i.to_string())
+        .collect();
+    assert_eq!(pads.len(), 2);
+    assert!(
+        t.contains(&format!(
+            "track 'Pad' names 2 tracks in the set (indexes {})",
+            pads.join(", ")
+        )),
+        "{t}"
+    );
+}
+
+/// R3 and R5: the locators are in get_context — the readout and the JSON —
+/// with each one deletable by the name it is listed under; `as: "json"` is
+/// the set for a program, and the readout says how many rows there are.
+#[tokio::test]
+async fn get_context_lists_locators_and_hands_the_set_back_as_json() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    let lead = set.build(&[("Lead", "midi", "")])[0];
+    set.write_clip(
+        lead,
+        0,
+        "Theme",
+        json!([{"pitch": 60, "start_time": 0.0, "duration": 1.0, "velocity": 100}]),
+    );
+    set.place(lead, 0, &[0.0, 64.0]);
+    for (name, bar) in [("Intro", 1.0), ("Drop", 9.0)] {
+        let r = server
+            .run(
+                &tools::CREATE_LOCATOR,
+                tools::CreateLocatorParams {
+                    name: name.into(),
+                    bar: Some(bar),
+                    time: None,
+                },
+                tools::create_locator_body,
+            )
+            .await;
+        assert!(!is_error(&r), "{}", text_of(&r));
+    }
+    let r = server
+        .run(
+            &tools::GET_CONTEXT,
+            tools::GetContextParams::default(),
+            tools::get_context_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(t.contains("Locators (2): Intro @1 · Drop @9\n"), "{t}");
+    let rows = set.scene_names().len();
+    assert!(t.contains(&format!("— {rows} rows in all")), "{t}");
+
+    let r = server
+        .run(
+            &tools::GET_CONTEXT,
+            tools::GetContextParams {
+                as_level: Some("json".into()),
+                ..Default::default()
+            },
+            tools::get_context_body,
+        )
+        .await;
+    let v: Value = serde_json::from_str(&text_of(&r)).expect("as json is JSON");
+    assert_eq!(
+        v["locators"],
+        json!([{"name": "Intro", "time": 0.0}, {"name": "Drop", "time": 32.0}])
+    );
+    let track = &v["tracks"][lead];
+    assert_eq!(track["name"], "Lead");
+    assert_eq!(track["slots"].as_u64(), Some(rows as u64));
+    assert_eq!(track["clips"][0]["name"], "Theme");
+    assert_eq!(v["scenes"].as_array().unwrap().len(), rows);
+
+    // Deleted by the name it is listed under, case aside.
+    let r = server
+        .run(
+            &tools::DELETE_LOCATOR,
+            tools::DeleteLocatorParams {
+                name: "drop".into(),
+                time: None,
+            },
+            tools::delete_locator_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    assert_eq!(set.locators(), vec![("Intro".to_string(), 0.0)]);
 }

@@ -109,7 +109,30 @@ pub fn delete_all(_app: &AppHandle) -> Result<Value, String> {
     for dir in [state::library_dir(), state::sets_dir()] {
         let _ = std::fs::remove_dir(&dir);
     }
+    // The listening memory (takes, change logs) and the feedback (comments,
+    // picks, options, replies, the away switch) are trees: count, then go.
+    for dir in [state::listening_dir(), state::feedback_dir()] {
+        removed += count_files(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     Ok(json!({"removed": removed}))
+}
+
+fn count_files(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| {
+                    let p = e.path();
+                    if p.is_dir() {
+                        count_files(&p)
+                    } else {
+                        1
+                    }
+                })
+                .sum()
+        })
+        .unwrap_or(0)
 }
 
 /// Delete activity files older than the retention window.

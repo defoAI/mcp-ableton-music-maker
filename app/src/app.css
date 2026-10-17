@@ -285,3 +285,28 @@ input[type="text"] { font: inherit; padding: 4px 8px; border: 1px solid var(--li
 @media (max-width: 900px) {
   .prail { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ── Feedback ─────────────────────────────────────────────────────────── */
+.fb-bar .l { font-weight: 600; }
+.fb-bar .facts { color: var(--ink-2); font-size: 12px; }
+.strip { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; height: 120px; background: var(--panel); }
+.strip canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+.strip-legend { display: flex; gap: 14px; margin-top: 6px; font-size: 12px; color: var(--ink-2); }
+.strip-legend .lg::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.lg-current::before { background: var(--accent); }
+.lg-stale::before { background: var(--warn); }
+.lg-never::before { background: var(--led-off); }
+.fb-compose { display: flex; gap: 8px; align-items: center; }
+.fb-compose input { flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--win); color: var(--ink); font: inherit; user-select: text; -webkit-user-select: text; }
+.fb-at { min-width: 96px; color: var(--ink-2); font-size: 12px; }
+.question { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 10px; }
+.q-head { margin-bottom: 6px; }
+.opt { display: grid; grid-template-columns: auto 18px minmax(80px, 160px) 1fr auto; gap: 8px; align-items: center; padding: 5px 0; border-top: 1px solid var(--line); }
+.opt.chosen .opt-name { font-weight: 700; }
+.opt-n { color: var(--ink-3); text-align: right; }
+.opt-what { color: var(--ink-2); font-size: 12px; }
+.opt-hear { color: var(--ink-3); font-family: var(--mono); font-size: 11px; margin-left: 6px; }
+.thread { border-left: 3px solid var(--line-strong); padding: 4px 0 4px 10px; margin-bottom: 10px; }
+.thread .where { color: var(--ink-3); font-size: 12px; margin-right: 6px; }
+.thread .reply { margin: 4px 0 0 12px; color: var(--ink-2); }
+.thread .reply .who { font-weight: 600; color: var(--ink); margin-right: 4px; }

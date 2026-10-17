@@ -551,7 +551,7 @@ async fn arrangement_automation_is_refused_before_live_and_the_surface_is_marked
         "set_scene",
         "get_session_snapshot",
         "start_performance",
-        "listen",
+        "listen_meters",
         "vary_clip",
         "undo_vary",
         "groove_clip",

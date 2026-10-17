@@ -14,6 +14,7 @@
       <button data-go="overview" aria-current="page"><span class="glyph">◉</span>Overview</button>
       <button data-go="activity"><span class="glyph">≡</span>Activity <span class="badge num" id="actbadge" hidden></span></button>
       <button data-go="listen"><span class="glyph">∿</span>Listen <span class="led live" id="listen-led" hidden></span></button>
+      <button data-go="feedback"><span class="glyph">✎</span>Feedback <span class="badge num" id="fbbadge" hidden></span></button>
       <button data-go="prompts"><span class="glyph">❝</span>Prompts</button>
       <button data-go="setup"><span class="glyph">⇩</span>Setup <span class="badge" id="setupbadge" hidden>needs you</span></button>
       <button data-go="settings"><span class="glyph">⚙</span>Settings</button>
@@ -98,9 +99,34 @@
         <div class="listen-words">
           <div class="eyebrow">In words · the six ranges of a mix</div>
           <div class="words" id="words"></div>
-          <p class="note">The ranges are named the way people talk about a mix, so what you see is what you can say to Claude. Each number is that range’s share of the whole, in dB; 0 dB would be all of it. Nothing here is recorded: the audio is measured in memory and thrown away.</p>
+          <p class="note">The ranges are named the way people talk about a mix, so what you see is what you can say to Claude. Each number is that range’s share of the whole, in dB; 0 dB would be all of it. The audio is measured in memory and thrown away. With Settings › Remember what Live plays on, each bar’s measurements are kept for Claude to read — never the audio.</p>
         </div>
       </div>
+    </section>
+
+    <!-- FEEDBACK -->
+    <section class="screen" id="s-feedback" hidden>
+      <div class="head"><h2>Feedback</h2><span class="sub" id="fb-sub">What Claude heard, and what you think of it</span></div>
+      <div class="listenbar fb-bar" id="fb-bar"></div>
+      <div>
+        <div class="eyebrow">The song · loudness per bar · click a bar to comment on it</div>
+        <div class="strip"><canvas id="fb-strip" aria-label="The song's sections in order, under the loudness of each bar as it was last heard"></canvas></div>
+        <div class="strip-legend" id="fb-legend"></div>
+      </div>
+      <div class="fb-compose">
+        <span class="fb-at num" id="fb-at">no bar</span>
+        <input type="text" id="fb-text" placeholder="A note on this bar — press M while Live plays to stamp the bar playing">
+        <button class="btn small primary" data-act="fb-send">Comment</button>
+      </div>
+      <div>
+        <div class="eyebrow">Claude’s questions</div>
+        <div id="fb-questions"></div>
+      </div>
+      <div>
+        <div class="eyebrow">Comments</div>
+        <div id="fb-threads"></div>
+      </div>
+      <p class="note">Claude reads comments and picks on its next get_feedback and answers here. ▶ is your own click: it plays the option in Live. While “Claude may play the set” is on, Claude may play it to measure it; it turns off when you press play or stop, or when its time is up.</p>
     </section>
 
     <!-- PROMPTS -->
@@ -152,13 +178,19 @@
         <div class="srow"><span class="l"></span><span></span><span class="h" id="settings-note">These switches reach the server through your client's config, so a change applies to the next session your client starts.</span></div>
       </div>
       <div class="group">
+        <h3>Listening</h3>
+        <div class="srow"><span class="l">Remember what Live plays</span><button class="switch" id="sw-remember" role="switch" aria-checked="false"></button><span class="h">While the app is open and Live plays — with no window showing — each bar is measured and kept, so Claude can read how the song sounded without playing it: loudness, peaks, the six ranges, a spectrum. <b>Measurements are written; audio is not.</b> The menu bar shows a dot while it remembers. Needs macOS 14.4 or later.</span></div>
+        <div class="srow"><label class="l" for="listen-retention">Keep what was heard for</label><span><input type="text" id="listen-retention" style="width:60px"> days</span><span class="h">Older takes are deleted.</span></div>
+        <div class="srow"><label class="l" for="away-minutes">“Claude may play the set” turns off after</label><span><input type="text" id="away-minutes" style="width:60px"> minutes</span><span class="h">And the moment you press play or stop in Live.</span></div>
+      </div>
+      <div class="group">
         <h3>Your data</h3>
         <div class="srow"><span class="l">Activity log</span><span class="mono" id="data-activity">—</span><span class="h"><span class="path" id="data-activity-path"></span> — tool names, timings, sizes, results. Payloads only if you turned them on above.</span></div>
         <div class="srow"><span class="l">Running servers</span><span class="mono" id="data-sessions">—</span><span class="h"><span class="path" id="data-sessions-path"></span> — which client started a server, and when. Removed when it exits.</span></div>
         <div class="srow"><span class="l">Remote Script</span><span class="mono" id="data-script">—</span><span class="h"><span class="path" id="data-script-path"></span> — left alone by the button below.</span></div>
-        <div class="srow"><span class="l">Listening</span><span class="pill off">Nothing stored</span><span class="h">When you start listening, Live’s audio is analysed in memory about thirty times a second and discarded. Only Live’s process is heard; the float window’s position is the one thing remembered.</span></div>
+        <div class="srow"><span class="l">Listening</span><span class="pill off" id="data-listening">No audio stored</span><span class="h">Live’s audio is analysed in memory about thirty times a second and discarded; only Live’s process is heard. With Remember what Live plays on, measurements of each bar (about 3 KB a second) are kept in <span class="path" id="data-listening-path"></span>, with your comments and picks beside them in <span class="path" id="data-feedback-path"></span>.</span></div>
         <div class="srow"><span class="l">Nothing is uploaded</span><span class="pill off">No upload path exists</span><span class="h">The server and this app have no network code except the connection to Live. <a href="#" data-open="https://github.com/defoAI/mcp-ableton-music-maker/blob/main/TERMS.md">Terms &amp; data use</a></span></div>
-        <div class="srow"><span class="l">Delete all local data</span><button class="btn small" id="deletedata">Delete…</button><span class="h">Removes the activity log and heartbeats. Keeps the Remote Script, your client config, and the captures in Live's project folder.</span></div>
+        <div class="srow"><span class="l">Delete all local data</span><button class="btn small" id="deletedata">Delete…</button><span class="h">Removes the activity log, heartbeats, the library index, set exports, what was heard, comments and picks. Keeps the Remote Script, your client config, and the captures in Live's project folder.</span></div>
       </div>
       <div class="group">
         <h3>General</h3>
@@ -172,5 +204,6 @@
 <script src="spectrum.js"></script>
 <script src="app.js"></script>
 <script src="listen.js"></script>
+<script src="feedback.js"></script>
 </body>
 </html>

@@ -186,9 +186,24 @@ Q_BAR, Q_HALF, Q_HALF_TRIPLET, Q_QUARTER = 4, 5, 6, 7
 Q_QUARTER_TRIPLET, Q_EIGHTH, Q_EIGHTH_TRIPLET = 8, 9, 10
 Q_SIXTEENTH, Q_SIXTEENTH_TRIPLET, Q_THIRTYSECOND = 11, 12, 13
 
+
+def _quantization_beats(q, beats_per_bar):
+    """The grid a Quantization value stands for, in beats; 0 for none."""
+    q = int(q)
+    bars = {Q_8_BARS: 8, Q_4_BARS: 4, Q_2_BARS: 2, Q_BAR: 1}
+    if q in bars:
+        return float(bars[q] * beats_per_bar)
+    notes = {Q_HALF: 2.0, Q_HALF_TRIPLET: 4.0 / 3, Q_QUARTER: 1.0,
+             Q_QUARTER_TRIPLET: 2.0 / 3, Q_EIGHTH: 0.5, Q_EIGHTH_TRIPLET: 1.0 / 3,
+             Q_SIXTEENTH: 0.25, Q_SIXTEENTH_TRIPLET: 1.0 / 6, Q_THIRTYSECOND: 0.125}
+    return notes.get(q, 0.0)
+
 MONITOR_IN, MONITOR_AUTO, MONITOR_OFF = 0, 1, 2
 AUTOMATION_NONE, AUTOMATION_PLAYING, AUTOMATION_OVERRIDDEN = 0, 1, 2
-TYPE_AUDIO_EFFECT, TYPE_INSTRUMENT, TYPE_MIDI_EFFECT = 0, 1, 2
+# Live's Device.type, as Live 12.4.6 answered it (2026-10-15): Operator 1,
+# every audio effect -- Utility, Compressor, Glue, a Max audio effect, an
+# Audio Effect Rack -- 2; a MIDI effect 4 (Cycling '74 LOM reference).
+TYPE_AUDIO_EFFECT, TYPE_INSTRUMENT, TYPE_MIDI_EFFECT = 2, 1, 4
 LAUNCH_MODE_TRIGGER, LAUNCH_MODE_GATE, LAUNCH_MODE_TOGGLE, LAUNCH_MODE_REPEAT = 0, 1, 2, 3
 
 def live_prop(attr, readonly=False, cast=None, doc=None):
@@ -557,7 +572,38 @@ class DeviceParameter(LiveObject):
     default_value = live_prop("default_value", readonly=True)
     is_quantized = live_prop("is_quantized", readonly=True)
     automation_state = live_prop("automation_state", readonly=True)
-    is_enabled = live_prop("is_enabled", readonly=True)
+
+    def _held(self):
+        """Taken over by a live.remote~: an AMM Sidechain on the same chain
+        in Modulate mode aimed at this parameter (Live 12.4.6, 2026-10-15:
+        the target read is_enabled False and state 2 while held, and both
+        came back when the mode changed)."""
+        device = getattr(self, "_device", None)
+        owner = getattr(device, "_canonical_parent", None) if device is not None else None
+        if owner is None:
+            return False
+        devices = list(getattr(owner, "_devices", []))
+        if device not in devices:
+            return False
+        d_i = devices.index(device)
+        p_i = device._parameters.index(self)
+        for other in devices:
+            if isinstance(other, MaxDevice) and other._is_amm():
+                if (other._param_value("Mode") == 2 and int(other._param_value("Target Device")) == d_i
+                        and int(other._param_value("Target Param")) == p_i):
+                    return True
+        return False
+
+    @property
+    def is_enabled(self):
+        return self._is_enabled and not self._held()
+
+    @property
+    def state(self):
+        """0 enabled, 1 irrelevant, 2 disabled -- 2 while a remote holds it."""
+        if self._held():
+            return 2
+        return 0 if self._is_enabled else 2
 
     @property
     def value_items(self):
@@ -582,6 +628,9 @@ class DeviceParameter(LiveObject):
 
     @value.setter
     def value(self, v):
+        if self._held():
+            # Live 12.4.6, writing a parameter an AMM Sidechain held.
+            raise RuntimeError("Value cannot be set, the parameter is disabled")
         v = float(v)
         # Live: "RuntimeError: Invalid value" outside the range.
         if v < self._min - 1e-9 or v > self._max + 1e-9:
@@ -677,6 +726,8 @@ class Device(LiveObject):
         # Every Live device leads with "Device On".
         on = DeviceParameter("Device On", 1.0, 0.0, 1.0, value_items=("Off", "On"))
         self._parameters = [on] + list(parameters or [])
+        for p in self._parameters:
+            p._device = self
         self._chains = list(chains or [])
         self._can_have_chains = chains is not None
         self._can_have_drum_pads = bool(can_have_drum_pads)
@@ -833,17 +884,23 @@ class AutomationEnvelope(LiveObject):
     def __init__(self, parameter):
         LiveObject.__init__(self)
         self._parameter = parameter
-        self._steps = []  # (time, length, value), kept sorted
+        # A new envelope starts flat at the parameter's value when it was
+        # made: a ramp written from 0.0 read the fader's 0.55 at time 0.
+        self._initial = float(parameter.value)
+        self._steps = []  # (time, length, value), in the order written
 
     def insert_step(self, time, length, value):
         self._steps.append((float(time), float(length), float(value)))
-        self._steps.sort()
 
     def value_at_time(self, time):
+        """The value *before* `time` where the envelope changes at it:
+        written 0 -> 1 over 32 beats in 0.5-beat steps, Live 12.4.6 read
+        0.55 at 0, 0.0 at 0.25, 0.1094 at 4.0 and 0.125 at 4.25
+        (2026-10-15). A later step over the same time wins."""
         t = float(time)
-        current = self._parameter.value
+        current = self._initial
         for start, length, value in self._steps:
-            if start <= t:
+            if start < t <= start + length:
                 current = value
         return current
 
@@ -1043,6 +1100,12 @@ class Clip(LiveObject):
         return self._envelopes.get(parameter._id)
 
     def create_automation_envelope(self, parameter):
+        # Live writes envelopes into Session clips only: on an Arrangement
+        # clip this raised, with this message, on Live 12.4.6 (2026-10-15).
+        # Nor does a track or a DeviceParameter offer any other way to write
+        # Arrangement automation (describe lists none).
+        if self._in_arrangement:
+            raise RuntimeError("Not a session clip or parameter belongs to another track.")
         env = AutomationEnvelope(parameter)
         self._envelopes[parameter._id] = env
         return env
@@ -1190,6 +1253,11 @@ class ClipSlot(LiveObject):
         self._track._fire_clip(self._clip)
 
     def stop(self):
+        # Stopping a slot that is recording ends the take: Live keeps what
+        # was recorded and the clip stops recording (`_stop_capture` relies
+        # on it to end a take early).
+        if self._clip is not None and self._clip._is_recording:
+            self._clip._is_recording = False
         self._track._stop_playing()
 
     def set_fire_button_state(self, state):
@@ -1200,13 +1268,264 @@ class ClipSlot(LiveObject):
 # ── Track ───────────────────────────────────────────────────────────────────
 
 class RoutingType(LiveObject):
-    def __init__(self, display_name, category=0):
+    """A routing choice. `attached_object` is the Track it routes from or to
+    (None for "No Input", "Main", "Sends Only"…) -- every source type a
+    Compressor or a Max device offers carried one on Live 12.4.6
+    (2026-10-15), and its display follows the track's name, so a renamed
+    source keeps the routing and reads the new name."""
+
+    def __init__(self, display_name, category=0, attached_object=None):
         LiveObject.__init__(self)
         self._display_name = display_name
         self._category = category
+        self._attached_object = attached_object
+
+    @property
+    def display_name(self):
+        if self._attached_object is not None:
+            return self._attached_object.name
+        return self._display_name
+
+    category = live_prop("category", readonly=True)
+    attached_object = live_prop("attached_object", readonly=True)
+
+    def __eq__(self, other):
+        if not isinstance(other, RoutingType):
+            return False
+        if self._attached_object is not None or other._attached_object is not None:
+            return self._attached_object is other._attached_object
+        return self._display_name == other._display_name
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    __hash__ = object.__hash__
+
+
+class RoutingChannel(LiveObject):
+    def __init__(self, display_name):
+        LiveObject.__init__(self)
+        self._display_name = display_name
 
     display_name = live_prop("display_name", readonly=True)
-    category = live_prop("category", readonly=True)
+
+
+# A track source offers these taps (Live 12.4.6, 2026-10-15); No Input one
+# empty channel.
+_TAPS = ("Pre FX", "Post FX", "Post Mixer")
+
+
+def _carries_audio(track):
+    """A track Live offers as a sidechain source or an output target: an
+    audio track, or a MIDI track with an instrument on it -- the two empty
+    MIDI tracks of a default set were not offered (Live 12.4.6)."""
+    if track._kind == "audio":
+        return True
+    return any(d._type == TYPE_INSTRUMENT for d in track._devices)
+
+
+def _key_types(song):
+    """What a sidechain input offers: every audio-carrying track (the
+    device's own included), the returns, "Main", "No Input" -- in that order,
+    as measured."""
+    out = [RoutingType(t.name, attached_object=t) for t in song._tracks if _carries_audio(t)]
+    out += [RoutingType(r.name, attached_object=r) for r in song._return_tracks]
+    out.append(RoutingType("Main", attached_object=song._master_track))
+    out.append(RoutingType("No Input"))
+    return out
+
+
+class _KeyInput(object):
+    """A routable sidechain input: Compressor's own members (prefix
+    "input_") or a Max device's DeviceIO (no prefix). Holds the routing;
+    the song lists what can be chosen."""
+
+    def _key_init(self, song):
+        self._key_song = song
+        self._key_type = RoutingType("No Input")
+        self._key_channel = RoutingChannel("")
+
+    def _key_types(self):
+        return RoutingTypeVector(_key_types(self._key_song))
+
+    def _key_channels(self):
+        if self._key_type._attached_object is None and self._key_type._display_name == "No Input":
+            return RoutingTypeVector([RoutingChannel("")])
+        return RoutingTypeVector([RoutingChannel(n) for n in _TAPS])
+
+    def _set_key_type(self, value):
+        if not any(value == t for t in _key_types(self._key_song)):
+            raise RuntimeError("Invalid routing type")
+        self._key_type = value
+        # The channel follows the type; Post FX is the one a new source
+        # comes up with in Live's chooser. (Not measured: the script sets it.)
+        self._key_channel = (RoutingChannel("") if value._attached_object is None
+                             and value._display_name == "No Input" else RoutingChannel("Post FX"))
+
+    def _set_key_channel(self, value):
+        names = [c.display_name for c in self._key_channels()]
+        if value.display_name not in names:
+            raise RuntimeError("Invalid routing channel")
+        self._key_channel = value
+
+    def _forget_source(self, track):
+        """The source track was deleted: Live leaves No Input (measured)."""
+        if self._key_type._attached_object is track:
+            self._key_type = RoutingType("No Input")
+            self._key_channel = RoutingChannel("")
+
+
+class CompressorDevice(Device, _KeyInput):
+    """Live.CompressorDevice.CompressorDevice: the one built-in device whose
+    sidechain input the API routes (Cycling '74 LOM reference; measured on
+    Live 12.4.6, 2026-10-15). Its parameters are the 23 Live listed, in that
+    order, with the defaults a new Compressor showed -- S/C EQ on, as an 80 Hz
+    high pass."""
+
+    def __init__(self, song):
+        ratio = lambda v: "inf : 1" if float(v) >= 1.0 else "%.2f : 1" % (1.0 / (1.0 - float(v)))
+        log_ms = lambda lo, hi: (lambda v: "%.2f ms" % (lo * (hi / lo) ** float(v)))
+        params = [
+            DeviceParameter("Threshold", 0.85, 0.0, 1.0, display_db),
+            DeviceParameter("Ratio", 0.75, 0.0, 1.0, ratio),
+            DeviceParameter("Expansion Ratio", 1.15, 1.0, 2.0, lambda v: "1 : %.2f" % float(v)),
+            DeviceParameter("Attack", 0.4, 0.0, 1.0, log_ms(0.01, 1000.0)),
+            DeviceParameter("Release", 0.1569925993680954, 0.0, 1.0, log_ms(1.0, 3000.0)),
+            DeviceParameter("Auto Release On/Off", 0.0, 0.0, 1.0, value_items=("Off", "On")),
+            DeviceParameter("Output", 0.0, -36.0, 36.0, lambda v: "%.2f dB" % float(v)),
+            DeviceParameter("Makeup", 0.0, 0.0, 1.0, value_items=("Off", "On")),
+            DeviceParameter("Dry/Wet", 1.0, 0.0, 1.0, display_percent),
+            DeviceParameter("Model", 1.0, 0.0, 2.0, value_items=("Peak", "RMS", "Expand")),
+            DeviceParameter("Env Mode", 1.0, 0.0, 1.0, value_items=("Lin", "Log")),
+            DeviceParameter("Knee", 6.0, 0.0, 18.0, lambda v: "%.1f dB" % float(v)),
+            DeviceParameter("LookAhead", 0.0, 0.0, 2.0, value_items=("0 ms", "1 ms", "10 ms")),
+            DeviceParameter("S/C Listen", 0.0, 0.0, 1.0, value_items=("Off", "On")),
+            DeviceParameter("S/C EQ On", 1.0, 0.0, 1.0, value_items=("Off", "On")),
+            DeviceParameter("S/C EQ Type", 5.0, 0.0, 5.0,
+                            value_items=("Low Shelf", "Bell", "High Shelf", "Low pass", "Peak", "High pass")),
+            # 0.1578 -> "80.0 Hz" and 0.4086 -> "0.71", as Live showed them.
+            DeviceParameter("S/C EQ Freq", 0.15782640874385834, 0.0, 1.0, display_hz(30.0, 15000.0)),
+            DeviceParameter("S/C EQ Q", 0.40856707096099854, 0.0, 1.0,
+                            lambda v: "%.2f" % (0.1 * 120.0 ** float(v))),
+            DeviceParameter("S/C EQ Gain", 0.0, -15.0, 15.0, lambda v: "%.2f dB" % float(v)),
+            DeviceParameter("S/C On", 0.0, 0.0, 1.0, value_items=("Off", "On")),
+            DeviceParameter("S/C Gain", 0.4, 0.0, 1.0,
+                            lambda v: "-inf dB" if float(v) <= 0.0 else "%.2f dB" % ((float(v) - 0.4) / 0.6 * 24.0)),
+            DeviceParameter("S/C Mix", 1.0, 0.0, 1.0, display_percent),
+        ]
+        Device.__init__(self, "Compressor", "Compressor2", params, TYPE_AUDIO_EFFECT)
+        self._key_init(song)
+
+    @property
+    def available_input_routing_types(self):
+        return self._key_types()
+
+    @property
+    def available_input_routing_channels(self):
+        return self._key_channels()
+
+    @property
+    def input_routing_type(self):
+        return self._key_type
+
+    @input_routing_type.setter
+    def input_routing_type(self, value):
+        self._set_key_type(value)
+
+    @property
+    def input_routing_channel(self):
+        return self._key_channel
+
+    @input_routing_channel.setter
+    def input_routing_channel(self, value):
+        self._set_key_channel(value)
+
+
+class DeviceIO(LiveObject, _KeyInput):
+    """Live.DeviceIO.DeviceIO: one audio bus of a Max device, its routing
+    writable (Live 12.4.6)."""
+
+    def __init__(self, song):
+        LiveObject.__init__(self)
+        self._key_init(song)
+        self._default_external_routing_channel_is_none = False
+
+    @property
+    def available_routing_types(self):
+        return self._key_types()
+
+    @property
+    def available_routing_channels(self):
+        return self._key_channels()
+
+    @property
+    def routing_type(self):
+        return self._key_type
+
+    @routing_type.setter
+    def routing_type(self, value):
+        self._set_key_type(value)
+
+    @property
+    def routing_channel(self):
+        return self._key_channel
+
+    @routing_channel.setter
+    def routing_channel(self, value):
+        self._set_key_channel(value)
+
+    default_external_routing_channel_is_none = live_prop(
+        "default_external_routing_channel_is_none", cast=bool)
+
+
+class MaxDevice(Device):
+    """Live.MaxDevice.MaxDevice. A device declared `plugin~ 1 2 3 4` has two
+    audio inputs and the second feeds channels 3 and 4 -- its key (Live
+    12.4.6, 2026-10-15). What the patch does with them is Max's; the model
+    keeps the routing and the parameters."""
+
+    def __init__(self, song, name, parameters, inputs=2):
+        Device.__init__(self, name, "MxDeviceAudioEffect", parameters, TYPE_AUDIO_EFFECT,
+                        class_display_name="Max Audio Effect")
+        self._audio_inputs = [DeviceIO(song) for _ in range(inputs)]
+        self._audio_outputs = [DeviceIO(song)]
+
+    audio_inputs = seq_prop("audio_inputs")
+    audio_outputs = seq_prop("audio_outputs")
+
+    def _param_value(self, name):
+        p = self._find_parameter(name)
+        return float(p._value) if p is not None else None
+
+    def _is_amm(self):
+        return all(self._find_parameter(n) is not None
+                   for n in ("Mode", "Split", "Target Device", "Target Param"))
+
+
+def _amm_sidechain(song):
+    """AMM Sidechain as scripts/build-sidechain-device.py builds it: its
+    parameters by name, range and default (Live lists a Max device's
+    parameters alphabetically after Device On, as it did on Live 12.4.6)."""
+    def unit(u):
+        return lambda v: "%s %s" % (("%.2f" % float(v)).rstrip("0").rstrip("."), u)
+    specs = [
+        ("Attack", 1.0, 0.1, 100.0, unit("ms"), None),
+        ("Depth", 24.0, 0.0, 60.0, unit("dB"), None),
+        ("From", 0.0, 0.0, 100.0, unit("%"), None),
+        ("Mix", 100.0, 0.0, 100.0, unit("%"), None),
+        ("Mode", 0.0, 0.0, 2.0, None, ("Duck", "Gate", "Modulate")),
+        ("Ratio", 4.0, 1.0, 20.0, lambda v: "%.2f" % float(v), None),
+        ("Release", 120.0, 5.0, 2000.0, unit("ms"), None),
+        ("Split", 0.0, 0.0, 500.0, unit("Hz"), None),
+        ("Target Device", -1.0, -1.0, 127.0, lambda v: "%d" % int(v), None),
+        ("Target Param", 0.0, 0.0, 1023.0, lambda v: "%d" % int(v), None),
+        ("Threshold", -30.0, -60.0, 0.0, unit("dB"), None),
+        ("To", 100.0, 0.0, 100.0, unit("%"), None),
+    ]
+    params = [DeviceParameter(n, v, lo, hi, show, value_items=items) for n, v, lo, hi, show, items in specs]
+    return MaxDevice(song, "AMM Sidechain", params)
+
+
 
 
 _COLOR_TABLE = [
@@ -1329,10 +1648,12 @@ class Track(LiveObject):
             [RoutingType("Ext. In"), RoutingType("Resampling"), RoutingType("No Input")]
         )
         self._input_routing_type = self._available_input_routing_types[0] if self._available_input_routing_types else None
-        self._available_output_routing_types = [RoutingType("Master")]
-        self._output_routing_type = self._available_output_routing_types[0]
+        # Live 12.4.6 names the master output "Main" (measured 2026-10-15).
+        self._output_routing_type = RoutingType("Main")
         self._playing_slot_index = -1
         self._fired_slot_index = -1
+        # Off the Arrangement since a Session clip was launched on it.
+        self._back_to_arranger = False
         self._output_meter_level = 0.0
         self._input_meter_level = 0.0
         self._implicit_arm = False
@@ -1346,6 +1667,8 @@ class Track(LiveObject):
         against Live 12.4.6 on 2026-09-20: deleting track 0 of
         `1-MIDI 2-MIDI 3-Audio 4-Audio 5-MIDI` gave
         `1-MIDI 2-Audio 3-Audio 4-MIDI`."""
+        if self._kind == "return":
+            return self._return_name()
         if self._named:
             return self._name
         return "%d-%s" % (self._position(), "MIDI" if self._kind == "midi" else "Audio")
@@ -1356,6 +1679,27 @@ class Track(LiveObject):
         # Clearing the name gives the track Live's default back.
         self._named = bool(text)
         self._name = text
+
+    def _return_name(self):
+        """A return's name always carries its letter, and one nobody named
+        follows its devices. Measured on Live 12.4.6, 2026-10-15: the
+        default set's `A-Reverb` became `A-Reverb | Compressor` when a
+        Compressor was added; setting the name to `Reverb` read back
+        `A-Reverb` and held through device changes; clearing it read
+        `A-Reverb | Compressor` again; a new return with no devices is
+        `D-Return`; naming one `C-Duck Verb` read `C-C-Duck Verb`."""
+        letters = "ABCDEFGHIJKL"
+        i = 0
+        for i, t in enumerate(self._song._return_tracks):
+            if t is self:
+                break
+        else:
+            i = len(self._song._return_tracks)
+        letter = letters[i] if i < len(letters) else str(i)
+        if self._named:
+            return "%s-%s" % (letter, self._name)
+        names = ["%s" % d.name for d in self._devices]
+        return "%s-%s" % (letter, " | ".join(names) if names else "Return")
 
     def _position(self):
         for i, t in enumerate(self._song._tracks):
@@ -1381,9 +1725,48 @@ class Track(LiveObject):
 
     current_monitoring_state = live_prop("current_monitoring_state", cast=int)
     available_input_routing_types = _routing_seq("available_input_routing_types")
-    available_output_routing_types = _routing_seq("available_output_routing_types")
-    output_routing_type = live_prop("output_routing_type")
+    @property
+    def available_output_routing_types(self):
+        """What a track offered on Live 12.4.6: "Ext. Out", "Main", every
+        other audio-carrying track (a bus), and "Sends Only" -- the track
+        feeds its sends and whatever is keyed from it, never the master. A
+        return or the master goes to Main."""
+        if self._kind not in ("midi", "audio"):
+            return RoutingTypeVector([RoutingType("Main")])
+        out = [RoutingType("Ext. Out"), RoutingType("Main")]
+        out += [RoutingType(t.name, attached_object=t) for t in self._song._tracks
+                if t is not self and _carries_audio(t)]
+        out.append(RoutingType("Sends Only"))
+        return RoutingTypeVector(out)
+
+    @property
+    def output_routing_type(self):
+        return self._output_routing_type
+
+    @output_routing_type.setter
+    def output_routing_type(self, value):
+        if not any(value == t for t in self.available_output_routing_types):
+            raise RuntimeError("Invalid routing type")
+        self._output_routing_type = value
     playing_slot_index = live_prop("playing_slot_index", readonly=True)
+
+    @property
+    def back_to_arranger(self):
+        """Live 12 has it per track (the LOM sweep finds it on
+        `song.tracks[0]`): True once a Session clip was launched on it."""
+        return self._back_to_arranger
+
+    @back_to_arranger.setter
+    def back_to_arranger(self, value):
+        # False puts this one track back: its Session clip stops and the
+        # song's flag goes out if it was the only one (measured on the
+        # Capture track, Live 12.4.6, 2026-10-15). True was not measured.
+        if bool(value):
+            self._back_to_arranger = True
+            return
+        if self._back_to_arranger:
+            self._back_to_arranger = False
+            self._stop_playing()
     fired_slot_index = live_prop("fired_slot_index", readonly=True)
 
     def _meter(attr):
@@ -1521,8 +1904,12 @@ class Track(LiveObject):
             if slot._clip == clip:
                 self._playing_slot_index = i
                 self._fired_slot_index = -1
+        if self._kind in ("midi", "audio"):
+            self._back_to_arranger = True
+        # Launching a slot starts a stopped transport (Live 12.4.6,
+        # 2026-10-15: is_playing True two ticks after the fire).
         if not self._song._is_playing:
-            self._song.start_playing()
+            self._song._roll()
 
     def _stop_playing(self):
         for slot in self._clip_slots:
@@ -1591,7 +1978,7 @@ class Scene(LiveObject):
         if can_select_scene_on_launch:
             self._song._view._selected_scene = self
         if not self._song._is_playing:
-            self._song.start_playing()
+            self._song._roll()
 
     def set_fire_button_state(self, state):
         if state:
@@ -1846,6 +2233,7 @@ class Browser(LiveObject):
                 track.arm = True
         else:
             track._devices.append(device)
+            device._canonical_parent = track
         self._song._view.select_device(device)
         self._song._touch()
 
@@ -1903,7 +2291,9 @@ class Song(LiveObject):
         self._return_tracks = []
         self._scenes = [Scene(self) for _ in range(scenes)]
         self._cue_points = []
-        self._master_track = Track(self, "Master", kind="master")
+        # Live 12 calls the master "Main": song.master_track.name answered
+        # "Main" on Live 12.4.6 (2026-10-15).
+        self._master_track = Track(self, "Main", kind="master")
         self._view = SongView(self)
         self._groove_pool = GroovePool()
         self._tempo = 120.0
@@ -1918,6 +2308,14 @@ class Song(LiveObject):
         self._loop_start = 0.0
         self._loop_length = 16.0
         self._back_to_arranger = False
+        # Live's start marker, where `start_playing()` plays from. The script
+        # has no member that moves it; the producer does, by clicking.
+        self._start_marker = 0.0
+        # Where the transport last stopped: `continue_playing()` resumes
+        # from here, whatever `current_song_time` was moved to meanwhile.
+        self._resume_at = 0.0
+        # The global quantization a seek was asked under (see the setter).
+        self._pending_quantization = 0
         self._record_mode = False
         self._arrangement_overdub = False
         self._session_record = False
@@ -1964,7 +2362,6 @@ class Song(LiveObject):
     loop = live_prop("loop", cast=bool)
     loop_start = live_prop("loop_start", cast=float)
     loop_length = live_prop("loop_length", cast=float)
-    back_to_arranger = live_prop("back_to_arranger", cast=bool)
     record_mode = live_prop("record_mode", cast=bool)
     arrangement_overdub = live_prop("arrangement_overdub", cast=bool)
     session_record = live_prop("session_record", cast=bool)
@@ -2001,6 +2398,29 @@ class Song(LiveObject):
     return_tracks = seq_prop("return_tracks")
     scenes = seq_prop("scenes")
     visible_tracks = seq_prop("tracks")
+
+    @property
+    def back_to_arranger(self):
+        """True while any track is off the Arrangement. Live 12 keeps the
+        flag per track; this is the button's light, lit by any of them
+        (firing the Capture track's slot lit it, and setting the one track's
+        flag False put it out: Live 12.4.6, 2026-10-15)."""
+        return self._back_to_arranger or any(t._back_to_arranger for t in self._tracks)
+
+    @back_to_arranger.setter
+    def back_to_arranger(self, value):
+        # Writing False is the Back to Arrangement button: every track
+        # follows the Arrangement again and a Session clip playing on one
+        # stops (playing_slot_index 0 -> -1, measured 2026-10-15). What a
+        # write of True does was not measured; it is kept as a flag.
+        if bool(value):
+            self._back_to_arranger = True
+            return
+        self._back_to_arranger = False
+        for t in self._tracks:
+            if t._back_to_arranger:
+                t._back_to_arranger = False
+                t._stop_playing()
 
     @property
     def cue_points(self):
@@ -2055,6 +2475,11 @@ class Song(LiveObject):
         if value > self.song_length + 1e-6:
             raise RuntimeError("Cannot set the Songtime behind the Songlength")
         self._pending_song_time = value
+        # A seek asked for while the transport rolls is snapped to the global
+        # quantization that holds when it is asked -- not when it lands:
+        # quantization off, start, seek, quantization back, in one task,
+        # landed exactly (Live 12.4.6, 2026-10-15). See `_apply_pending`.
+        self._pending_quantization = int(self._clip_trigger_quantization) if self._is_playing else 0
 
     def _apply_pending(self):
         """Live's own frame, granting whatever was asked for on the last one.
@@ -2064,7 +2489,18 @@ class Song(LiveObject):
         fails the build on anything public the model has and Live does not."""
         if self._pending_song_time is None:
             return
-        self._current_song_time = self._pending_song_time
+        target = self._pending_song_time
+        grid = _quantization_beats(self._pending_quantization, self._signature_numerator)
+        if grid:
+            # Measured with 1 bar (Live 12.4.6, 2026-10-15): 194.5 asked
+            # from beat 0 landed on 196.0, and 192 asked from beat 17.08
+            # landed on 193.08 -- the target rounded to the grid, the phase
+            # inside the grid kept. Only the 1-bar grid was measured; the
+            # others are Live's own note values.
+            self._advance()
+            phase = self._current_song_time % grid
+            target = round(target / grid) * grid + phase
+        self._current_song_time = target
         self._pending_song_time = None
         # Live relocates: play continues from here, not from wherever the
         # transport had got to. Without this the next `_advance` would add
@@ -2093,16 +2529,40 @@ class Song(LiveObject):
 
     # ── transport ──
     def start_playing(self):
+        """Plays from the start marker, never from `current_song_time`:
+        after a seek to bar 49, `start_playing()` played bar 1, and while
+        playing at beat 101 it went back to the marker too (Live 12.4.6,
+        2026-10-15). A seek asked for before it in the same task is not
+        kept; one asked for after it is (see `continue_playing`)."""
+        self._pending_song_time = None
+        self._current_song_time = self._start_marker
         self._is_playing = True
         self._playing_since = self._now()
 
     def stop_playing(self):
         self._advance()
+        if self._is_playing:
+            self._resume_at = self._current_song_time
         self._is_playing = False
         for t in self._tracks:
             t._stop_playing()
 
     def continue_playing(self):
+        """Resumes from where the transport last stopped. A seek made while
+        it was stopped is ignored -- in the same task (seek; continue) and
+        after it had landed and read back (seek; wait 2; continue), both
+        resumed at beat ~17 when 192 was asked (Live 12.4.6, 2026-10-15)."""
+        if self._is_playing:
+            return
+        self._pending_song_time = None
+        self._current_song_time = self._resume_at
+        self._is_playing = True
+        self._playing_since = self._now()
+
+    def _roll(self):
+        """The transport started by a clip launch: from where the playhead
+        is. Not measured -- the script never launches into a stopped
+        transport it then relies on -- and kept as the model had it."""
         self._is_playing = True
         self._playing_since = self._now()
 
@@ -2211,8 +2671,8 @@ class Song(LiveObject):
         self._charge("Song.create_return_track")
         if len(self._return_tracks) >= 12:
             raise RuntimeError("Live allows at most 12 return tracks")
-        letter = chr(ord("A") + len(self._return_tracks))
-        track = Track(self, "%s-Return" % letter, "return", self._next_color())
+        # Unnamed: it is called `<letter>-Return` until it holds a device.
+        track = Track(self, "", "return", self._next_color())
         self._return_tracks.append(track)
         # Every track gains a send.
         for t in self._tracks:
@@ -2224,9 +2684,29 @@ class Song(LiveObject):
         if index < 0 or index >= len(self._tracks):
             raise IndexError("Track index out of range")
         gone = self._tracks.pop(index)
+        # What it keyed is left on No Input, S/C On as it was (Live 12.4.6).
+        for t in self._all_tracks():
+            for device in self._walk_devices(t._devices):
+                for key in self._key_inputs(device):
+                    key._forget_source(gone)
         if self._view._selected_track == gone:
             self._view._selected_track = self._tracks[min(index, len(self._tracks) - 1)] if self._tracks else self._master_track
         self._touch()
+
+    def _walk_devices(self, devices):
+        for d in devices:
+            yield d
+            for chain in getattr(d, "_chains", []) or []:
+                for inner in self._walk_devices(getattr(chain, "_devices", [])):
+                    yield inner
+
+    @staticmethod
+    def _key_inputs(device):
+        if isinstance(device, CompressorDevice):
+            return [device]
+        if isinstance(device, MaxDevice):
+            return list(device._audio_inputs)
+        return []
 
     def delete_return_track(self, index):
         if index < 0 or index >= len(self._return_tracks):
@@ -2324,6 +2804,14 @@ class Song(LiveObject):
         owner._devices.remove(device)
         devices = target._devices
         index = max(0, min(int(index), len(devices)))
+        # An audio effect does not go ahead of the instrument: Live puts it
+        # straight after. Measured on Live 12.4.6, 2026-10-15: Glue
+        # Compressor moved to 0 on `Operator, Glue Compressor, AMM Sidechain`
+        # stayed at 1.
+        if device._type == TYPE_AUDIO_EFFECT:
+            for i, d in enumerate(devices):
+                if d._type == TYPE_INSTRUMENT and index <= i:
+                    index = i + 1
         devices.insert(index, device)
         self._touch()
 
@@ -2487,7 +2975,14 @@ def default_browser(song):
         dev("EQ Eight", "Eq8", _EQ_PARAMS, TYPE_AUDIO_EFFECT, "query:AudioFx#EQ%20Eight"),
         dev("Reverb", "Reverb", _REVERB_PARAMS, TYPE_AUDIO_EFFECT, "query:AudioFx#Reverb"),
         dev("Delay", "Delay", _DELAY_PARAMS, TYPE_AUDIO_EFFECT, "query:AudioFx#Delay"),
-        dev("Compressor", "Compressor2", (("Threshold", 0.8, 0.0, 1.0, display_db), ("Ratio", 0.3, 0.0, 1.0, lambda v: "%.1f : 1" % (1 + float(v) * 9))), TYPE_AUDIO_EFFECT, "query:AudioFx#Compressor"),
+        BrowserItem("Compressor", "query:AudioFx#Compressor", is_device=True, loads=CompressorDevice),
+        # Their sidechain is in Live's interface, not in its API: no routing
+        # members (Live 12.4.6). Threshold as Glue shows it, -40 to 0 dB.
+        dev("Glue Compressor", "GlueCompressor", (("Threshold", 0.0, -40.0, 0.0, lambda v: "%.2f dB" % float(v)),
+                                                  ("Ratio", 4.0, 2.0, 10.0, lambda v: "%d" % int(v)),
+                                                  ("S/C On", 0.0, 0.0, 1.0, None, ("Off", "On"))),
+            TYPE_AUDIO_EFFECT, "query:AudioFx#Glue%20Compressor"),
+        dev("Gate", "Gate", (("Threshold", 0.5, 0.0, 1.0, display_db),), TYPE_AUDIO_EFFECT, "query:AudioFx#Gate"),
         dev("Auto Filter", "AutoFilter", (("Frequency", 0.7, 0.0, 1.0, display_hz(20.0, 20000.0)),), TYPE_AUDIO_EFFECT, "query:AudioFx#Auto%20Filter"),
         dev("Utility", "StereoGain", (("Gain", 0.5, 0.0, 1.0, lambda v: "%.1f dB" % ((float(v) - 0.5) * 70)),), TYPE_AUDIO_EFFECT, "query:AudioFx#Utility"),
     ])
@@ -2501,6 +2996,11 @@ def default_browser(song):
         BrowserItem("snare.wav", "userfolder:/Samples#snare.wav", loads="/Samples/snare.wav"),
     ])
     user_library = BrowserItem("User Library", "query:UserLibrary", [
+        # Where the installer puts AMM Sidechain (src/install.rs write_device).
+        BrowserItem("AbletonMusicMaker Devices", "query:UserLibrary#AbletonMusicMaker%20Devices", [
+            BrowserItem("AMM Sidechain", "query:UserLibrary#AbletonMusicMaker%20Devices:AMM%20Sidechain.amxd",
+                        is_device=True, loads=_amm_sidechain),
+        ]),
         BrowserItem("Defaults", "query:UserLibrary#Defaults", []),
         samples,
     ])
@@ -2595,13 +3095,11 @@ def add_plugins(song, count, folder="VST"):
 
 def default_set(version=(12, 4, 6)):
     """What a new Live set is: two MIDI tracks, two audio tracks, eight
-    scenes, two returns (A-Reverb, B-Delay), a Master at 0 dB, 120 BPM."""
+    scenes, two returns named by their devices (A-Reverb, B-Delay), a Master at 0 dB, 120 BPM."""
     song = Song(scenes=8, version=version)
     song.create_return_track()
-    song._return_tracks[0]._name = "A-Reverb"
     song._return_tracks[0]._devices.append(_instrument("Reverb", "Reverb", _REVERB_PARAMS, TYPE_AUDIO_EFFECT)(song))
     song.create_return_track()
-    song._return_tracks[1]._name = "B-Delay"
     song._return_tracks[1]._devices.append(_instrument("Delay", "Delay", _DELAY_PARAMS, TYPE_AUDIO_EFFECT)(song))
     song.create_midi_track()
     song.create_midi_track()

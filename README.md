@@ -27,6 +27,7 @@ Tell Claude what you want, and it makes the change in the Ableton Live project y
 | **Making beats** | *four on the floor, offbeat hats, a ghosted snare; MPC swing on the hats* |
 | **Arranging** | *drop Ghosts at bar 9 and make it 4 bars; the break twice before the drop* |
 | **Mixing** | *pad down 3 dB, more reverb on the vocal — how loud is the drop now?* |
+| **Listening back** | *how did the drop sound when I just played it? what changed since?* |
 | **Performing** | *play the song. go. bring it down. again from the drop.* |
 | **Learning Live** | *what is on the Bass track, and why does the chorus sound smaller?* |
 

@@ -119,11 +119,7 @@ pub fn update(app: &AppHandle, st: &Value) {
         "✕ Live not reachable".to_string()
     };
     // Listening is visible wherever the app is: the menu bar says so too.
-    let _ = lines.listen.set_text(if crate::listen::is_listening(app) {
-        "● Listening to Live"
-    } else {
-        "Listen to Live…"
-    });
+    let _ = lines.listen.set_text(listen_line(app));
     let _ = lines.client.set_text(client_txt);
     let _ = lines.server.set_text(server_txt);
     let _ = lines.live.set_text(live_txt);
@@ -136,6 +132,33 @@ pub fn update(app: &AppHandle, st: &Value) {
             last["duration_ms"].as_f64().map(|d| d.round() as i64).unwrap_or(0),
             if last["ok"].as_bool() == Some(true) { "ok" } else { "error" }
         ));
+    }
+}
+
+fn listen_line(app: &AppHandle) -> &'static str {
+    match (
+        crate::listen::is_listening(app),
+        crate::listen::remember::MEMORY.on(),
+    ) {
+        (true, true) => "● Remembering what Live plays",
+        (true, false) => "● Listening to Live",
+        (false, _) => "Listen to Live…",
+    }
+}
+
+/// The dot beside the icon while the app is remembering what Live plays, so
+/// it is never doing that unseen.
+pub fn set_remembering(app: &AppHandle, on: bool) {
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_title(if on { Some("●") } else { None::<&str> });
+        let _ = tray.set_tooltip(Some(if on {
+            "Ableton Music Maker — remembering what Live plays"
+        } else {
+            "Ableton Music Maker"
+        }));
+    }
+    if let Some(lines) = app.try_state::<TrayLines>() {
+        let _ = lines.listen.set_text(listen_line(app));
     }
 }
 

@@ -57,6 +57,7 @@ pub fn check() -> (Value, bool) {
             crate::handshake::Staleness::UpToDate => "up_to_date",
             crate::handshake::Staleness::BodyBehind => "body_behind",
             crate::handshake::Staleness::LoaderBehind => "loader_behind",
+            crate::handshake::Staleness::BodyAhead => "body_ahead",
             crate::handshake::Staleness::Unknown => "unknown",
         },
         "needs_restart": matches!(info.staleness(), crate::handshake::Staleness::LoaderBehind),
@@ -210,6 +211,7 @@ pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
     }
     write_heartbeat(&live, None);
     crate::library::start_warm_up(live.clone());
+    watch_script_version(live.clone());
 
     let server = Server::new(live.clone());
     let service = server.serve(rmcp::transport::stdio()).await?;
@@ -218,6 +220,57 @@ pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
     shutdown(&live);
     outcome?;
     Ok(())
+}
+
+/// How often the server asks Live which Remote Script it is running.
+const SCRIPT_WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Ask Live which Remote Script it runs, and when that changed since the
+/// handshake — a reload by the installer, by another session, by the Mac
+/// app — refresh what this server knows of it (its version and commands).
+/// Returns true when it changed. A failed ask changes nothing: tools keep
+/// what they had, and the next tool call reconnects as it always did.
+/// `get_script_info` is answered off Live's main thread.
+pub fn check_script_version(live: &LiveState) -> bool {
+    let Ok(reply) = live.bridge.send_command("get_script_info", None) else {
+        return false;
+    };
+    let now = reply
+        .get("script_version")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let known = live.script.get().and_then(|i| i.script_version);
+    if now.is_none() || now == known {
+        return false;
+    }
+    let info = live.script.adopt_reply(reply);
+    if let Some(line) = crate::handshake::version_drift_line(&info) {
+        tracing::warn!("{line}");
+    } else {
+        tracing::info!(
+            "Live's Remote Script is now v{}, the one this server embeds",
+            info.script_version.as_deref().unwrap_or("?")
+        );
+    }
+    true
+}
+
+/// The watcher behind `check_script_version`, on its own thread. It sits
+/// out a running performance: the socket carries one command at a time, and
+/// a cue is timed against the round trip, so nothing is added to it then.
+fn watch_script_version(live: Arc<LiveState>) {
+    let spawned = std::thread::Builder::new()
+        .name("script-version-watch".into())
+        .spawn(move || loop {
+            std::thread::sleep(SCRIPT_WATCH_EVERY);
+            if crate::tools::performance_running(&live).is_some() {
+                continue;
+            }
+            check_script_version(&live);
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("could not start the Remote Script version watch: {e}");
+    }
 }
 
 /// Whether the server may write the Remote Script's body into Live's User
@@ -246,8 +299,10 @@ pub fn update_script_in_place(
 ) -> crate::handshake::ScriptInfo {
     use crate::handshake::Staleness;
     let how = info.staleness();
-    if how == Staleness::LoaderBehind {
-        tracing::warn!("{}", Staleness::LoaderBehind.message().unwrap_or_default());
+    if how == Staleness::LoaderBehind || how == Staleness::BodyAhead {
+        // A newer body in Live is never overwritten with this one: that
+        // would undo an update made after this server started.
+        tracing::warn!("{}", how.message().unwrap_or_default());
         return info.clone();
     }
     if how != Staleness::BodyBehind || !info.can_reload() {

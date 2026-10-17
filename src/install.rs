@@ -290,6 +290,19 @@ fn write_file(
     })
 }
 
+/// AMM Sidechain, the Max for Live device that keys any track: written into
+/// `<User Library>/AbletonMusicMaker Devices/`, where Live's browser lists it
+/// as soon as it is there. Unchanged when the file already matches.
+pub fn write_device(user_library: &Path) -> std::io::Result<PathBuf> {
+    let dir = user_library.join(crate::sidechain::AMM_FOLDER);
+    std::fs::create_dir_all(&dir)?;
+    let dest = dir.join(crate::sidechain::AMM_FILE);
+    if std::fs::read(&dest).ok().as_deref() != Some(crate::SIDECHAIN_DEVICE) {
+        std::fs::write(&dest, crate::SIDECHAIN_DEVICE)?;
+    }
+    Ok(dest)
+}
+
 fn install_into(root: &Path) -> InstallResult {
     let dest_dir = root.join(REMOTE_SCRIPT_FOLDER_NAME);
     let dest = dest_dir.join(LOADER_FILE_NAME);
@@ -340,6 +353,14 @@ fn install_into(root: &Path) -> InstallResult {
             }
             let backup = files.iter().find_map(|f| f.backup.clone());
             tracing::info!("Remote Script {} → {}", status, dest_dir.display());
+            // The device that gives any track a routable sidechain, beside
+            // the script in the same User Library (root is its Remote Scripts).
+            if let Some(library) = root.parent() {
+                match write_device(library) {
+                    Ok(path) => tracing::info!("AMM Sidechain → {}", path.display()),
+                    Err(e) => tracing::warn!("AMM Sidechain not installed: {e}"),
+                }
+            }
             InstallResult {
                 path: Some(dest),
                 status,

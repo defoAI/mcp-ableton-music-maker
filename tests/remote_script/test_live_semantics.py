@@ -873,5 +873,243 @@ class LiveMarksOnlyTimeThatExists(unittest.TestCase):
         self.assertEqual(self.song.last_event_time, 192.0)
 
 
+
+class Transport(unittest.TestCase):
+    """Where Live plays from. Measured on Live 12.4.6, 2026-10-15, through
+    `run` batches with a 1-bar global quantization, after a producer reported
+    that set_arrangement_time to bar 49 then start_playback played bar 1. The
+    script's `_start_at` is built on all four."""
+
+    def setUp(self):
+        self.song = fake_live.Song(scenes=2)
+        self.song._clock = fake_live.DrivenClock()
+        self.song._cue_points.append(fake_live.CuePoint(self.song, "end", 400.0))
+
+    def frame(self):
+        self.song._apply_pending()
+
+    def stopped_at(self, beat):
+        """Play from `beat` and stop there: the start `_start_at` makes."""
+        q = self.song.clip_trigger_quantization
+        self.song.clip_trigger_quantization = 0
+        self.song.start_playing()
+        self.song.current_song_time = beat
+        self.song.clip_trigger_quantization = q
+        self.frame()
+        self.song.stop_playing()
+
+    def test_start_playing_plays_from_the_start_marker_not_the_playhead(self):
+        self.stopped_at(17.0)
+        self.song.current_song_time = 192.0
+        self.frame()
+        self.assertEqual(self.song.current_song_time, 192.0)
+        self.song.start_playing()
+        self.frame()
+        self.assertEqual(self.song.current_song_time, 0.0)
+
+    def test_continue_playing_ignores_a_seek_made_while_stopped(self):
+        self.stopped_at(17.0)
+        self.song.current_song_time = 192.0
+        self.frame()  # landed, and reads back...
+        self.song.continue_playing()
+        self.frame()
+        self.assertEqual(self.song.current_song_time, 17.0)  # ...and is ignored
+
+    def test_a_seek_while_playing_snaps_to_the_grid_and_keeps_the_phase(self):
+        self.song.clip_trigger_quantization = fake_live.Q_BAR
+        self.stopped_at(17.0)
+        self.song.continue_playing()         # at 17.0: phase 1.0 in the bar
+        self.song.current_song_time = 192.0
+        self.frame()
+        self.assertAlmostEqual(self.song.current_song_time, 193.0)
+        self.song.stop_playing()
+        self.song.start_playing()            # at 0.0: phase 0
+        self.song.current_song_time = 194.5
+        self.frame()
+        self.assertAlmostEqual(self.song.current_song_time, 196.0)
+
+    def test_quantization_off_start_seek_quantization_back_lands_exactly(self):
+        self.song.clip_trigger_quantization = fake_live.Q_BAR
+        self.stopped_at(17.0)
+        self.song.clip_trigger_quantization = 0
+        self.song.start_playing()
+        self.song.current_song_time = 194.5
+        self.song.clip_trigger_quantization = fake_live.Q_BAR
+        self.frame()
+        self.assertAlmostEqual(self.song.current_song_time, 194.5)
+
+
+class FollowingTheArrangement(unittest.TestCase):
+    """Live 12 keeps Back to Arrangement per track. Measured on Live 12.4.6,
+    2026-10-15: firing the Capture track's slot lit the song's flag and that
+    track's own (playing_slot_index 0); writing the track's flag False put
+    both out and stopped the slot; writing the song's False did the same for
+    every track. The LOM sweep finds `back_to_arranger` on `song.tracks[0]`."""
+
+    def setUp(self):
+        self.song = fake_live.Song(scenes=2)
+        self.song._clock = fake_live.DrivenClock()
+        for _ in range(2):
+            self.song.create_midi_track()
+        self.song.tracks[1].clip_slots[0].create_clip(4.0)
+
+    def test_launching_a_slot_takes_that_track_off_the_arrangement(self):
+        self.song.tracks[1].clip_slots[0].fire()
+        self.assertTrue(self.song.tracks[1].back_to_arranger)
+        self.assertFalse(self.song.tracks[0].back_to_arranger)
+        self.assertTrue(self.song.back_to_arranger)
+        self.assertTrue(self.song.is_playing)  # a launch starts the transport
+
+    def test_one_tracks_flag_puts_back_that_track_only(self):
+        self.song.tracks[1].clip_slots[0].fire()
+        self.song.tracks[1].back_to_arranger = False
+        self.assertEqual(self.song.tracks[1].playing_slot_index, -1)
+        self.assertFalse(self.song.back_to_arranger)
+
+    def test_the_songs_flag_puts_back_every_track(self):
+        self.song.tracks[1].clip_slots[0].fire()
+        self.song.back_to_arranger = False
+        self.assertFalse(self.song.tracks[1].back_to_arranger)
+        self.assertEqual(self.song.tracks[1].playing_slot_index, -1)
+
+
+class ClipEnvelopes(unittest.TestCase):
+    """`AutomationEnvelope.value_at_time(t)` answers the value before a
+    breakpoint at t, and a new envelope starts at the parameter's value.
+    Measured on Live 12.4.6, 2026-10-15: a 0 -> 1 ramp over 32 beats in
+    0.5-beat steps, written into a Session clip whose fader sat at 0.55,
+    read 0.55 at 0, 0.0 at 0.25, 0.1094 at 4.0 and 0.125 at 4.25. While the
+    clip played, the volume parameter itself followed the envelope (0.016 at
+    clip beat 0.65): automation, not modulation."""
+
+    def setUp(self):
+        self.song = fake_live.Song(scenes=1)
+        self.song.create_midi_track()
+        self.slot = self.song.tracks[0].clip_slots[0]
+        self.slot.create_clip(32.0)
+        self.vol = self.song.tracks[0].mixer_device.volume
+        self.vol.value = 0.55
+        env = self.slot.clip.create_automation_envelope(self.vol)
+        for k in range(64):
+            env.insert_step(k * 0.5, 0.5, k * 0.5 / 32.0)
+        self.env = env
+
+    def test_a_read_on_a_breakpoint_is_the_value_before_it(self):
+        self.assertAlmostEqual(self.env.value_at_time(0.0), 0.55, places=4)
+        self.assertAlmostEqual(self.env.value_at_time(4.0), 3.5 / 32, places=4)
+
+    def test_a_read_after_a_breakpoint_is_the_written_value(self):
+        self.assertAlmostEqual(self.env.value_at_time(0.25), 0.0, places=4)
+        self.assertAlmostEqual(self.env.value_at_time(4.25), 4.0 / 32, places=4)
+
+
+class ArrangementCopies(unittest.TestCase):
+    """What a placed copy of a Session clip is, measured on Live 12.4.6,
+    2026-10-15, with a scratch clip on a producer's Lead track:
+    `duplicate_clip_to_arrangement` keeps the clip's name ("ScratchR1" came
+    back as "ScratchR1"); the copy takes remove_notes_extended and set_notes
+    like a Session clip; and create_automation_envelope on it raised "Not a
+    session clip or parameter belongs to another track." -- while a Session
+    envelope placed with the clip did play in the Arrangement (a soloed
+    capture of the copy opened 26.7 dB under the copy without it). Neither a
+    Track nor a DeviceParameter has any member that writes Arrangement
+    automation (`describe` lists none)."""
+
+    def setUp(self):
+        self.song = fake_live.Song(scenes=1)
+        self.song.create_midi_track()
+        self.track = self.song.tracks[0]
+        self.track.clip_slots[0].create_clip(4.0)
+        self.clip = self.track.clip_slots[0].clip
+        self.clip.name = "Theme"
+        self.clip.set_notes(((60, 0.0, 1.0, 100, False),))
+        self.copy = self.track.duplicate_clip_to_arrangement(self.clip, 16.0)
+
+    def test_a_placed_copy_keeps_the_clips_name(self):
+        self.assertEqual(self.copy.name, "Theme")
+
+    def test_a_placed_copy_takes_new_notes(self):
+        self.copy.remove_notes_extended(0, 128, 0.0, 8.0)
+        self.copy.set_notes(((64, 0.0, 1.0, 100, False),))
+        self.assertEqual([n.pitch for n in self.copy.get_notes_extended(0, 128, 0.0, 8.0)], [64])
+
+    def test_an_arrangement_clip_refuses_an_envelope(self):
+        vol = self.track.mixer_device.volume
+        with self.assertRaises(RuntimeError) as raised:
+            self.copy.create_automation_envelope(vol)
+        self.assertIn("Not a session clip", str(raised.exception))
+
+
+class DeviceOrder(unittest.TestCase):
+    """Live 12.4.6, measured 2026-10-15 through move_device: an audio effect
+    asked to go ahead of a track's instrument lands straight after it."""
+
+    def test_an_audio_effect_does_not_go_ahead_of_the_instrument(self):
+        song = fake_live.default_set()
+        track = song.tracks[0]
+        song._replace_instrument(track, fake_live._instrument(
+            "Operator", "Operator", (), fake_live.TYPE_INSTRUMENT)(song))
+        glue = fake_live.Device("Glue Compressor", "GlueCompressor",
+                                device_type=fake_live.TYPE_AUDIO_EFFECT)
+        track._devices.append(glue)
+        song.move_device(glue, track, 0)
+        self.assertEqual([d.name for d in track.devices], ["Operator", "Glue Compressor"])
+
+
+class Sidechains(unittest.TestCase):
+    """What Live's API can route, measured on Live 12.4.6 (2026-10-15) and
+    against Cycling '74's LOM reference (CompressorDevice, MaxDevice,
+    DeviceIO). The script's sidechain support stands on every one of these."""
+
+    def setUp(self):
+        self.song = fake_live.Song(scenes=1)
+        self.song.create_audio_track()
+        self.song.tracks[0].name = "Kick"
+        self.song.create_audio_track()
+        self.song.tracks[1].name = "Bass"
+        self.comp = fake_live.CompressorDevice(self.song)
+        self.comp._canonical_parent = self.song.tracks[1]
+        self.song.tracks[1]._devices.append(self.comp)
+
+    def test_only_compressor_of_the_built_in_devices_has_a_routable_input(self):
+        self.assertTrue(hasattr(self.comp, "input_routing_type"))
+        glue = fake_live.Device("Glue Compressor", "GlueCompressor", device_type=fake_live.TYPE_AUDIO_EFFECT)
+        self.assertFalse(hasattr(glue, "input_routing_type"))
+        self.assertFalse(hasattr(glue, "audio_inputs"))
+
+    def test_a_source_is_its_track_and_follows_a_rename(self):
+        kick = [t for t in self.comp.available_input_routing_types if t.display_name == "Kick"][0]
+        self.comp.input_routing_type = kick
+        self.song.tracks[0].name = "Kick A"
+        self.assertEqual(self.comp.input_routing_type.display_name, "Kick A")
+        self.assertIs(self.comp.input_routing_type.attached_object, self.song.tracks[0])
+
+    def test_deleting_the_source_leaves_no_input_and_s_c_on_as_it_was(self):
+        self.comp.input_routing_type = self.comp.available_input_routing_types[0]
+        self.comp._find_parameter("S/C On").value = 1
+        self.song.delete_track(0)
+        self.assertEqual(self.comp.input_routing_type.display_name, "No Input")
+        self.assertEqual(self.comp._find_parameter("S/C On").value, 1.0)
+
+    def test_the_master_is_main(self):
+        self.assertEqual(self.song.master_track.name, "Main")
+        self.assertIn("Main", [t.display_name for t in self.comp.available_input_routing_types])
+
+    def test_a_max_device_with_four_channels_has_two_routable_inputs(self):
+        amm = fake_live._amm_sidechain(self.song)
+        self.assertEqual(len(amm.audio_inputs), 2)
+        io = amm.audio_inputs[1]
+        io.routing_type = [t for t in io.available_routing_types if t.display_name == "Kick"][0]
+        io.routing_channel = [c for c in io.available_routing_channels if c.display_name == "Post FX"][0]
+        self.assertIs(io.routing_type.attached_object, self.song.tracks[0])
+
+    def test_a_track_can_send_to_sends_only(self):
+        outs = [t.display_name for t in self.song.tracks[0].available_output_routing_types]
+        self.assertEqual(outs, ["Ext. Out", "Main", "Bass", "Sends Only"])
+
+    def test_device_type_codes(self):
+        self.assertEqual((fake_live.TYPE_INSTRUMENT, fake_live.TYPE_AUDIO_EFFECT), (1, 2))
+        self.assertEqual(self.comp.type, 2)
+
 if __name__ == "__main__":
     unittest.main()

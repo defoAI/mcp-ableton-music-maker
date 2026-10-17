@@ -336,12 +336,14 @@ pub fn clear_captures_body(live: &LiveState, p: &ClearCapturesParams) -> ToolRes
         ));
     }
     require(live, "delete_track")?;
-    live.send_command("delete_track", Some(json!({"track_index": index})))
+    let r = live
+        .send_command("delete_track", Some(json!({"track_index": index})))
         .map_err(|e| live_err("delete the Capture track", e))?;
     Ok(format!(
-        "Removed the Capture track (track {index}) and its {} capture{}; later tracks moved up by one. The audio files stay in your project's Samples/Recorded folder; capture_mix makes a new track when needed.",
+        "Removed the Capture track (track {index}) and its {} capture{}; later tracks moved up by one. The audio files stay in your project's Samples/Recorded folder; capture_mix makes a new track when needed.{}",
         clips.len(),
-        if clips.len() == 1 { "" } else { "s" }
+        if clips.len() == 1 { "" } else { "s" },
+        crate::sidechain::unkeyed_text("the Capture track", r.get("unkeyed").unwrap_or(&serde_json::Value::Null))
     ))
 }
 

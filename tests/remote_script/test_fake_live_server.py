@@ -137,7 +137,7 @@ class TheWire(unittest.TestCase):
             info = r["result"]
             self.assertEqual(info["protocol_version"], 2)
             self.assertEqual(info["socket_reader"], "main_thread_tick")
-            self.assertEqual(len(info["capabilities"]), 99)
+            self.assertEqual(len(info["capabilities"]), 106)
             self.assertEqual(info["live"]["version"], "12.4.6")
             self.assertTrue(info["bind_is_loopback"])
             # Both halves, and what the reload has done. The server reads

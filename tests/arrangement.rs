@@ -8,8 +8,8 @@ mod common;
 use common::{is_error, server_on_fake_live, server_with, text_of, FakeBridge, LiveSet};
 use mcp_ableton_music_maker::notes::NotesInput;
 use mcp_ableton_music_maker::tools::{
-    self, AddNotesParams, CreateClipParams, CreateTrackParams, DuplicateToArrangementParams,
-    SnapshotParams,
+    self, AddNotesParams, ArrangementTimeParams, CreateClipParams, CreateTrackParams,
+    DuplicateToArrangementParams, SnapshotParams, StartPlaybackParams,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -769,4 +769,128 @@ async fn a_locator_past_the_end_of_the_arrangement_says_what_to_do() {
         "once the arrangement reaches it, the locator takes: {}",
         text_of(&r)
     );
+}
+
+// ── Playing from where the playhead was put ────────────────────────────────
+//
+// A studio report (2026-10-15, Live 12.4.6): adv_set_arrangement_time to bar
+// 49, then adv_start_playback, played bar 1 — `start_playing()` plays from
+// Live's start marker. The fake carries what Live measured; this holds the
+// tools to it from both a stopped and a playing transport, for bar 1, a bar
+// mid-record and a bar past the last locator.
+
+/// A set whose Arrangement reaches bar 72, with a locator at bar 65.
+fn a_record(set: &LiveSet) -> usize {
+    let track = set.build(&[("Lead", "midi", "")])[0];
+    set.write_clip(
+        track,
+        0,
+        "Theme",
+        json!([{"pitch": 60, "start_time": 0.0, "duration": 1.0}]),
+    );
+    set.place(track, 0, &[0.0, 192.0, 284.0]);
+    set.ask(
+        "run",
+        json!({"ops": [
+            {"op": "set", "path": "song.current_song_time", "value": 256.0},
+            {"op": "wait_tick", "ticks": 2},
+            {"op": "call", "path": "song.set_or_delete_cue"}
+        ]}),
+    );
+    track
+}
+
+fn song_time(set: &LiveSet) -> f64 {
+    set.session()["current_song_time"].as_f64().unwrap_or(-1.0)
+}
+
+#[tokio::test]
+async fn start_playback_plays_from_the_bar_the_playhead_was_moved_to() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    a_record(&set);
+    for playing in [false, true] {
+        for bar in [1.0, 49.0, 70.0] {
+            // Somewhere else first, so a wrong start cannot pass by luck.
+            set.ask("play_from", json!({"time": 40.0}));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if !playing {
+                set.ask("stop_playback", json!({}));
+            }
+            // Stopped: the artist's two calls, the playhead then the start.
+            // Playing: one call, `bar`, which moves and starts together.
+            let params = if playing {
+                StartPlaybackParams {
+                    bar: Some(json!(bar)),
+                    time: None,
+                }
+            } else {
+                let r = server
+                    .run(
+                        &tools::SET_ARRANGEMENT_TIME,
+                        ArrangementTimeParams {
+                            bar: Some(bar),
+                            time: None,
+                        },
+                        tools::set_arrangement_time_body,
+                    )
+                    .await;
+                assert!(!is_error(&r), "{}", text_of(&r));
+                StartPlaybackParams::default()
+            };
+            let r = server
+                .run(&tools::START_PLAYBACK, params, tools::start_playback_body)
+                .await;
+            let t = text_of(&r);
+            assert!(!is_error(&r), "bar {bar}, playing {playing}: {t}");
+            assert!(
+                t.starts_with(&format!("Playing from bar {}", bar as i64)),
+                "bar {bar}, playing {playing}: {t}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let at = song_time(&set);
+            let beat = (bar - 1.0) * 4.0;
+            assert!(
+                at >= beat && at < beat + 2.0,
+                "bar {bar}, playing {playing}: Live is at beat {at}, not {beat}: {t}"
+            );
+            set.ask("stop_playback", json!({}));
+        }
+    }
+}
+
+#[tokio::test]
+async fn start_playback_from_a_locator_by_name_and_past_the_end_is_refused() {
+    let (server, bridge) = server_on_fake_live();
+    let set = LiveSet::of(bridge.as_ref());
+    a_record(&set);
+    let names = set.locators();
+    let (name, at) = names.first().cloned().expect("a locator");
+    let r = server
+        .run(
+            &tools::START_PLAYBACK,
+            StartPlaybackParams {
+                bar: Some(json!(name)),
+                time: None,
+            },
+            tools::start_playback_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    assert!(text_of(&r).starts_with(&format!("Playing from bar {}", (at / 4.0) as i64 + 1)));
+    set.ask("stop_playback", json!({}));
+
+    let r = server
+        .run(
+            &tools::START_PLAYBACK,
+            StartPlaybackParams {
+                bar: Some(json!(900)),
+                time: None,
+            },
+            tools::start_playback_body,
+        )
+        .await;
+    assert!(is_error(&r), "{}", text_of(&r));
+    assert!(text_of(&r).contains("past the end"), "{}", text_of(&r));
+    assert!(!set.is_playing(), "a refused start leaves nothing playing");
 }

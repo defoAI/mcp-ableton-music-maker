@@ -66,7 +66,7 @@ except ImportError:
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to the SCRIPT_VERSION of the body it embeds, and a difference is a
 # reload rather than a restart.
-SCRIPT_VERSION = "1.38.0"
+SCRIPT_VERSION = "1.41.0"
 # The oldest loader this body will run on. The loader refuses a body that
 # needs a newer one, which is how "restart Live" is said only when it is true.
 NEEDS_LOADER = "1.1.0"
@@ -242,7 +242,12 @@ class Body(Loader):
                         # Both of these wait for Live's own ticks: `run` for
                         # the wait_tick ops in a batch (RUN_MAX_WAIT_TICKS),
                         # `reset_set` PLAYHEAD_TICKS per locator it removes.
-                        "run": 20.0, "reset_set": 60.0}
+                        "run": 20.0, "reset_set": 60.0,
+                        # A bar of preroll in real time before the slot is
+                        # fired: 12 s at 20 BPM, Live's slowest tempo.
+                        "start_capture": 30.0,
+                        # One device load per effect, each one a graph rebuild.
+                        "ensure_effects": 60.0}
     # How many of Live's frames a playhead move needs before it can be read
     # back. `song.current_song_time = x` is a request, not a write: measured
     # on Live 12.4.6 (2026-09-21), a read in the same task still answers the
@@ -269,7 +274,7 @@ class Body(Loader):
         "set_device_parameters", "place_clips", "delete_arrangement_clips",
         "duplicate_arrangement_clip", "create_return_track", "create_tracks", "write_clips",
         "start_arrangement_record", "stop_arrangement_record", "place_sample",
-        "delete_device", "move_device",
+        "delete_device", "move_device", "replace_clip_notes", "set_sidechain", "set_track_output", "ensure_effects",
     ])
 
 
@@ -485,7 +490,7 @@ class Body(Loader):
             result = self._set_clip_launch(
                 params.get("track_index", 0), params.get("clip_index", 0), params)
         elif command_type == "play_from":
-            result = self._play_from(params.get("time", 0.0), response_queue)
+            result = self._play_from(params.get("time", 0.0))
         elif command_type == "reset_set":
             return self._reset_set(params)
         elif command_type == "delete_track":
@@ -594,9 +599,23 @@ class Body(Loader):
         elif command_type == "start_capture":
             result = self._start_capture(
                 params.get("start", 0.0), params.get("bars", 8),
-                params.get("name", "capture"), response_queue)
+                params.get("name", "capture"))
         elif command_type == "stop_capture":
             result = self._stop_capture(params.get("slot"))
+        elif command_type == "ensure_effects":
+            result = self._ensure_effects(params)
+        elif command_type == "set_track_output":
+            result = self._set_track_output(params)
+        elif command_type == "set_sidechain":
+            result = self._set_sidechain(params)
+        elif command_type == "param_fraction":
+            result = self._param_fraction(params)
+        elif command_type == "list_sidechains":
+            result = self._list_sidechains(params)
+        elif command_type == "get_sidechain":
+            result = self._get_sidechain(params)
+        elif command_type == "replace_clip_notes":
+            result = self._replace_clip_notes(params.get("clips"))
         elif command_type == "set_clip_automation":
             result = self._set_clip_automation(
                 params.get("track_index", 0), params.get("clip_index", 0),
@@ -639,7 +658,7 @@ class Body(Loader):
         elif command_type == "get_clip_notes":
             track_index = params.get("track_index", 0)
             clip_index = params.get("clip_index", 0)
-            return self._get_clip_notes(track_index, clip_index)
+            return self._get_clip_notes(track_index, clip_index, params.get("arrangement", False))
         elif command_type == "get_device_parameters":
             return self._get_device_parameters(
                 params.get("track_index", 0), params.get("device_index", 0),
@@ -1411,17 +1430,26 @@ class Body(Loader):
 
 
     def _start_playback(self):
-        """Start playing the session"""
-        try:
-            self._song.start_playing()
-            
-            result = {
-                "playing": self._song.is_playing
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error starting playback: " + str(e))
-            raise
+        """Play from where the playhead is, and say where Live is playing.
+
+        `song.start_playing()` plays from Live's start marker, not from the
+        playhead: after `set_current_song_time` to bar 49 it played bar 1
+        (measured on Live 12.4.6, 2026-10-15). So this plays from
+        `current_song_time` through `_play_from_confirmed`, which checks the
+        landing before it answers. Already playing: nothing moves."""
+        song = self._song
+        if song.is_playing:
+            yield Done({"playing": True, "already_playing": True,
+                        "at": float(song.current_song_time)})
+            return
+        target = float(song.current_song_time)
+        for step in self._play_from_confirmed(target):
+            if isinstance(step, Done):
+                result = dict(step.result)
+                result["playing"] = bool(song.is_playing)
+                yield Done(result)
+                return
+            yield step
     
     def _stop_playback(self):
         """Stop playing the session"""
@@ -2221,9 +2249,13 @@ class Body(Loader):
                     if there is not None:
                         if on_existing == "fail":
                             raise ValueError("the set already has a track named '%s'" % wanted)
-                        created.append({"index": there,
-                                        "name": "%s" % self._song.tracks[there].name,
-                                        "reused": True})
+                        reused = {"index": there, "name": "%s" % self._song.tracks[there].name,
+                                  "reused": True}
+                        # Converging re-applies the routing the document asks for.
+                        if spec.get("output"):
+                            reused["output"] = self._set_track_output(
+                                {"track_index": there, "to": spec.get("output")})["output"]
+                        created.append(reused)
                         continue
                 kind = str(spec.get("kind") or "midi").lower()
                 if kind == "audio":
@@ -2261,6 +2293,9 @@ class Body(Loader):
                         track.color_index = int(spec.get("color_index"))
                     except Exception as e:
                         entry["color_error"] = str(e)
+                if spec.get("output"):
+                    entry["output"] = self._set_track_output(
+                        {"track_index": index, "to": spec.get("output")})["output"]
             yield Done({"created": created})
         except Exception as e:
             self.log_message("Error creating tracks: " + str(e))
@@ -2269,6 +2304,47 @@ class Body(Loader):
                 raise
             raise RuntimeError("after %d of %d tracks (%s): %s" % (
                 len(created), len(list(tracks or [])), ", ".join(c["name"] for c in created), str(e)))
+
+    def _norm_device_name(self, name):
+        """A device's name as a preset's: Live loads "Atmos Pad" as a device
+        called "AtmosPad", so case, spaces and punctuation do not count."""
+        return "".join(ch for ch in ("%s" % name).lower() if ch.isalnum())
+
+    def _ensure_effects(self, params):
+        """A track's (a return's, the master's) effects, in order: each
+        {"uri", "name"} is loaded at the end of the chain -- or, with
+        on_existing "converge", the k-th device already there with that name
+        is used instead, so re-running a document does not load a second
+        Compressor. Generator: one load per slice. Answers each effect's
+        device index and whether it was loaded or reused."""
+        kind = "%s" % (params.get("kind") or "track")
+        index = int(params.get("index", -1))
+        track = self._resolve_track(index, kind)
+        reuse = "%s" % (params.get("on_existing") or "converge") != "add"
+        taken = []
+        out = []
+        for spec in list(params.get("effects") or []):
+            want = self._norm_device_name(spec.get("name") or "")
+            found = None
+            if reuse and want:
+                for d_i, dev in enumerate(list(track.devices)):
+                    if d_i not in taken and self._norm_device_name(dev.name) == want:
+                        found = d_i
+                        break
+            if found is not None:
+                taken.append(found)
+                out.append({"index": found, "name": "%s" % track.devices[found].name, "reused": True})
+                continue
+            yield None
+            loaded = self._load_browser_item(index, spec.get("uri"), kind)
+            dev = loaded.get("loaded_device") or {}
+            if dev.get("index") is None:
+                raise RuntimeError("loading '%s' on '%s' added no device" % (spec.get("name") or spec.get("uri"), track.name))
+            taken.append(int(dev["index"]))
+            out.append({"index": int(dev["index"]), "name": "%s" % dev.get("name"), "reused": False})
+            yield None
+        yield Done({"track": "%s" % track.name, "kind": kind, "index": index, "effects": out,
+                    "devices": ["%s" % d.name for d in track.devices]})
 
     def _write_clips(self, clips):
         """Several Session clips in one round trip: each entry creates the
@@ -2326,6 +2402,596 @@ class Body(Loader):
             self.log_message("Error writing clips: " + str(e))
             raise
 
+    def _note_span(self, clip):
+        """Beats that cover every note a clip can hold: past its length, its
+        loop end and its end marker, whichever is furthest."""
+        span = float(clip.length)
+        for attr in ("loop_end", "end_marker"):
+            span = max(span, float(self._safe_attr(clip, attr, float, 0.0) or 0.0))
+        return span + 4.0
+
+    def _replace_notes_in(self, clip, live_notes):
+        """Every note of `clip` out, `live_notes` in. Measured on Live 12.4.6
+        (2026-10-15): an Arrangement clip takes remove_notes_extended and
+        set_notes like a Session clip does."""
+        remover = getattr(clip, "remove_notes_extended", None)
+        if remover is not None:
+            remover(0, 128, 0.0, self._note_span(clip))
+        else:
+            clip.remove_notes(0.0, 0, self._note_span(clip), 128)
+        if live_notes:
+            clip.set_notes(live_notes)
+
+    def _set_clip_length(self, clip, length):
+        """A Session clip's loop and end marker to `length` beats, from its
+        start. Growing moves the end first, shrinking the loop first: Live
+        refuses a loop end beyond the end marker and an end marker before the
+        loop end."""
+        length = float(length)
+        if length <= 0.0:
+            raise ValueError("length must be greater than 0")
+        if length >= float(clip.end_marker):
+            clip.end_marker = length
+            clip.loop_end = length
+        else:
+            clip.loop_end = length
+            clip.end_marker = length
+
+    def _replace_clip_notes(self, clips):
+        """Replace the notes of existing Session clips and, with
+        `arrangement: true`, of every Arrangement clip on the same track that
+        carries the Session clip's name -- the copies `duplicate_clip_to_
+        arrangement` made, which keep that name. Not sliced: the whole edit is
+        one undo step, and every clip is checked before the first is touched.
+
+        Each entry: {track_index, clip_index, notes, length?, arrangement?}.
+        A length re-sizes the Session clip; the Arrangement copies keep the
+        length they were placed with."""
+        song = self._song
+        specs = list(clips or [])
+        if not specs:
+            raise ValueError("give at least one clip")
+        plan = []
+        for i, spec in enumerate(specs):
+            ti, ci = int(spec.get("track_index", -1)), int(spec.get("clip_index", -1))
+            if ti < 0 or ti >= len(song.tracks):
+                raise IndexError("clip %d: track index %d out of range" % (i + 1, ti))
+            track = song.tracks[ti]
+            slots = list(track.clip_slots)
+            if ci < 0 or ci >= len(slots) or not slots[ci].has_clip:
+                raise ValueError("clip %d: slot %d on '%s' holds no clip to replace the notes of"
+                                 % (i + 1, ci, track.name))
+            clip = slots[ci].clip
+            if not getattr(clip, "is_midi_clip", False):
+                raise ValueError("clip %d: '%s' on '%s' is an audio clip; it has no notes"
+                                 % (i + 1, clip.name, track.name))
+            copies = []
+            if spec.get("arrangement"):
+                name = "%s" % clip.name
+                for ai, ac in enumerate(list(getattr(track, "arrangement_clips", []) or [])):
+                    if getattr(ac, "is_midi_clip", False) and "%s" % ac.name == name:
+                        copies.append((ai, ac))
+            plan.append((ti, ci, track, clip, self._live_notes(spec.get("notes")),
+                         spec.get("length"), copies))
+        out = []
+        for ti, ci, track, clip, live_notes, length, copies in plan:
+            if length is not None and abs(float(length) - float(clip.length)) > 1e-6:
+                self._set_clip_length(clip, length)
+            self._replace_notes_in(clip, live_notes)
+            placed = []
+            for ai, ac in copies:
+                self._replace_notes_in(ac, live_notes)
+                placed.append({"index": ai, "start_time": float(ac.start_time),
+                               "length": float(ac.length)})
+            out.append({"track_index": ti, "clip_index": ci, "track": "%s" % track.name,
+                        "name": "%s" % clip.name, "notes": len(live_notes),
+                        "length": float(clip.length), "arrangement_copies": placed})
+        return {"replaced": out}
+
+    # ── Sidechain ───────────────────────────────────────────────────────────
+    #
+    # Measured on Live 12.4.6 (2026-10-15): of Live's devices only Compressor
+    # (class Compressor2) exposes its sidechain input to the API --
+    # available_input_routing_types / input_routing_type and the channel
+    # pair. Glue Compressor, Gate, Auto Filter, Multiband Dynamics, Drum Buss,
+    # Limiter, Utility, Shifter and Vocoder expose none; their sidechain is set
+    # in Live by hand or not at all. Every source type carries
+    # `attached_object`, the Track it is (none for "No Input"), and the list
+    # offers every audio-carrying track -- the device's own included -- the
+    # returns and "Main". Live hands out a new Python wrapper on every access,
+    # so objects are compared with ==, never `is`.
+
+    SIDECHAIN_PARAMS = {
+        "on": "S/C On", "gain": "S/C Gain", "mix": "S/C Mix", "listen": "S/C Listen",
+        "eq_on": "S/C EQ On", "eq_type": "S/C EQ Type", "eq_freq": "S/C EQ Freq",
+        "eq_q": "S/C EQ Q", "eq_gain": "S/C EQ Gain",
+    }
+    # Taps by the names Live gives the channels of a track source.
+    SIDECHAIN_TAPS = {"pre_fx": "pre fx", "post_fx": "post fx", "post_mixer": "post mixer"}
+
+    def _has_sidechain(self, device):
+        return self._key_input(device) is not None
+
+    class _KeyInput(object):
+        """Where a device's sidechain input is routed: Compressor's own
+        input_routing_* members, or a Max device's audio input bus (DeviceIO:
+        routing_type / routing_channel, writable -- measured on Live 12.4.6,
+        2026-10-15, on Envelope Follower and on a device with plugin~ 1 2 3 4,
+        which Live gives two such inputs)."""
+
+        def __init__(self, owner, prefix):
+            self.owner, self.prefix = owner, prefix
+
+        def types(self):
+            return list(getattr(self.owner, "available_%srouting_types" % self.prefix))
+
+        def channels(self):
+            return list(getattr(self.owner, "available_%srouting_channels" % self.prefix))
+
+        def get_type(self):
+            return getattr(self.owner, "%srouting_type" % self.prefix)
+
+        def set_type(self, value):
+            setattr(self.owner, "%srouting_type" % self.prefix, value)
+
+        def get_channel(self):
+            return getattr(self.owner, "%srouting_channel" % self.prefix, None)
+
+        def set_channel(self, value):
+            setattr(self.owner, "%srouting_channel" % self.prefix, value)
+
+    def _key_input(self, device, index=None):
+        """The input a device keys from. A Max device declared with
+        `plugin~ 1 2 3 4` gets two audio inputs, and it is the second that
+        feeds plugin~ channels 3 and 4 -- routed to a kick, they carried it
+        and the first carried nothing (measured on Live 12.4.6, 2026-10-15).
+        So the second is the key when there are two."""
+        if hasattr(device, "available_input_routing_types") and hasattr(device, "input_routing_type"):
+            return self._KeyInput(device, "input_")
+        inputs = getattr(device, "audio_inputs", None)
+        if inputs is not None:
+            inputs = list(inputs)
+            if index is None:
+                index = 1 if len(inputs) >= 2 else 0
+            if 0 <= int(index) < len(inputs):
+                return self._KeyInput(inputs[int(index)], "")
+        return None
+
+    def _host_track(self, obj):
+        """The track, return or master a device lives on, however deep in racks."""
+        seen = 0
+        while obj is not None and seen < 32:
+            for t in self._all_tracks_with_kind():
+                if t[2] == obj:
+                    return t
+            obj = getattr(obj, "canonical_parent", None)
+            seen += 1
+        return None
+
+    def _all_tracks_with_kind(self):
+        song = self._song
+        letters = "ABCDEFGHIJKL"
+        out = [("track", i, t) for i, t in enumerate(song.tracks)]
+        out += [("return", i, t) for i, t in enumerate(song.return_tracks)]
+        out.append(("master", -1, song.master_track))
+        return out
+
+    def _source_of(self, track):
+        for kind, index, t in self._all_tracks_with_kind():
+            if t == track:
+                return kind, index, t
+        return None
+
+    def _named_param(self, device, name):
+        for p in device.parameters:
+            if "%s" % p.name == name:
+                return p
+        return None
+
+    def _sidechain_state(self, device, host=None):
+        """What a device's sidechain is, read from Live: None for a device
+        that has no sidechain input the API can reach. `host` is the
+        (kind, index, track) it lives on, when the caller knows it."""
+        key = self._key_input(device)
+        if key is None:
+            return None
+        rtype = key.get_type()
+        attached = getattr(rtype, "attached_object", None)
+        if host is None:
+            host = self._host_track(device)
+        state = {"type_display": "%s" % getattr(rtype, "display_name", ""),
+                 "source": None, "source_kind": None, "source_index": None, "self": False}
+        if attached is not None:
+            found = self._source_of(attached)
+            if found is not None:
+                kind, index, t = found
+                state["source"] = "%s" % t.name
+                state["source_kind"] = kind
+                state["source_index"] = index
+                state["self"] = host is not None and host[2] == t
+            else:
+                state["source"] = state["type_display"]
+        channel = key.get_channel()
+        shown = ("%s" % getattr(channel, "display_name", "")) if channel is not None else ""
+        state["tap_display"] = shown
+        state["tap"] = None
+        for tap, words in self.SIDECHAIN_TAPS.items():
+            if shown.strip().lower() == words:
+                state["tap"] = tap
+        if self._is_amm(device):
+            state["amm"] = self._amm_state(device)
+        for key, name in self.SIDECHAIN_PARAMS.items():
+            p = self._named_param(device, name)
+            if p is None:
+                continue
+            if key in ("on", "listen", "eq_on"):
+                state[key] = float(p.value) >= 0.5
+            elif key == "mix":
+                state[key] = round(float(p.value), 4)
+            else:
+                state[key + "_display"] = self._param_display(p, p.value)
+                if key in ("gain", "eq_gain"):
+                    state[key + "_db"] = self._db_from_display(state[key + "_display"])
+        if "amm" in state:
+            # No S/C On switch: it keys whenever a source is routed and the
+            # device is on.
+            on = self._named_param(device, "Device On")
+            state["on"] = state["source"] is not None and (on is None or float(on.value) >= 0.5)
+        state["on"] = bool(state.get("on", False))
+        return state
+
+    def _db_from_display(self, text):
+        if text is None:
+            return None
+        t = ("%s" % text).replace("dB", "").strip()
+        if "inf" in t:
+            return -80.0
+        try:
+            return float(t)
+        except ValueError:
+            return None
+
+    def _host_path(self, kind, index):
+        if kind == "master":
+            return "song.master_track"
+        return "song.%s[%d]" % ("tracks" if kind == "track" else "return_tracks", index)
+
+    def _sidechain_devices(self, kind, index, track):
+        """Every device on a track that has a sidechain input, however deep in
+        racks: its LOM path, the chain names that lead to it, and its state.
+        Read only."""
+        out = []
+        host = (kind, index, track)
+
+        def walk(devices, path, chains, top):
+            for d_i, dev in enumerate(devices):
+                here = "%s.devices[%d]" % (path, d_i)
+                top_index = d_i if top is None else top
+                if self._has_sidechain(dev):
+                    out.append({"device": "%s" % dev.name,
+                                "class": "%s" % getattr(dev, "class_name", ""),
+                                "device_index": top_index, "path": here,
+                                "in_chain": "/".join(chains) or None,
+                                "sidechain": self._sidechain_state(dev, host)})
+                if getattr(dev, "can_have_chains", False) and len(chains) < self._MAX_CHAIN_DEPTH:
+                    for c_i, chain in enumerate(list(getattr(dev, "chains", []) or [])):
+                        walk(list(chain.devices), "%s.chains[%d]" % (here, c_i),
+                             chains + ["%s" % chain.name], top_index)
+
+        walk(list(track.devices), self._host_path(kind, index), [], None)
+        return out
+
+    def _all_sidechains(self):
+        out = []
+        for kind, index, track in self._all_tracks_with_kind():
+            for entry in self._sidechain_devices(kind, index, track):
+                entry["track"] = "%s" % track.name
+                entry["track_kind"] = kind
+                entry["track_index"] = index
+                out.append(entry)
+        return out
+
+    def _sidechain_warnings(self, entries):
+        """What is wrong with the sidechains in `entries`, as measured on Live
+        12.4.6: S/C On with no source (what deleting the source leaves), a
+        device keyed from its own track, and a Post Mixer tap whose source is
+        muted or at -inf -- that tap is silent then, so nothing ducks."""
+        warnings = []
+        for e in entries:
+            sc = e.get("sidechain") or {}
+            where = {"track": e.get("track"), "device": e.get("device"),
+                     "in_chain": e.get("in_chain"), "path": e.get("path")}
+            amm = sc.get("amm") or {}
+            if amm.get("mode") == "modulate":
+                tgt = amm.get("target")
+                if tgt is None:
+                    warnings.append(dict(where, problem="amm_no_target"))
+                elif not tgt.get("linked"):
+                    warnings.append(dict(where, problem="amm_target_unlinked",
+                                         target_device=tgt.get("device"), target_parameter=tgt.get("parameter")))
+            if sc.get("on") and sc.get("source") is None:
+                warnings.append(dict(where, problem="no_source"))
+            elif amm and sc.get("source") is None:
+                warnings.append(dict(where, problem="no_source"))
+            elif sc.get("self"):
+                warnings.append(dict(where, problem="own_track"))
+            elif sc.get("on") and sc.get("tap") == "post_mixer" and sc.get("source_kind") in ("track", "return"):
+                pool = self._song.tracks if sc["source_kind"] == "track" else self._song.return_tracks
+                try:
+                    src = list(pool)[int(sc["source_index"])]
+                    if bool(getattr(src, "mute", False)):
+                        warnings.append(dict(where, problem="post_mixer_source_muted", source=sc.get("source")))
+                    elif float(src.mixer_device.volume.value) <= 0.0:
+                        warnings.append(dict(where, problem="post_mixer_source_silent", source=sc.get("source")))
+                except Exception:
+                    pass
+        return warnings
+
+    def _keyed_from(self, track):
+        """The sidechains whose source is `track`: what deleting it unkeys."""
+        out = []
+        for e in self._all_sidechains():
+            sc = e.get("sidechain") or {}
+            if sc.get("source_kind") is None:
+                continue
+            pool = {"track": self._song.tracks, "return": self._song.return_tracks}.get(sc["source_kind"])
+            try:
+                if pool is not None and list(pool)[int(sc["source_index"])] == track:
+                    out.append({"track": e["track"], "device": e["device"],
+                                "in_chain": e.get("in_chain"), "tap": sc.get("tap")})
+            except Exception:
+                continue
+        return out
+
+    # AMM Sidechain, the Max for Live device this repo ships
+    # (AbletonMusicMaker_Devices/, built by scripts/build-sidechain-device.py),
+    # is known by its parameters rather than its name, so a renamed copy is
+    # still read. Its parameters' raw values are their units.
+    AMM_PARAMS = ("Mode", "Threshold", "Ratio", "Depth", "Attack", "Release", "Split", "Mix",
+                  "From", "To", "Target Device", "Target Param")
+    AMM_MODES = ("duck", "gate", "modulate")
+
+    def _is_amm(self, device):
+        try:
+            names = set("%s" % p.name for p in device.parameters)
+        except Exception:
+            return False
+        return all(n in names for n in ("Mode", "Split", "Target Device", "Target Param"))
+
+    def _amm_state(self, device):
+        """AMM Sidechain's settings, and what it drives in Modulate mode: the
+        device and parameter at Target Device / Target Param on its own
+        chain, and whether Live reports that parameter as taken over by a
+        remote (DeviceParameter.state 2 -- measured on Live 12.4.6 while
+        live.remote~ held it)."""
+        values = {}
+        for name in self.AMM_PARAMS:
+            p = self._named_param(device, name)
+            if p is not None:
+                values[name] = float(p.value)
+        mode = int(round(values.get("Mode", 0)))
+        out = {"mode": self.AMM_MODES[mode] if 0 <= mode < len(self.AMM_MODES) else mode,
+               "threshold_db": values.get("Threshold"), "ratio": values.get("Ratio"),
+               "depth_db": values.get("Depth"), "attack_ms": values.get("Attack"),
+               "release_ms": values.get("Release"), "split_hz": values.get("Split"),
+               "mix_pct": values.get("Mix"), "from_pct": values.get("From"), "to_pct": values.get("To"),
+               "target_device": int(values.get("Target Device", -1)),
+               "target_param": int(values.get("Target Param", 0))}
+        target = None
+        if out["target_device"] >= 0:
+            chain = getattr(device, "canonical_parent", None)
+            try:
+                devices = list(chain.devices)
+                tdev = devices[out["target_device"]]
+                tpar = list(tdev.parameters)[out["target_param"]]
+                target = {"device": "%s" % tdev.name, "parameter": "%s" % tpar.name,
+                          "linked": int(getattr(tpar, "state", 0)) == 2}
+            except Exception:
+                target = {"device": None, "parameter": None, "linked": False}
+        out["target"] = target
+        return out
+
+    def _param_fraction(self, params):
+        """Display values of one parameter as percentages of its range: what
+        AMM Sidechain's From and To take."""
+        p = self._resolve(params.get("path"))
+        lo, hi = float(p.min), float(p.max)
+        out = []
+        for text in list(params.get("displays") or []):
+            v = self._value_from_display(p, text) if isinstance(text, _STRING_TYPES) else float(text)
+            out.append({"display": self._param_display(p, v), "value": v,
+                        "pct": 0.0 if hi == lo else (v - lo) / (hi - lo) * 100.0})
+        return {"name": "%s" % p.name, "min": lo, "max": hi, "value": float(p.value),
+                "display": self._param_display(p, p.value), "fractions": out}
+
+    def _sidechain_device(self, path):
+        device = self._resolve(path)
+        if not hasattr(device, "parameters"):
+            raise ValueError("%s is not a device" % path)
+        return device
+
+    def _list_sidechains(self, params):
+        """The devices on one track, return or the master that have a
+        sidechain input, with their state."""
+        kind = "%s" % (params.get("kind") or "track")
+        index = int(params.get("index", -1))
+        track = self._resolve_track(index, kind)
+        if kind == "master":
+            index = -1
+        return {"track": "%s" % track.name, "kind": kind, "index": index,
+                "devices": ["%s" % d.name for d in track.devices],
+                "sidechains": self._sidechain_devices(kind, index, track)}
+
+    def _get_sidechain(self, params):
+        device = self._sidechain_device(params.get("path"))
+        state = self._sidechain_state(device)
+        host = self._host_track(device)
+        return {"device": "%s" % device.name, "class": "%s" % getattr(device, "class_name", ""),
+                "track": ("%s" % host[2].name) if host else None,
+                "sidechain": state}
+
+    def _sidechain_raw(self, device, host=None):
+        """A device's sidechain as the values that put it back: the source
+        (kind and index, or None), the tap, and every S/C control's raw value."""
+        state = self._sidechain_state(device, host)
+        raw = {"source": None, "tap": state.get("tap"), "params": {}}
+        if state.get("source_kind") in ("track", "return", "master"):
+            raw["source"] = {"kind": state["source_kind"], "index": state["source_index"]}
+        for key, name in self.SIDECHAIN_PARAMS.items():
+            p = self._named_param(device, name)
+            if p is not None:
+                raw["params"][key] = float(p.value)
+        return raw
+
+    def _set_sidechain(self, params):
+        """Route a device's sidechain input and set its S/C controls, then
+        read it all back from Live. `source` is {"kind", "index"} or None for
+        No Input; `tap` is pre_fx, post_fx or post_mixer; `params` maps
+        SIDECHAIN_PARAMS keys to raw values (the server converts display
+        units). `undo: true` puts back what the last call on this device
+        replaced. Refused, with nothing changed: a device without a sidechain
+        input, a source that is the device's own track, a source Live does not
+        offer, a tap the source does not have.
+
+        Live's own undo does not cover the routing: one Cmd-Z after a source
+        change put back S/C On and left the source as it was (Live 12.4.6,
+        2026-10-15). So the previous state is kept here, per device path."""
+        path = "%s" % params.get("path")
+        device = self._sidechain_device(path)
+        host = self._host_track(device)
+        if not self._has_sidechain(device):
+            raise ValueError("%s has no sidechain input Live's API can route (only Compressor and Max devices with an audio input have one)"
+                             % device.name)
+        undo = getattr(self, "_sidechain_undo", None)
+        if undo is None:
+            undo = self._sidechain_undo = {}
+        if params.get("undo"):
+            if path not in undo:
+                raise ValueError("nothing to undo: no sidechain change on %s since Live loaded this script" % device.name)
+            params = dict(undo.pop(path), path=path)
+            restoring = True
+        else:
+            restoring = False
+        source = params.get("source")
+        target = None
+        if source is not None:
+            kind, index = "%s" % source.get("kind", "track"), int(source.get("index", -1))
+            pool = {"track": list(self._song.tracks), "return": list(self._song.return_tracks)}
+            if kind == "master":
+                target = self._song.master_track
+            elif kind in pool and 0 <= index < len(pool[kind]):
+                target = pool[kind][index]
+            else:
+                raise IndexError("no %s %d to key from" % (kind, index))
+            if host is not None and host[2] == target:
+                raise ValueError("%s cannot key from its own track, '%s'" % (device.name, target.name))
+        tap = params.get("tap") or "post_fx"
+        if target is not None and tap not in self.SIDECHAIN_TAPS:
+            raise ValueError("tap must be pre_fx, post_fx or post_mixer, not '%s'" % tap)
+        key = self._key_input(device, params.get("input"))
+        if key is None:
+            raise ValueError("%s has no audio input %s" % (device.name, params.get("input")))
+        choice = None
+        for rt in key.types():
+            attached = getattr(rt, "attached_object", None)
+            if target is None and attached is None and "%s" % rt.display_name == "No Input":
+                choice = rt
+            elif target is not None and attached is not None and attached == target:
+                choice = rt
+        if choice is None:
+            offered = ", ".join("%s" % rt.display_name for rt in key.types())
+            raise ValueError("Live does not offer '%s' as %s's sidechain source (it offers: %s)"
+                             % (target.name if target is not None else "No Input", device.name, offered))
+        writes = []
+        controls = [(k, v, False) for k, v in (params.get("params") or {}).items()]
+        controls += [(k, v, True) for k, v in (params.get("displays") or {}).items()]
+        for control, value, shown in controls:
+            name = self.SIDECHAIN_PARAMS.get(control)
+            if name is None:
+                raise ValueError("unknown sidechain control '%s'" % control)
+            p = self._named_param(device, name)
+            if p is None:
+                raise ValueError("%s has no '%s'" % (device.name, name))
+            if shown:
+                # Display units, converted against Live's own display the way
+                # set_device_parameter converts them: "-6 dB", "120 Hz", "50 %".
+                v = self._value_from_display(p, value)
+            else:
+                v = float(value)
+            if v < float(p.min) - 1e-9 or v > float(p.max) + 1e-9:
+                raise ValueError("%s %s is outside %s..%s" % (name, v, p.min, p.max))
+            writes.append((p, v))
+        previous = self._sidechain_state(device, host)
+        previous_raw = self._sidechain_raw(device, host)
+        before_type = key.get_type()
+        key.set_type(choice)
+        if target is not None:
+            want = self.SIDECHAIN_TAPS[tap]
+            channel = None
+            for ch in key.channels():
+                if ("%s" % ch.display_name).strip().lower() == want:
+                    channel = ch
+            if channel is None:
+                offered = ", ".join("%s" % ch.display_name for ch in key.channels())
+                key.set_type(before_type)
+                raise ValueError("'%s' offers no %s tap (it offers: %s)" % (target.name, tap, offered))
+            key.set_channel(channel)
+        for p, v in writes:
+            p.value = v
+        if not restoring:
+            undo[path] = previous_raw
+        return {"device": "%s" % device.name, "track": ("%s" % host[2].name) if host else None,
+                "path": path, "undone": restoring,
+                "previous": previous, "sidechain": self._sidechain_state(device, host)}
+
+    # Live 12.4.6 offers a track these outputs (measured 2026-10-15): "Ext.
+    # Out", "Main", every other audio-carrying track (a bus), and "Sends
+    # Only" -- the track feeds its sends and anything keyed from it, and
+    # nothing of it reaches the master. A return or the master is not offered.
+    OUTPUT_WORDS = {"sends_only": "sends only", "main": "main", "master": "main"}
+
+    def _track_output_state(self, track):
+        rt = track.output_routing_type
+        attached = getattr(rt, "attached_object", None)
+        out = {"output": "%s" % getattr(rt, "display_name", ""), "output_track": None}
+        if attached is not None:
+            found = self._source_of(attached)
+            if found is not None:
+                out["output_track"] = {"kind": found[0], "index": found[1], "name": "%s" % found[2].name}
+        return out
+
+    def _set_track_output(self, params):
+        """Route a track's output: "sends_only", "main", or another track
+        ({"kind": "track", "index": i}). Read back from Live."""
+        track = self._resolve_track(int(params.get("track_index", -1)), params.get("kind", "track"))
+        to = params.get("to")
+        offered = list(track.available_output_routing_types)
+        choice = None
+        if isinstance(to, dict):
+            pool = {"track": list(self._song.tracks), "return": list(self._song.return_tracks)}
+            kind, index = "%s" % to.get("kind", "track"), int(to.get("index", -1))
+            if kind not in pool or not 0 <= index < len(pool[kind]):
+                raise IndexError("no %s %d to route to" % (kind, index))
+            target = pool[kind][index]
+            for rt in offered:
+                attached = getattr(rt, "attached_object", None)
+                if attached is not None and attached == target:
+                    choice = rt
+        else:
+            words = self.OUTPUT_WORDS.get(("%s" % to).strip().lower(), ("%s" % to).strip().lower())
+            for rt in offered:
+                if ("%s" % rt.display_name).strip().lower() == words:
+                    choice = rt
+        if choice is None:
+            raise ValueError("Live does not offer '%s' as an output for '%s' (it offers: %s)" % (
+                to, track.name, ", ".join("%s" % rt.display_name for rt in offered)))
+        previous = self._track_output_state(track)
+        track.output_routing_type = choice
+        out = self._track_output_state(track)
+        out["previous"] = previous
+        out["track"] = "%s" % track.name
+        return out
+
     def _create_return_track(self, name=None):
         """A new return track at the end (Song.create_return_track), optionally named."""
         try:
@@ -2375,13 +3041,22 @@ class Body(Loader):
         try:
             song = self._song
             target = None
-            for cue in song.cue_points:
-                if name and str(cue.name) == str(name):
-                    target = cue
-                    break
-                if time_val is not None and abs(float(cue.time) - float(time_val)) < 1e-3:
-                    target = cue
-                    break
+            if name:
+                # By name, as get_context lists them: case and surrounding
+                # space do not count, and a name two locators share is
+                # refused rather than settled by whichever Live lists first.
+                want = ("%s" % name).strip().lower()
+                named = [c for c in song.cue_points if ("%s" % c.name).strip().lower() == want]
+                if len(named) > 1:
+                    raise ValueError("%d locators are called '%s' (at beats %s); give the time of the one to delete"
+                                     % (len(named), name, ", ".join(self._fmt_beat(c.time) for c in named)))
+                if named:
+                    target = named[0]
+            if target is None and time_val is not None:
+                for cue in song.cue_points:
+                    if abs(float(cue.time) - float(time_val)) < 1e-3:
+                        target = cue
+                        break
             if target is None:
                 existing = ", ".join("'%s' @ %s" % (c.name, c.time) for c in song.cue_points) or "none"
                 raise ValueError("no locator matches (name=%s, time=%s); locators: %s" % (name, time_val, existing))
@@ -2672,51 +3347,93 @@ class Body(Loader):
 
     # ── Transport and structure helpers ──────────────────────────────────────
 
-    def _play_from(self, time_val, response_queue=None):
-        """Move the playhead and play from there (continue_playing), on the
-        tick after the move has landed."""
+    def _play_from(self, time_val):
+        """Play from a beat, confirmed: see `_play_from_confirmed`."""
+        return self._play_from_confirmed(float(time_val))
+
+    # Quantization.q_no_q: a jump made while the transport rolls is snapped to
+    # the global launch quantization otherwise (below).
+    Q_NO_Q = 0
+    # How many times a start is tried before the transport is stopped and the
+    # call fails. One start has always landed in measurement; the second is
+    # for a Live that was busy on the frame.
+    START_ATTEMPTS = 2
+
+    def _start_at(self, target):
+        """Start the transport at `target` beats, inside this one task.
+
+        What Live 12.4.6 does, measured 2026-10-15 through `run` batches, from
+        a transport stopped at beat ~17 and asked for 192:
+          - `start_playing()` plays from Live's start marker (bar 1 here),
+            never from `current_song_time`.
+          - `continue_playing()` resumes from where the transport last
+            stopped. A seek made while stopped is ignored by it, even one
+            that has landed and reads back (seek; wait 2; continue -> 17.3).
+          - a seek while rolling lands on the next frame, but snapped to the
+            global quantization: with 1 bar, 194.5 landed on 196.0, and a
+            seek to 192 from beat 17.08 landed on 193.08 (the phase kept).
+          - quantization off; `start_playing()`; seek; quantization back --
+            all in one task -- read target + 0.2 one tick later, from any
+            stopped or playing position, for targets on and off the bar.
+        So that is the start. Quantization is put back whatever happens:
+        a refused seek (past the song's end) must not leave it changed."""
+        song = self._song
+        target = float(target)
+        length = self._safe_song_property("song_length", float, None)
+        if length is not None and target > length + 1e-6:
+            raise ValueError(
+                "beat %s is past the end of the Arrangement (beat %s); Live will not play from there"
+                % (self._fmt_beat(target), self._fmt_beat(length)))
+        if song.is_playing:
+            song.stop_playing()
+        saved = None
         try:
-            song = self._song
-            target = float(time_val)
-            if song.is_playing:
-                song.stop_playing()
+            saved = song.clip_trigger_quantization
+            song.clip_trigger_quantization = self.Q_NO_Q
+        except Exception:
+            saved = None
+        try:
+            song.start_playing()
             song.current_song_time = target
-
-            def finish():
+        finally:
+            if saved is not None:
                 try:
-                    song.continue_playing()
-
-                    def settle():
-                        # A seek made while the transport was stopped does not
-                        # always survive continue_playing: Live resumes from
-                        # where it last stopped. A seek while it is rolling
-                        # lands, so confirm and repeat it if it did not.
-                        try:
-                            now = float(song.current_song_time)
-                            if abs(now - target) > 0.5:
-                                song.current_song_time = target
-                                now = float(song.current_song_time)
-                            result = {"playing_from": target, "at": now,
-                                      "is_playing": bool(song.is_playing)}
-                            if response_queue is not None:
-                                self._answer(response_queue, {"status": "success", "result": result})
-                        except Exception as e:
-                            if response_queue is not None:
-                                self._answer(response_queue, {"status": "error", "message": str(e)})
-
-                    self.schedule_message(1, settle)
+                    song.clip_trigger_quantization = saved
                 except Exception as e:
-                    if response_queue is not None:
-                        self._answer(response_queue, {"status": "error", "message": str(e)})
+                    self.log_message("global quantization not restored: " + str(e))
 
-            if response_queue is None:
-                finish()
-                return {"playing_from": target}
-            self.schedule_message(2, finish)
-            return DEFERRED
-        except Exception as e:
-            self.log_message("Error playing from position: " + str(e))
-            raise
+    def _play_from_confirmed(self, target, settle=None):
+        """Start at `target` and read where Live is a tick later. A start that
+        did not land is tried again; one that still does not stops the
+        transport and fails, so a wrong start is never left playing and
+        never reported as the right one. `settle` is an optional callable run
+        in the same task as the start (a capture fires its slot there)."""
+        song = self._song
+        target = float(target)
+        landed = None
+        for attempt in range(1, self.START_ATTEMPTS + 1):
+            began = time.time()
+            self._start_at(target)
+            if settle is not None:
+                settle()
+            yield Tick(1)
+            now = float(song.current_song_time)
+            # The transport has been rolling since the start: allow the beats
+            # that time is worth, and a little for Live's own frame.
+            elapsed = max(0.1, time.time() - began)
+            allowance = elapsed * float(song.tempo) / 60.0 + 0.5
+            landed = now
+            if song.is_playing and target - 0.05 <= now <= target + allowance:
+                yield Done({"playing_from": target, "at": now, "is_playing": True,
+                            "attempts": attempt})
+                return
+        try:
+            song.stop_playing()
+        except Exception:
+            pass
+        raise ValueError(
+            "Live did not start at beat %s: it was playing from beat %.2f. Playback was stopped."
+            % (self._fmt_beat(target), landed if landed is not None else -1.0))
 
     def _reset_set(self, params):
         """Back to a fresh set, as near as the Live API allows.
@@ -2892,8 +3609,21 @@ class Body(Loader):
                     "'%s' is frozen; unfreeze it in Live (right-click the track, Unfreeze Track) and delete it then."
                     % tracks[track_index].name)
             name = tracks[track_index].name
+            # What it keys: Live leaves each of those on No Input with S/C On
+            # still on, and says nothing (measured on Live 12.4.6, 2026-10-15).
+            keyed = self._keyed_from(tracks[track_index])
             self._song.delete_track(track_index)
-            return {"deleted": name, "index": track_index, "track_count": len(self._song.tracks)}
+            # Devices are addressed by position, and positions just moved.
+            self._sidechain_undo = {}
+            if keyed:
+                now = dict(((e["track"], e["device"], e.get("in_chain")), e["sidechain"])
+                           for e in self._all_sidechains())
+                for k in keyed:
+                    after = now.get((k["track"], k["device"], k.get("in_chain"))) or {}
+                    k["now"] = after.get("type_display") or "No Input"
+                    k["on"] = bool(after.get("on"))
+            return {"deleted": name, "index": track_index, "track_count": len(self._song.tracks),
+                    "unkeyed": keyed}
         except Exception as e:
             self.log_message("Error deleting track: " + str(e))
             raise
@@ -2982,139 +3712,196 @@ class Body(Loader):
                 continue
         return None, None
 
-    def _start_capture(self, start, bars, name, response_queue=None):
-        """Play from just before `start` and record `bars` bars of the master
-        into the first free slot of the Capture track. The fire happens on a
-        later tick (the playhead move is asynchronous) with beat quantization,
-        so the recording begins exactly at `start`."""
-        try:
-            song = self._song
-            index, track = self._find_capture_track()
-            if track is None:
-                raise ValueError("no Capture track; call ensure_capture_track first")
-            rec_index, _ = self._recording_capture(track)
-            if rec_index is not None:
-                raise ValueError("a capture is already recording in slot %d ('%s')" % (
-                    rec_index, track.clip_slots[rec_index].clip.name))
-            slot_index = None
-            for i, slot in enumerate(track.clip_slots):
-                if not slot.has_clip:
-                    slot_index = i
-                    break
-            if slot_index is None:
-                raise ValueError("every slot of the Capture track holds a capture; delete one (delete_clip on track %d) first" % index)
-            slot = track.clip_slots[slot_index]
-            bars = int(bars)
-            if bars < 1 or bars > 64:
-                raise ValueError("bars must be between 1 and 64")
-            beats_per_bar = int(song.signature_numerator)
-            record_length = float(bars * beats_per_bar)
-            start = float(start)
-            if Live is None:
-                raise RuntimeError("captures need Live's own Python (Live 11 or newer)")
-            # A whole bar of preroll, so the fire is armed while the playhead is
-            # still inside the bar before `start`: the seek and the transport are
-            # asynchronous, and firing blind is what put digital silence at the
-            # head of a capture. The quantized launch then lands on `start`.
-            bar_beats = float(beats_per_bar)
-            preroll = bar_beats if start >= bar_beats else start
-            begin = max(0.0, start - preroll)
-            on_bar = abs((start / bar_beats) - round(start / bar_beats)) < 1e-6
-            on_beat = abs(start - round(start)) < 1e-6
-
-            def quantization(*names):
-                for attr in names:
-                    value = getattr(Live.Song.Quantization, attr, None)
-                    if value is not None:
-                        return attr, value
-                return None, None
-
-            if preroll <= 0.0:
-                quant_name, quant = quantization("q_no_q")
-            elif on_bar:
-                quant_name, quant = quantization("q_bar", "q_quarter", "q_no_q")
-            elif on_beat:
-                quant_name, quant = quantization("q_quarter", "q_no_q")
-            else:
-                quant_name, quant = quantization("q_no_q")
-            if quant is None:
-                raise RuntimeError("Live.Song.Quantization has no usable member")
-            self._pending_capture = {"slot": slot_index, "name": str(name or "capture"),
-                                     "start": start, "bars": bars}
-            # Fixed-length Session recording needs Live 11+; probe the signature.
+    def _off_arrangement(self, skip_index=None):
+        """The names of the tracks not following the Arrangement: each one's
+        `back_to_arranger` (Live 12 has it per track), else a Session clip
+        playing on it. A track that is off the Arrangement with nothing
+        playing is silent, which is what a capture of it records."""
+        out = []
+        for i, t in enumerate(self._song.tracks):
+            if i == skip_index:
+                continue
             try:
-                slot.fire.__call__  # noqa
+                if hasattr(t, "back_to_arranger"):
+                    off = bool(t.back_to_arranger)
+                else:
+                    off = int(t.playing_slot_index) >= 0
             except Exception:
-                raise RuntimeError("captures need Live 11 or newer")
-            if song.is_playing:
-                song.stop_playing()
-            song.current_song_time = begin
-            state = {"ticks": 0, "seeks": 0}
+                continue
+            if off:
+                out.append(t.name)
+        return out
 
-            def fail(message):
-                self._pending_capture = None
-                self.log_message("Error starting capture: " + message)
-                if response_queue is not None:
-                    self._answer(response_queue, {"status": "error", "message": message})
-
-            def fire_now(confirmed_at):
-                slot.fire(record_length=record_length, launch_quantization=quant)
-                result = {"slot": slot_index, "record_length": record_length,
-                          "preroll_beats": preroll, "beats_per_bar": beats_per_bar,
-                          "tempo": float(song.tempo), "started_at": start,
-                          "begin_beat": begin, "confirmed_at": confirmed_at,
-                          "launch_quantization": quant_name}
-                if response_queue is not None:
-                    self._answer(response_queue, {"status": "success", "result": result})
-                return result
-
-            def arm():
-                """Fire only once Live says the playhead is inside the preroll
-                and still before `start`."""
-                try:
-                    if preroll <= 0.0:
-                        # Nothing to wait for: the take starts where the
-                        # transport does.
-                        fire_now(float(song.current_song_time))
-                        if not song.is_playing:
-                            song.continue_playing()
-                        return
-                    if not song.is_playing:
-                        # continue_playing plays from current_song_time;
-                        # start_playing would jump back to the start marker.
-                        song.continue_playing()
-                        self.schedule_message(1, arm)
-                        return
-                    state["ticks"] += 1
-                    now = float(song.current_song_time)
-                    # The window is the preroll: after `begin`, before `start`.
-                    # A seek made while stopped does not always survive
-                    # continue_playing, so seek again now that it is rolling
-                    # and look next tick. Firing outside the window is what
-                    # recorded the wrong bars.
-                    if now < begin - 0.05 or now >= start - 0.02:
-                        if state["ticks"] > 60:
-                            fail("the playhead would not settle before beat %.2f (it is at %.2f); nothing was recorded"
-                                 % (start, now))
-                            return
-                        state["seeks"] += 1
-                        song.current_song_time = begin
-                        self.schedule_message(1, arm)
-                        return
-                    fire_now(now)
-                except TypeError as e:
-                    fail("captures need Live 11 or newer (fixed-length recording): " + str(e))
-                except Exception as e:
-                    fail(str(e))
-
-            if response_queue is None:
-                song.continue_playing()
-                return fire_now(float(song.current_song_time))
-            self.schedule_message(1, arm)
-            return DEFERRED
+    def _follow_arrangement(self, track):
+        """Put one track back on the Arrangement: its own `back_to_arranger`
+        where Live has it, else the song's (only when no other track is off
+        it, so the producer's Session clips are not stopped for us)."""
+        song = self._song
+        try:
+            if hasattr(track, "back_to_arranger"):
+                if track.back_to_arranger:
+                    track.back_to_arranger = False
+                return True
         except Exception as e:
-            self.log_message("Error starting capture: " + str(e))
+            self.log_message("track back_to_arranger not set: " + str(e))
+        index, _ = self._find_capture_track()
+        if not self._off_arrangement(skip_index=index) and song.back_to_arranger:
+            song.back_to_arranger = False
+            return True
+        return False
+
+    def _capture_slot(self, track, index):
+        """The first empty slot of the Capture track. When every slot holds a
+        take, the oldest take is deleted to make room -- the takes this
+        script recorded, oldest first, then the lowest slot -- so a long run
+        of captures never stops for want of a slot. Returns (slot, rotated)."""
+        slots = list(track.clip_slots)
+        if not slots:
+            raise ValueError("the Capture track has no slots: the set has no scenes, and a take is recorded into a Session slot")
+        for i, slot in enumerate(slots):
+            if not slot.has_clip:
+                return i, None
+        order = [i for i in (getattr(self, "_capture_order", None) or []) if 0 <= i < len(slots)]
+        candidates = order + [i for i in range(len(slots)) if i not in order]
+        for i in candidates:
+            slot = slots[i]
+            try:
+                if slot.has_clip and slot.clip.is_recording:
+                    continue
+                name = slot.clip.name if slot.has_clip else ""
+                slot.delete_clip()
+            except Exception as e:
+                self.log_message("capture slot %d not rotated: %s" % (i, str(e)))
+                continue
+            return i, {"slot": i, "name": name}
+        raise ValueError("every slot of the Capture track holds a take that cannot be deleted; call clear_captures")
+
+    def _start_capture(self, start, bars, name):
+        """Play from a bar before `start` and record `bars` bars of the master
+        into a slot of the Capture track, the launch quantized onto `start`.
+
+        The transport is started with `_start_at`, which lands where it is
+        asked on the first frame; the fire waits until Live says the playhead
+        is inside the preroll. Every track the producer had off the
+        Arrangement is put back on it first -- a capture records the
+        Arrangement -- and the reply names them."""
+        song = self._song
+        index, track = self._find_capture_track()
+        if track is None:
+            raise ValueError("no Capture track; call ensure_capture_track first")
+        rec_index, _ = self._recording_capture(track)
+        if rec_index is not None:
+            raise ValueError("a capture is already recording in slot %d ('%s')" % (
+                rec_index, track.clip_slots[rec_index].clip.name))
+        bars = int(bars)
+        if bars < 1 or bars > 64:
+            raise ValueError("bars must be between 1 and 64")
+        if Live is None:
+            raise RuntimeError("captures need Live's own Python (Live 11 or newer)")
+        beats_per_bar = int(song.signature_numerator)
+        record_length = float(bars * beats_per_bar)
+        start = float(start)
+        length = self._safe_song_property("song_length", float, None)
+        if length is not None and start >= length:
+            raise ValueError("beat %s is past the end of the Arrangement (beat %s)"
+                             % (self._fmt_beat(start), self._fmt_beat(length)))
+        # A whole bar of preroll, so the fire is armed while the playhead is
+        # still inside the bar before `start`; the quantized launch then
+        # lands on `start`.
+        bar_beats = float(beats_per_bar)
+        preroll = bar_beats if start >= bar_beats else start
+        begin = max(0.0, start - preroll)
+        on_bar = abs((start / bar_beats) - round(start / bar_beats)) < 1e-6
+        on_beat = abs(start - round(start)) < 1e-6
+
+        def quantization(*names):
+            for attr in names:
+                value = getattr(Live.Song.Quantization, attr, None)
+                if value is not None:
+                    return attr, value
+            return None, None
+
+        if preroll <= 0.0:
+            quant_name, quant = quantization("q_no_q")
+        elif on_bar:
+            quant_name, quant = quantization("q_bar", "q_quarter", "q_no_q")
+        elif on_beat:
+            quant_name, quant = quantization("q_quarter", "q_no_q")
+        else:
+            quant_name, quant = quantization("q_no_q")
+        if quant is None:
+            raise RuntimeError("Live.Song.Quantization has no usable member")
+
+        if song.is_playing:
+            song.stop_playing()
+        returned = self._off_arrangement(skip_index=index)
+        if returned or song.back_to_arranger:
+            song.back_to_arranger = False
+        slot_index, rotated = self._capture_slot(track, index)
+        slot = track.clip_slots[slot_index]
+        self._pending_capture = {"slot": slot_index, "name": "%s" % (name or "capture"),
+                                 "start": start, "bars": bars}
+        fired = {}
+
+        def fire():
+            try:
+                slot.fire(record_length=record_length, launch_quantization=quant)
+            except TypeError as e:
+                raise RuntimeError("captures need Live 11 or newer (fixed-length recording): " + str(e))
+            fired["at"] = float(song.current_song_time)
+
+        try:
+            # Bar 1 has no bar before it: the take starts with the transport,
+            # fired in the same task as the start.
+            if preroll <= 0.0:
+                for step in self._play_from_confirmed(begin, settle=fire):
+                    if isinstance(step, Done):
+                        break
+                    yield step
+                # The fire was in the start's own task, where a read still
+                # answers the old position (it said 644.55 for a take from
+                # bar 1, Live 12.4.6); the start has been confirmed at
+                # `begin` since, and that is where the slot was fired.
+                fired["at"] = begin
+            else:
+                for step in self._play_from_confirmed(begin):
+                    if isinstance(step, Done):
+                        break
+                    yield step
+                seeks = 0
+                while "at" not in fired:
+                    now = float(song.current_song_time)
+                    # The window is the preroll: after `begin`, before
+                    # `start`. Outside it the fire would record the wrong
+                    # bars, so start again rather than fire blind.
+                    if begin - 0.05 <= now < start - 0.02:
+                        fire()
+                        break
+                    seeks += 1
+                    if seeks > 3:
+                        song.stop_playing()
+                        raise ValueError(
+                            "the playhead would not settle before beat %.2f (it is at %.2f); nothing was recorded"
+                            % (start, now))
+                    for step in self._play_from_confirmed(begin):
+                        if isinstance(step, Done):
+                            break
+                        yield step
+        except Exception:
+            self._pending_capture = None
             raise
+        order = [i for i in (getattr(self, "_capture_order", None) or []) if i != slot_index]
+        order.append(slot_index)
+        self._capture_order = order
+        result = {"slot": slot_index, "record_length": record_length,
+                  "preroll_beats": preroll, "beats_per_bar": beats_per_bar,
+                  "tempo": float(song.tempo), "started_at": start,
+                  "begin_beat": begin, "confirmed_at": fired.get("at"),
+                  "launch_quantization": quant_name,
+                  "returned_to_arrangement": returned}
+        if rotated is not None:
+            result["rotated"] = rotated
+        yield Done(result)
 
     def _capture_status(self, slot_index):
         try:
@@ -3125,8 +3912,14 @@ class Body(Loader):
             if slot_index < 0 or slot_index >= len(track.clip_slots):
                 raise IndexError("slot out of range")
             slot = track.clip_slots[slot_index]
+            # Where the playhead is and what is off the Arrangement, read on
+            # the same tick as the slot: the server checks a take against
+            # both while it records, so a take of the wrong bars or of
+            # Session clips is refused instead of measured.
             info = {"slot": slot_index, "track_index": index, "has_clip": bool(slot.has_clip),
-                    "is_recording": False, "is_playing": bool(self._song.is_playing)}
+                    "is_recording": False, "is_playing": bool(self._song.is_playing),
+                    "song_time": float(self._song.current_song_time),
+                    "off_arrangement": self._off_arrangement(skip_index=index)}
             if slot.has_clip:
                 clip = slot.clip
                 info["is_recording"] = bool(getattr(clip, "is_recording", False))
@@ -3173,8 +3966,17 @@ class Body(Loader):
                         pass
             if song.is_playing:
                 song.stop_playing()
+            # Firing the take's slot took the Capture track off the
+            # Arrangement, which lights Live's Back to Arrangement for the
+            # whole set and kept the take "playing" (measured on Live 12.4.6,
+            # 2026-10-15). Put that one track back; nobody else's.
+            following = None
+            if track is not None:
+                following = self._follow_arrangement(track)
             self._pending_capture = None
-            return {"stopped_slot": stopped_slot, "is_playing": bool(song.is_playing)}
+            return {"stopped_slot": stopped_slot, "is_playing": bool(song.is_playing),
+                    "capture_track_following_arrangement": following,
+                    "back_to_arranger": bool(song.back_to_arranger)}
         except Exception as e:
             self.log_message("Error stopping capture: " + str(e))
             raise
@@ -3378,18 +4180,49 @@ class Body(Loader):
             raise IndexError("parameter_index %d out of range; %s has %d parameters" % (pi, devices[di].name, len(params)))
         return params[pi], "%s > %s" % (devices[di].name, params[pi].name)
 
+    # `value_at_time(t)` answers the value *before* t where the envelope
+    # changes at t, and a new envelope starts with a breakpoint holding the
+    # parameter's value. Measured on Live 12.4.6 (2026-10-15): a 0 -> 1 ramp
+    # over 32 beats in 0.5-beat steps read 0.55 (the fader) at 0, 0.0 at
+    # 0.25, 0.1094 (the 3.5-beat step) at 4.0 and 0.125 at 4.25. So a read
+    # is taken this far after the asked time: the value from t on, which is
+    # what was written there. Smaller than any step the writer draws.
+    ENVELOPE_READ_AFTER = 1e-3
+    # The step a ramp that runs to the clip's end finishes on, in beats: a
+    # 64th of a beat holding the ramp's target.
+    ENVELOPE_TAIL = 1.0 / 64
+
+    def _envelope_value(self, envelope, t, length):
+        """The value from `t` on; at the clip's end, the value it ends on."""
+        t = float(t)
+        if t + self.ENVELOPE_READ_AFTER < length:
+            t += self.ENVELOPE_READ_AFTER
+        return float(envelope.value_at_time(t))
+
     def _set_clip_automation(self, track_index, clip_index, arrangement, target, points, mode, resolution, clear):
         """Write an automation envelope into a clip as steps.
 
         Live's API writes envelopes with insert_step(time, length, value); a
         ramp is approximated by steps of `resolution` beats between points.
+        The envelope is automation, not modulation: while the clip plays the
+        parameter itself takes these values (a Session clip's volume envelope
+        moved the fader through 0.016, 0.031, 0.047 at clip beats 0.65, 1.28,
+        1.93 on Live 12.4.6, 2026-10-15). For volume that is the fader's own
+        scale -- 0.85 is 0 dB, 1.0 is +6 dB -- and a point may give `db`
+        instead of `value`.
         """
         try:
             track, clip = self._clip_at(track_index, clip_index, arrangement)
             parameter, label = self._automation_parameter(track, target)
             pts = []
             for p in points or []:
-                pts.append((float(p.get("time", 0.0)), float(p.get("value", 0.0))))
+                if p.get("db") is not None:
+                    if label != "volume":
+                        raise ValueError("db is for the volume target; %s takes value" % label)
+                    v = self._value_for_db(parameter, p.get("db"))
+                else:
+                    v = float(p.get("value", 0.0))
+                pts.append((float(p.get("time", 0.0)), float(v)))
             if not pts:
                 raise ValueError("give at least one point {time, value}")
             pts.sort(key=lambda tv: tv[0])
@@ -3426,20 +4259,51 @@ class Body(Loader):
                         frac = float(k) / n
                         envelope.insert_step(t + span * frac, span / n, v + (v_next - v) * frac)
                         steps += 1
-            return {
+                    # Each step holds the ramp's value at its start, so the
+                    # last one stops a step short of where the ramp is going.
+                    # Between points the next point's own step covers that;
+                    # a ramp that runs to the clip's end has nothing after it,
+                    # and a fade to 0.85 over a 4-beat clip ended at 0.744
+                    # (-4.2 dB, not 0 dB) on Live 12.4.6. So it ends on a
+                    # short step at its target, leaving every other step
+                    # where the ramp puts it.
+                    end = t + span
+                    if i + 2 == len(pts) and end >= length - 1e-9 and n > 1:
+                        tail = min(self.ENVELOPE_TAIL, span / n / 2.0)
+                        envelope.insert_step(end - tail, tail, v_next)
+                        steps += 1
+            # Read every point back the way get_clip_automation does, so the
+            # reply says what Live holds rather than what was sent.
+            readback = []
+            for t, v in pts:
+                if t > length:
+                    continue
+                got = self._envelope_value(envelope, t, length)
+                row = {"time": t, "written": v, "reads": got}
+                if label == "volume":
+                    row["db"] = self._db_for(parameter, got)
+                readback.append(row)
+            result = {
                 "clip": clip.name,
                 "target": label,
                 "points": len(pts),
                 "steps_written": steps,
                 "mode": mode,
                 "range": [lo, hi],
+                "semantics": "absolute",
+                "readback": readback,
             }
+            if label == "volume":
+                result["fader_db"] = self._volume_db(parameter)
+            return result
         except Exception as e:
             self.log_message("Error setting clip automation: " + str(e))
             raise
 
     def _get_clip_automation(self, track_index, clip_index, arrangement, target, resolution=1.0):
-        """Sample an envelope every `resolution` beats (the API has no point list)."""
+        """Sample an envelope every `resolution` beats (the API has no point
+        list). Each sample is the value from that time on: see
+        ENVELOPE_READ_AFTER."""
         try:
             track, clip = self._clip_at(track_index, clip_index, arrangement)
             parameter, label = self._automation_parameter(track, target)
@@ -3451,9 +4315,13 @@ class Body(Loader):
             t = 0.0
             length = float(clip.length)
             while t <= length and len(samples) < 512:
-                samples.append({"time": t, "value": float(envelope.value_at_time(t))})
+                row = {"time": t, "value": self._envelope_value(envelope, t, length)}
+                if label == "volume":
+                    row["db"] = self._db_for(parameter, row["value"])
+                samples.append(row)
                 t += resolution
             return {"clip": clip.name, "target": label, "has_envelope": True,
+                    "semantics": "absolute",
                     "range": [float(parameter.min), float(parameter.max)], "samples": samples}
         except Exception as e:
             self.log_message("Error reading clip automation: " + str(e))
@@ -4651,6 +5519,15 @@ class Body(Loader):
             self.log_message("Error setting slot stop buttons: " + str(e))
             raise
 
+    def _locators(self):
+        out = []
+        try:
+            for c in sorted(self._song.cue_points, key=lambda c: float(c.time)):
+                out.append({"name": "%s" % c.name, "time": float(c.time)})
+        except Exception as e:
+            self.log_message("locators not read: " + str(e))
+        return out
+
     def _get_context(self, include_library=False):
         """Everything an agent needs to orient, in one round trip: the set,
         every track with its devices, clips by slot, mixer and play state,
@@ -4662,14 +5539,23 @@ class Body(Loader):
             perf = self._get_performance_state()
             perf_tracks = dict((t["index"], t) for t in perf.get("tracks", []))
             tracks = []
+            all_sidechains = []
             for i, t in enumerate(song.tracks):
                 ps = perf_tracks.get(i, {})
                 devices = []
                 try:
                     for d in t.devices:
-                        devices.append({"name": str(d.name), "type": self._get_device_type(d)})
+                        entry_d = {"name": str(d.name), "type": self._get_device_type(d),
+                                   "class": "%s" % getattr(d, "class_name", "")}
+                        devices.append(entry_d)
                 except Exception:
                     pass
+                sidechains = self._sidechain_devices("track", i, t)
+                for sc_e in sidechains:
+                    sc_e["track"] = str(t.name)
+                    if sc_e["in_chain"] is None and sc_e["device_index"] < len(devices):
+                        devices[sc_e["device_index"]]["sidechain"] = sc_e["sidechain"]
+                all_sidechains.extend(sidechains)
                 clips = []
                 try:
                     for si, s in enumerate(t.clip_slots):
@@ -4695,7 +5581,10 @@ class Body(Loader):
                     "color_index": self._safe_attr(t, "color_index", int, None),
                     "devices": devices,
                     "clips": clips,
+                    "slots": len(list(t.clip_slots)),
                     "arrangement_clips": len(list(getattr(t, "arrangement_clips", []) or [])),
+                    "output": self._track_output_state(t)["output"],
+                    "sidechains": sidechains,
                     "playing_slot_index": ps.get("playing_slot_index", -1),
                     "fired_slot_index": ps.get("fired_slot_index", -1),
                     "no_stop_slots": ps.get("no_stop_slots", []),
@@ -4705,13 +5594,22 @@ class Body(Loader):
             letters = "ABCDEFGHIJKL"
             returns = []
             for i, r in enumerate(song.return_tracks):
+                r_sc = self._sidechain_devices("return", i, r)
+                for sc_e in r_sc:
+                    sc_e["track"] = str(r.name)
+                all_sidechains.extend(r_sc)
                 returns.append({
                     "index": i, "letter": letters[i] if i < len(letters) else str(i),
                     "name": str(r.name),
                     "devices": [str(d.name) for d in r.devices],
                     "volume": float(r.mixer_device.volume.value),
                     "volume_db": self._volume_db(r.mixer_device.volume),
+                    "sidechains": r_sc,
                 })
+            m_sc = self._sidechain_devices("master", -1, song.master_track)
+            for sc_e in m_sc:
+                sc_e["track"] = "Master"
+            all_sidechains.extend(m_sc)
             scenes = []
             for sc in perf.get("scenes", []):
                 sc = dict(sc)
@@ -4745,6 +5643,11 @@ class Body(Loader):
                 "tracks": tracks,
                 "returns": returns,
                 "scenes": scenes,
+                # The Arrangement's locators, by time: a locator the artist
+                # placed by hand is one an agent must be able to see.
+                "locators": self._locators(),
+                "master_sidechains": m_sc,
+                "warnings": self._sidechain_warnings(all_sidechains),
                 "cues": perf.get("cues", []),
                 "pending_record": perf.get("pending_record"),
                 "events": perf.get("events", []),
@@ -5916,6 +6819,16 @@ class Body(Loader):
         if text is None:
             return (None, "")
         text = ("%s" % text).strip().lower().replace(",", ".")
+        # Ratios: Compressor's Ratio shows "4.00 : 1" and tops out at
+        # "inf : 1"; its Expansion Ratio shows "1 : 1.15". Read as the one
+        # number that moves, so "8 : 1", "8:1" and "8" all mean eight, and
+        # infinity sorts above every finite ratio.
+        ratio = re.match(r"^(inf|[0-9.]+)\s*:\s*1(?:\.0+)?$", text)
+        if ratio:
+            return (1e9 if ratio.group(1) == "inf" else float(ratio.group(1)), "ratio")
+        ratio = re.match(r"^1(?:\.0+)?\s*:\s*([0-9.]+)$", text)
+        if ratio:
+            return (float(ratio.group(1)), "ratio")
         if "inf" in text:
             return (-80.0 if text.startswith("-") else None, "db")
         digits = ""
@@ -6033,6 +6946,10 @@ class Body(Loader):
             "class_name": device.class_name,
             "type": self._get_device_type(device),
         }
+        if self._has_sidechain(device):
+            info["sidechain"] = self._sidechain_state(device)
+        # Live's own Device.type: 1 instrument, 2 audio effect, 4 MIDI effect.
+        info["type_code"] = self._safe_attr(device, "type", int, None)
         automated = self._automated_params_for_device(device)
         if automated:
             info["automated_parameters"] = automated
@@ -6040,7 +6957,13 @@ class Body(Loader):
         else:
             info["automation_enabled"] = False
 
-        if include_params:
+        # "effects": the parameters of a top-level audio effect only -- what an
+        # export rebuilds -- so a set full of instruments and racks is not
+        # serialised whole on Live's main thread.
+        wanted = include_params is True or (
+            include_params == "effects" and depth == 0 and info.get("type_code") == 2
+            and not getattr(device, "can_have_chains", False))
+        if wanted:
             params = []
             try:
                 for p_index, param in enumerate(device.parameters):
@@ -6060,7 +6983,7 @@ class Body(Loader):
                 info["chains_truncated"] = True
             else:
                 info["chains"] = self._serialize_chains(
-                    device, include_params=include_params, depth=depth
+                    device, include_params=include_params is True, depth=depth
                 )
         return info
 
@@ -6248,21 +7171,26 @@ class Body(Loader):
             self.log_message("master_track serialize failed: " + str(e))
             return None
 
-    def _get_clip_notes(self, track_index, clip_index):
+    def _get_clip_notes(self, track_index, clip_index, arrangement=False):
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
             track = self._song.tracks[track_index]
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-            slot = track.clip_slots[clip_index]
-            if not slot.has_clip:
-                raise Exception("No clip in slot")
-            clip = slot.clip
+            if arrangement:
+                # An Arrangement clip by its position in arrangement_clips,
+                # as get_arrangement_clips lists them.
+                track, clip = self._clip_at(track_index, int(clip_index), True)
+            else:
+                if clip_index < 0 or clip_index >= len(track.clip_slots):
+                    raise IndexError("Clip index out of range")
+                slot = track.clip_slots[clip_index]
+                if not slot.has_clip:
+                    raise Exception("No clip in slot")
+                clip = slot.clip
             if not getattr(clip, "is_midi_clip", False):
                 raise Exception("Clip is not a MIDI clip")
             notes = self._notes_from_clip(clip)
-            return {
+            out = {
                 "track_index": track_index,
                 "clip_index": clip_index,
                 "clip_name": clip.name,
@@ -6270,6 +7198,10 @@ class Body(Loader):
                 "note_count": len(notes),
                 "notes": notes,
             }
+            if arrangement:
+                out["arrangement"] = True
+                out["start_time"] = float(clip.start_time)
+            return out
         except Exception as e:
             self.log_message("Error getting clip notes: " + str(e))
             raise
@@ -6293,6 +7225,8 @@ class Body(Loader):
             "class_name": "%s" % device.class_name,
             "type": self._get_device_type(device),
         }
+        if self._has_sidechain(device):
+            info["sidechain"] = self._sidechain_state(device)
         automated = self._automated_params_for_device(device)
         if automated:
             info["automated_parameters"] = automated
@@ -6500,10 +7434,26 @@ class Body(Loader):
             params = list(device.parameters)
             out = []
             for item in list(values or []):
-                pi = int(item.get("index", -1))
+                if item.get("name") is not None and item.get("index") is None:
+                    # By name, as a document or an export spells it.
+                    want = ("%s" % item.get("name")).strip().lower()
+                    found = [i for i, p in enumerate(params) if ("%s" % p.name).strip().lower() == want]
+                    if not found:
+                        raise ValueError("'%s' has no parameter '%s'; it has: %s" % (
+                            device.name, item.get("name"), ", ".join("%s" % p.name for p in params[1:])))
+                    pi = found[0]
+                else:
+                    pi = int(item.get("index", -1))
                 if pi < 0 or pi >= len(params):
                     raise IndexError("Parameter index %d out of range on '%s'" % (pi, device.name))
                 param = params[pi]
+                if not bool(getattr(param, "is_enabled", True)):
+                    # Held by a macro, a rack or a remote (AMM Sidechain's
+                    # Modulate): Live refuses the write ("the parameter is
+                    # disabled"), so it is left as it is and said, not failed.
+                    out.append({"index": pi, "name": "%s" % param.name, "skipped": "held",
+                                "value": float(param.value)})
+                    continue
                 old = float(param.value)
                 old_display = self._param_display(param)
                 display_wanted = item.get("value_display")

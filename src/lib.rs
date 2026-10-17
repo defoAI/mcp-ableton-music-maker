@@ -16,9 +16,14 @@
 //! - [`tools`]        the MCP server and all tools
 //! - [`notes`]        compact note forms (csv, step strings, patterns, tiling)
 //! - [`audio`]        reads the WAV/AIFF Live recorded for a capture and measures it
+//! - [`meter`]        loudness (LUFS), true peak, the six ranges, the spectrum and chroma — shared by captures and the listening memory
 //! - [`performance`]  live performance: state, bar arithmetic, cue resolution, the readout text
 //! - [`context`]      get_context's readout and the server instructions clients receive at initialize
 //! - [`lom`]        Live's object model reached generically: built paths, batches of ops, what this Live has (pure + cached)
+//! - [`listening`]    the listening memory read: heard, listen, compare, the get_context line, the change log (revision)
+//! - [`picture`]      listen_picture's PNG: spectrogram, loudness curve and chroma strip with section names (no image crate)
+//! - [`feedback`]     the producer answers in the app: comments, options and picks, replies, the away switch
+//! - [`recorder`]     remembering what Live plays: the clock, the stamper, the per-bar/16th/frame recorder and takes (no audio is written)
 //! - [`library`]      the server's copy of Live's browser: paged from the script, on disk, searched locally
 //! - [`devices`]      what a device answered to, keyed on the device and the Live version, not on a song
 //! - [`memory`]       the song's own memory: the overview, the notes, the digest, identity from song.file_path
@@ -46,18 +51,25 @@ pub mod audio;
 pub mod connection;
 pub mod context;
 pub mod devices;
+pub mod effects;
+pub mod feedback;
 pub mod handshake;
 pub mod install;
 pub mod library;
+pub mod listening;
 pub mod lom;
 pub mod memory;
+pub mod meter;
 pub mod notes;
 pub mod parts;
 pub mod performance;
+pub mod picture;
 pub mod rack;
+pub mod recorder;
 pub mod samples;
 pub mod sections;
 pub mod sets;
+pub mod sidechain;
 pub mod song;
 pub mod sound;
 pub mod state;
@@ -80,6 +92,11 @@ pub const REMOTE_SCRIPT_SOURCE: &str =
 /// reads its `SCRIPT_VERSION`; the installer writes it beside the loader, and
 /// `reload_body` makes Live re-read it in place.
 pub const REMOTE_SCRIPT_BODY: &str = include_str!("../AbletonMusicMaker_Remote_Script/body.py");
+
+/// AMM Sidechain.amxd, built by `scripts/build-sidechain-device.py`: the Max
+/// for Live device whose key input the API can route (see `sidechain`).
+pub const SIDECHAIN_DEVICE: &[u8] =
+    include_bytes!("../AbletonMusicMaker_Devices/AMM Sidechain.amxd");
 
 /// True for the string values the Python code accepted as "on".
 pub fn env_flag(name: &str) -> bool {

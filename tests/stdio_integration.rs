@@ -76,7 +76,7 @@ async fn full_stack_over_stdio() {
     }
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 110);
+    assert_eq!(tools.len(), 118);
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     for expected in [
         "adv_edit_devices",
@@ -497,4 +497,140 @@ async fn a_stale_body_on_a_matching_loader_is_a_reload_not_a_restart() {
         .require_capability(old_loader.as_ref(), "create_locator")
         .unwrap();
     assert!(refusal.contains("restart Ableton Live"), "{refusal}");
+}
+
+// ── A server that outlived an update (studio report, round 2, R6) ──────────
+//
+// After `cargo install` and `--reload`, Live ran the new script while a client
+// session that started earlier still talked to the old server, and nothing
+// said so. Worse, an older server writes its own body back over a newer one
+// when it starts.
+
+fn newer_script() -> Value {
+    use mcp_ableton_music_maker::handshake::expected_loader_version;
+    json!({
+        "script_version": "99.0.0",
+        "loader_version": expected_loader_version(),
+        "capabilities": ["get_session_info", "get_script_info"],
+        "reload": {"supported": true, "count": 1, "body_file": "/never/written/body.py", "last_ms": 0.1},
+    })
+}
+
+#[test]
+fn versions_compare_number_by_number() {
+    use mcp_ableton_music_maker::handshake::version_newer;
+    assert!(version_newer("1.40.0", "1.39.9"));
+    assert!(version_newer("1.10.0", "1.9.0"), "not as strings");
+    assert!(version_newer("2.0", "1.99.99"));
+    assert!(!version_newer("1.39.0", "1.39.0"));
+    assert!(!version_newer("1.38.0", "1.39.0"));
+    assert!(version_newer("1.39.1", "1.39"));
+}
+
+#[test]
+fn a_newer_script_in_live_is_body_ahead_and_never_written_over() {
+    use mcp_ableton_music_maker::handshake::{ScriptInfoCache, Staleness};
+    let bridge = FakeBridge::responding(newer_script());
+    let cache = ScriptInfoCache::default();
+    let info = cache.handshake(bridge.as_ref());
+    assert_eq!(info.staleness(), Staleness::BodyAhead);
+    assert!(!info.staleness().recoverable_in_place());
+    let said = info.staleness().message().unwrap();
+    assert!(said.contains("Restart the MCP client session"), "{said}");
+    // And the startup update does nothing with it: no file, no reload.
+    let server = common::server_with(bridge.clone());
+    let live = server.live().clone();
+    let after = mcp_ableton_music_maker::app::update_script_in_place(&live, &info);
+    assert_eq!(after.script_version.as_deref(), Some("99.0.0"));
+    assert!(
+        !bridge.commands().iter().any(|c| c == "reload_body"),
+        "{:?}",
+        bridge.commands()
+    );
+    assert!(!std::path::Path::new("/never/written/body.py").exists());
+    // A command the newer script lacks is refused without "reinstall".
+    let refusal = cache
+        .require_capability(bridge.as_ref(), "create_locator")
+        .unwrap();
+    assert!(
+        refusal.contains("restart the MCP client session"),
+        "{refusal}"
+    );
+    assert!(!refusal.contains("--reload"), "{refusal}");
+}
+
+#[tokio::test]
+async fn every_reply_says_when_live_runs_another_script() {
+    use mcp_ableton_music_maker::tools;
+    let bridge = FakeBridge::responding(json!({"tempo": 120.0}));
+    let server = common::server_with(bridge.clone());
+    // As the server knows Live: the script it embeds — nothing is said.
+    let r = server
+        .run(
+            &tools::GET_SESSION_INFO,
+            tools::Empty {},
+            tools::get_session_info_body,
+        )
+        .await;
+    assert!(!common::text_of(&r).contains("Note: Live is running"));
+    // Live was updated under it.
+    server.live().script.adopt_reply(newer_script());
+    let r = server
+        .run(
+            &tools::GET_SESSION_INFO,
+            tools::Empty {},
+            tools::get_session_info_body,
+        )
+        .await;
+    let t = common::text_of(&r);
+    assert!(
+        t.contains("Note: Live is running Remote Script v99.0.0")
+            && t.contains("Restart this MCP session"),
+        "{t}"
+    );
+    // An older script says the other thing.
+    let mut older = newer_script();
+    older["script_version"] = json!("1.0.0");
+    server.live().script.adopt_reply(older);
+    let r = server
+        .run(
+            &tools::GET_SESSION_INFO,
+            tools::Empty {},
+            tools::get_session_info_body,
+        )
+        .await;
+    let t = common::text_of(&r);
+    assert!(
+        t.contains("older than the v") && t.contains("--reload"),
+        "{t}"
+    );
+}
+
+#[test]
+fn the_version_watch_notices_a_reload_and_survives_a_dropped_ask() {
+    use mcp_ableton_music_maker::app::check_script_version;
+    use mcp_ableton_music_maker::handshake::expected_remote_script_version;
+    let bridge = FakeBridge::responding(newer_script());
+    let server = common::server_with(bridge.clone());
+    let live = server.live().clone();
+    assert_eq!(
+        live.script.get().unwrap().script_version.as_deref(),
+        Some(expected_remote_script_version())
+    );
+    assert!(check_script_version(&live), "the reload is noticed");
+    assert_eq!(
+        live.script.get().unwrap().script_version.as_deref(),
+        Some("99.0.0")
+    );
+    assert!(!check_script_version(&live), "and only once");
+    // Live goes away: what the server knows is kept, tools are not disabled.
+    bridge.fail_from(
+        bridge.commands().len(),
+        mcp_ableton_music_maker::connection::LiveError::Lost("gone".into()),
+    );
+    assert!(!check_script_version(&live));
+    assert_eq!(
+        live.script.get().unwrap().script_version.as_deref(),
+        Some("99.0.0")
+    );
 }

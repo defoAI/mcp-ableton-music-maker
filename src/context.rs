@@ -14,17 +14,17 @@ pub const INSTRUCTIONS: &str = "AbletonMusicMaker drives a running Ableton Live 
 
 START with get_context: one call returns the set (tempo, key, position), every track with its devices, clips by slot and play state, the returns, the sections and the song, and the clock.
 
-UNITS: faders and levels are in dB (0 dB is unity), and meter readings are post-fader on Live's meter scale; positions in the arrangement are Live's 1-based bars; note times inside a clip are beats. Live's API cannot save the set: the producer presses Cmd+S in Live, and that is said once here, not in every reply.
+UNITS: faders and levels are in dB (0 dB is unity), and meter readings are post-fader on Live's meter scale; positions in the arrangement are Live's 1-based bars; note times inside a clip are beats. Live's API cannot save the set (the producer presses Cmd+S) or write Arrangement automation (automate a Session copy of the clip and place it: its envelope plays there).
 
-MAKING MUSIC: build_song builds a set from one document: key, tempo, sections (scene rows with phrase lengths), tracks (instrument as plain words or a browser URI), Session clips with notes in compact forms (step strings, notes_csv, patterns, loop_every tiling), `slots` for copies in several rows, Arrangement placements and locators. It validates everything before the first command; dry_run previews. Afterwards: create_clip and add_notes_to_clip (same note forms), add_sample (audio from the producer's folders or Live's browser, warped and looped to whole bars; search_browser category \"samples\" finds one, adv_sample_folders adds a folder), set_key, set_tempo, load_instrument_or_effect (words or URI; kind return/master), create_return, set_track_mixer (volume_db), set_send, shape_sound (cutoff, attack, reverb … as words, or any parameter by name), feel (swing, humanize, groove, retime, a variation; undo: true), arrange (place, repeat, move, delete, shorten, list — in bars). Tracks, clips, sections and bars go by name: a track by name, index, \"master\" or a return's letter; a clip by name or slot; a bar by number or locator name.
+MAKING MUSIC: build_song builds a set from one document: key, tempo, sections (scene rows with phrase lengths), tracks (instrument as plain words or a browser URI), Session clips with notes in compact forms (step strings, notes_csv, patterns, loop_every tiling), `slots` for copies in several rows, Arrangement placements and locators. It validates everything first; dry_run previews. Afterwards: create_clip and add_notes_to_clip (same note forms), add_sample (audio warped to whole bars; search_browser category \"samples\"), load_instrument_or_effect (words or URI), set_track_mixer (volume_db), shape_sound (words, or any parameter by name), feel (swing, humanize, groove; undo: true), arrange (place, repeat, move — in bars). Tracks, clips, sections and bars go by name: a track by name, index, \"master\" or a return's letter; a clip by name or slot; a bar by number or locator name.
 
-HEARING IT: capture_mix records N bars of the master through a Capture track and reports peak, RMS per bar, silent bars, clipping and width; tracks: [\"Kick\", \"Bass\"] measures those parts on their own and names the octaves they fight over, transients: true how sharply their hits start. clear_captures removes that track. Nothing leaves the machine.
+HEARING IT: the Mac app remembers what the producer plays (measurements, never audio) by bar, section and the set's revision (every change moves it). heard: which sections are current, stale or never heard. listen {section|bars|last}: how it measured when last played. compare: before/after a change, or A against B; listen_picture draws it. Say when a reading predates a change. Never start the transport to measure while the producer listens: ask them to play it (listen {play} only under their \"Claude may play the set\" switch). capture_mix records bars of the master, or tracks: [\"Kick\", \"Bass\"] alone; clear_captures removes its track. offer_options asks the producer in the app; get_feedback returns picks and bar comments; reply answers.
 
 SECTIONS AND SONGS: a section is a scene row named \"<name> · <bars>\" (its phrase length; Live's Save keeps it). make_section makes one from what plays, as a copy with per-track changes, or from clips per track. set_song writes the setlist into the 'Setlist:' scene: an entry without repeats loops until the performer says go. update_song changes a song that exists: a section's name (the setlist and the notes about it follow), its phrase, its tempo, one track's clip in it, a copy, a move, a delete, the song's entries — all checked first, one undo step, dry_run plans it. get_context {\"as\": \"song\"|\"section\"|\"document\"} hands the song back, and takes the document back through update_song. play_song fires the first section and cues the counted jumps; go (end of the playing phrase; at: next_bar cuts it short and says so), hold_section, next_section, previous_section, back and jump_to {section, repeats, at, transition} steer it, and a jump into a section that ran 3 dB hotter warns. The level line (🔊) rides under the clock line while performing.
 
-PERFORMING: start_performance (1-bar launch quantization, disarms tracks, sets the key, fires the first scene, guards on). A performance is kept as a take in the Arrangement by default: from bar 1 when the Arrangement is empty; when it is not, play_song and start_performance start nothing and return what is there with the choices after / replace / off for the producer to pick — never guess, never pass replace unless they said so. end_performance stops the take and says which bars it covered, on the bar, faded, or now. Then cue for anything timed: steps at bar numbers (\"next_bar\", {\"bar\": N}, {\"bars_after\": k}) with fire_scene, fire_clip, stop_clip, set, or a ramp of tempo, crossfader or volume over bars. Cues run on Live's clock: plan two bars ahead, never try to hit a beat with a tool call. get_performance_state tells you the bar, what plays, what is queued and what fired since you asked. keep_track_playing carries a layer through scene changes. record_clip records the producer. While a performance runs, stop_playback, set_tempo, playhead moves, capture_mix and deleting playing clips are refused with the on-the-bar alternative.
+PERFORMING: start_performance (1-bar launch quantization, disarms tracks, sets the key, fires the first scene, guards on). A performance is kept as a take in the Arrangement by default: from bar 1 when the Arrangement is empty; when it is not, play_song and start_performance start nothing and return what is there with the choices after / replace / off for the producer to pick — never guess, never pass replace unless they said so. end_performance stops the take and says which bars it covered, on the bar, faded, or now. Then cue anything timed at bar numbers (steps, or ramps of tempo, crossfader or volume) on Live's clock: plan two bars ahead, never try to hit a beat with a tool call. get_performance_state tells you the bar, what plays, what is queued and what fired since you asked. record_clip records the producer. While a performance runs, stop_playback, set_tempo, playhead moves, capture_mix and deleting playing clips are refused with the on-the-bar alternative.
 
-RULES: Live's bar numbers are 1-based. Every launch lands on the next bar. A section launch stops tracks with no clip in that row (unless keep_track_playing). A fresh Live 12 set sits in its default C Major scale: set_key first. Live arms new MIDI tracks itself: an armed track with an empty slot records on a scene launch.
+RULES: Every launch lands on the next bar. A section launch stops tracks with no clip in that row (unless keep_track_playing). A fresh Live 12 set sits in its default C Major scale: set_key first. Live arms new MIDI tracks itself: an armed track with an empty slot records on a scene launch.
 
 DEVICES: anything you load you can read back and undo. adv_get_device_parameters, adv_set_device_parameter and adv_edit_devices (remove, move, bypass, enable) address a track the same way and speak Live's display strings (\"200 Hz\", \"Low Cut 48 dB\").
 
@@ -33,7 +33,7 @@ MEMORY: get_context opens with what this song remembers — the overview (the mo
 THE SURFACE: the tools without a prefix are the artist's set and cover the workflow; the adv_ tools are the raw layer underneath — scenes, clips, cues, meters, snapshots, the browser — for when the artist's set has no word for it.";
 
 /// The short form appended to every get_context result.
-pub const FOOTER: &str = "Read the memory above before the first change, and keep it current with remember. Workflow: build_song (key, tempo, sections, tracks with instrument words, clips as step strings, notes_csv or patterns) → add_sample for audio → shape_sound and feel → arrange in bars → hear it with capture_mix → play_song, then go / hold_section / next_section / back / jump_to steer the sections; end_performance stops. Faders and levels in dB, positions in bars. Live's Save is yours (Cmd+S); the API cannot save.";
+pub const FOOTER: &str = "Read the memory above before the first change, and keep it current with remember. Workflow: build_song (key, tempo, sections, tracks with instrument words, clips as step strings, notes_csv or patterns) → add_sample for audio → shape_sound and feel → arrange in bars → ask the producer to play it, then heard / listen / compare (capture_mix for single tracks) → play_song, then go / hold_section / next_section / back / jump_to steer the sections; end_performance stops. Faders and levels in dB, positions in bars. Live's Save is yours (Cmd+S); the API cannot save.";
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
@@ -62,6 +62,35 @@ fn num(v: f64) -> String {
 
 /// The compact readout. `since` is the running performance (start bar,
 /// seconds) if any.
+/// " · Compressor ⟵ Kick (Post FX)" for each device that is keyed — off and
+/// unrouted ones are left to the warnings.
+fn sidechain_bits(t: &Value) -> String {
+    let mut out = String::new();
+    for e in arr(t, "sidechains") {
+        let sc = e.get("sidechain").cloned().unwrap_or(Value::Null);
+        let source = sc.get("source").and_then(Value::as_str);
+        let Some(source) = source else { continue };
+        let at = match e.get("in_chain").and_then(Value::as_str) {
+            Some(c) => format!("{c} › {}", s(e, "device")),
+            None => s(e, "device").to_string(),
+        };
+        let tap = sc.get("tap_display").and_then(Value::as_str).unwrap_or("");
+        let what = match sc.get("amm").filter(|a| a.is_object()) {
+            Some(amm) if s(amm, "mode") == "modulate" => {
+                match amm.get("target").filter(|x| x.is_object()) {
+                    Some(tg) => format!(" moving {} › {}", s(tg, "device"), s(tg, "parameter")),
+                    None => " (modulate, no target)".to_string(),
+                }
+            }
+            Some(amm) => format!(" ({})", s(amm, "mode")),
+            None if sc.get("on").and_then(Value::as_bool) != Some(true) => " (S/C Off)".to_string(),
+            None => String::new(),
+        };
+        out.push_str(&format!(" · {at} ⟵ {source} {tap}{what}"));
+    }
+    out
+}
+
 pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
     let session = ctx.get("session").cloned().unwrap_or(Value::Null);
     let mut out = String::new();
@@ -191,6 +220,11 @@ pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
         if arr_clips > 0 {
             line.push_str(&format!(" · {arr_clips} in the Arrangement"));
         }
+        let output = s(t, "output");
+        if !output.is_empty() && output != "Main" {
+            line.push_str(&format!(" · out {output}"));
+        }
+        line.push_str(&sidechain_bits(t));
         out.push_str(&line);
         out.push('\n');
     }
@@ -203,11 +237,12 @@ pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
             .iter()
             .map(|r| {
                 let devs: Vec<&str> = arr(r, "devices").iter().filter_map(Value::as_str).collect();
-                if devs.is_empty() {
+                let base = if devs.is_empty() {
                     format!("{} {}", s(r, "letter"), s(r, "name"))
                 } else {
                     format!("{} {} ({})", s(r, "letter"), s(r, "name"), devs.join(", "))
-                }
+                };
+                format!("{base}{}", sidechain_bits(r))
             })
             .collect();
         out.push_str(&format!("Returns: {}", list.join(" · ")));
@@ -219,6 +254,14 @@ pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
             None => format!("vol {}", num(f(&session, "master_volume"))),
         }
     ));
+
+    let warnings = arr(ctx, "warnings");
+    if !warnings.is_empty() {
+        out.push_str("Sidechain warnings:\n");
+        for w in warnings {
+            out.push_str(&format!("  - {}\n", crate::sidechain::warning_text(w)));
+        }
+    }
 
     let scenes = arr(ctx, "scenes");
     let mut named: Vec<String> = Vec::new();
@@ -280,7 +323,42 @@ pub fn context_text(ctx: &Value, since: Option<(i64, f64)>) -> String {
         out.push_str(&ranges(&empty));
         out.push_str(" empty");
     }
+    // The count of rows in Live, the Setlist and Stash rows included: what a
+    // client creating or filling scenes has to match, said once rather than
+    // added up from the list above.
+    if !scenes.is_empty() {
+        out.push_str(&format!(
+            " — {} row{} in all",
+            scenes.len(),
+            if scenes.len() == 1 { "" } else { "s" }
+        ));
+    }
     out.push('\n');
+    let locators = arr(ctx, "locators");
+    if !locators.is_empty() {
+        let bpb = session
+            .get("signature_numerator")
+            .and_then(Value::as_f64)
+            .unwrap_or(4.0)
+            .max(1.0);
+        let list: Vec<String> = locators
+            .iter()
+            .map(|l| {
+                let bar = f(l, "time") / bpb + 1.0;
+                let bar = if (bar - bar.round()).abs() < 1e-6 {
+                    format!("{}", bar.round() as i64)
+                } else {
+                    format!("{bar:.2}")
+                };
+                format!("{} @{bar}", s(l, "name"))
+            })
+            .collect();
+        out.push_str(&format!(
+            "Locators ({}): {}\n",
+            locators.len(),
+            list.join(" · ")
+        ));
+    }
     if let Some(name) = setlist {
         match crate::song::parse_setlist(name) {
             Ok(entries) if entries.is_empty() => {
@@ -623,7 +701,7 @@ mod tests {
             "{t}"
         );
         assert!(
-            t.contains("Scenes: 0 Intro (1) · 1 [Groove] (2) · 4 Drop (3) @134 · 2–3 empty\n"),
+            t.contains("Scenes: 0 Intro (1) · 1 [Groove] (2) · 4 Drop (3) @134 · 2–3 empty — 5 rows in all\n"),
             "{t}"
         );
         assert!(
@@ -645,7 +723,7 @@ mod tests {
         let t = context_text(&p, None);
         assert!(
             t.contains(
-                "Sections (scenes): 0 Intro · 8 (2) · 1 [Groove · 8] (4) · 2 Break · 16 (2)\n"
+                "Sections (scenes): 0 Intro · 8 (2) · 1 [Groove · 8] (4) · 2 Break · 16 (2) — 4 rows in all\n"
             ),
             "{t}"
         );
@@ -706,7 +784,9 @@ mod tests {
         // song memory is used at all. An instruction nobody reads is worth
         // nothing, and an overview nobody writes is worth less. Anything
         // else that wants room here takes it from prose that has stopped
-        // earning its place, not from another raise.
+        // earning its place, not from another raise. HEARING IT took the
+        // listening memory that way: from the cue syntax adv_cue's own
+        // description carries, and the tool list tools/list already shows.
         assert!(INSTRUCTIONS.len() < 5900, "{}", INSTRUCTIONS.len());
         assert_eq!(ranges(&[5, 6, 7, 9]), "5–7, 9");
     }

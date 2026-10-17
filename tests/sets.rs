@@ -108,14 +108,16 @@ async fn export_set_writes_one_file_under_the_sets_folder_and_only_when_called()
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
     assert_eq!(b.commands()[1..], ["get_session_snapshot", "get_context"]);
-    let path = dir.path().join("sets").join("Techno-Friday.json");
+    // The name is kept as given (studio report, 2026-10-15: "C#m" became
+    // "C-m" and the export looked lost).
+    let path = dir.path().join("sets").join("Techno Friday!.json");
     assert!(path.exists(), "{}", text_of(&r));
     let files: Vec<_> = std::fs::read_dir(dir.path().join("sets"))
         .unwrap()
         .collect();
     assert_eq!(files.len(), 1, "one file per export");
     let doc: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(doc["name"], "Techno-Friday");
+    assert_eq!(doc["name"], "Techno Friday!");
     assert_eq!(doc["tempo"], 126.0);
     assert_eq!(doc["key"], "F Minor");
     assert_eq!(doc["signature"], json!([4, 4]));
@@ -143,9 +145,9 @@ async fn export_set_writes_one_file_under_the_sets_folder_and_only_when_called()
         json!([{"section": "Intro", "repeats": 2}, {"section": "Groove", "repeats": null}])
     );
     let t = text_of(&r);
-    assert!(t.starts_with(&format!("Exported to {}: 3 tracks (0 instruments by URI, every device by name), 2 sections with 4 clips and 7 notes, mixer and sends, the setlist (2 entries), tempo and key F Minor.", path.display())), "{t}");
+    assert!(t.starts_with(&format!("Exported 'Techno Friday!' to {}: 3 tracks (0 instruments by URI, every device by name), 2 sections with 4 clips and 7 notes, mixer and sends, the setlist (2 entries), tempo and key F Minor.", path.display())), "{t}");
     assert!(
-        t.contains("import_set {\"name\": \"Techno-Friday\"} rebuilds it")
+        t.contains("import_set {\"name\":\"Techno Friday!\"} rebuilds it")
             && t.contains("\"Delete all local data\""),
         "{t}"
     );
@@ -203,7 +205,7 @@ async fn build_song_writes_a_snapshot_only_when_it_is_asked_for() {
         "{name}"
     );
     assert!(
-        t.contains("Snapshot: Exported to") && t.contains(&name),
+        t.contains("Snapshot: Exported 'build-") && t.contains(&name),
         "the reply names the file, or nobody can import it: {t}"
     );
 }
@@ -561,4 +563,100 @@ async fn a_document_read_and_posted_straight_back_is_nothing_to_do() {
     assert!(t.starts_with("Plan — nothing was sent to Live."), "{t}");
     assert!(t.contains("Kick rewritten (2 notes)"), "{t}");
     assert!(t.contains("2 clips untouched"), "{t}");
+}
+
+/// export_set and import_set take the same name: what the producer typed,
+/// with `#`, `/`, spaces and `·` in it, round-trips exactly, the reply says
+/// the stored name and path, and two names that only differ in those
+/// characters never share a file.
+#[tokio::test]
+async fn a_set_name_round_trips_exactly_as_given() {
+    let _guard = LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("ABLETON_MCP_STATE_DIR", dir.path());
+    let names = [
+        "before-C#m130_Ritual",
+        "before-C-m130_Ritual",
+        "A/B test",
+        "Intro · take 2",
+        "50% wet: final",
+        ".hidden",
+    ];
+    for name in names {
+        let b = bridge();
+        let server = server_with(b.clone());
+        let r = server
+            .run(
+                &tools::EXPORT_SET,
+                ExportSetParams { name: name.into() },
+                mcp_ableton_music_maker::sets::export_set_body,
+            )
+            .await;
+        let t = text_of(&r);
+        assert!(!is_error(&r), "{name}: {t}");
+        assert!(
+            t.starts_with(&format!("Exported '{name}' to ")),
+            "{name}: {t}"
+        );
+        assert!(
+            t.contains(&json!({"name": name}).to_string()),
+            "the reply gives the name import_set takes: {t}"
+        );
+        let r = server
+            .run(
+                &tools::IMPORT_SET,
+                ImportSetParams {
+                    name: name.into(),
+                    dry_run: true,
+                    ..Default::default()
+                },
+                mcp_ableton_music_maker::sets::import_set_body,
+            )
+            .await;
+        let t = text_of(&r);
+        assert!(!is_error(&r), "{name}: {t}");
+        assert!(t.starts_with(&format!("Set '{name}'")), "{name}: {t}");
+    }
+    let files = std::fs::read_dir(dir.path().join("sets")).unwrap().count();
+    assert_eq!(files, names.len(), "one file per name, none shared");
+    assert!(dir
+        .path()
+        .join("sets")
+        .join("before-C#m130_Ritual.json")
+        .exists());
+    assert!(dir.path().join("sets").join("A%2FB test.json").exists());
+}
+
+/// An export written before names were kept is still found by the name it
+/// was given.
+#[tokio::test]
+async fn an_export_from_before_names_were_kept_is_still_found() {
+    let _guard = LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("ABLETON_MCP_STATE_DIR", dir.path());
+    let b = bridge();
+    let server = server_with(b.clone());
+    let r = server
+        .run(
+            &tools::EXPORT_SET,
+            ExportSetParams {
+                name: "before-C-m130_Ritual".into(),
+            },
+            mcp_ableton_music_maker::sets::export_set_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
+    // What the old naming made of "before-C#m130_Ritual".
+    let r = server
+        .run(
+            &tools::IMPORT_SET,
+            ImportSetParams {
+                name: "before-C#m130_Ritual".into(),
+                dry_run: true,
+                ..Default::default()
+            },
+            mcp_ableton_music_maker::sets::import_set_body,
+        )
+        .await;
+    assert!(!is_error(&r), "{}", text_of(&r));
 }

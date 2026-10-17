@@ -34,6 +34,9 @@ fn document() -> BuildSongParams {
     let mut tracks: Vec<SongTrack> = midi
         .iter()
         .map(|(name, query)| SongTrack {
+            effects: Vec::new(),
+            sidechain: None,
+            output: None,
             name: (*name).into(),
             kind: "midi".into(),
             instrument: None,
@@ -48,6 +51,9 @@ fn document() -> BuildSongParams {
         .collect();
     for name in ["Vocal", "Texture", "FX"] {
         tracks.push(SongTrack {
+            effects: Vec::new(),
+            sidechain: None,
+            output: None,
             name: name.into(),
             kind: "audio".into(),
             instrument: None,
@@ -130,6 +136,8 @@ fn document() -> BuildSongParams {
         .collect();
 
     BuildSongParams {
+        returns: Vec::new(),
+        master: None,
         parts: Default::default(),
         tempo: Some(86.0),
         key: Some("D minor".into()),
@@ -139,6 +147,7 @@ fn document() -> BuildSongParams {
         placements,
         locators,
         on_existing: "converge".into(),
+        replace_placements: true,
         dry_run: false,
         snapshot: false,
     }

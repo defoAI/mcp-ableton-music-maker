@@ -1,13 +1,17 @@
 //! Listening to Live: start a process tap, measure what arrives about thirty
 //! times a second, and send each frame to the window.
 //!
-//! Nothing is stored. The audio lives in the tap's ring buffer for a few
-//! milliseconds, is turned into about ninety numbers, and is gone. No file is
-//! written and no socket is opened — except the one the rest of the app
-//! already uses to ask Live whether its transport is running, which is the
+//! No audio is stored. It lives in the tap's ring buffer for a few
+//! milliseconds, is turned into about ninety numbers, and is gone. This
+//! module writes no file and opens no socket of its own — the one the rest
+//! of the app already uses asks Live whether its transport is running, the
 //! only way to tell "Live is quiet" from "macOS is handing us silence".
+//! With **Remember what Live plays** on, [`remember`] also keeps
+//! measurements of each bar through the crate's listening store: numbers,
+//! never audio, and the tap runs while Live plays even with no window open.
 
 pub mod analysis;
+pub mod remember;
 pub mod tap;
 
 use analysis::{Analyzer, Frame};
@@ -47,6 +51,10 @@ struct FramePayload {
     live_playing: i8,
     /// The newest audio as a short mono waveform, for the visual.
     wave: Vec<f32>,
+    /// Short-term loudness, LUFS
+    lufs: f32,
+    /// Twelve pitch classes, C first, strongest = 1
+    chroma: Vec<f32>,
 }
 
 /// Points of waveform per frame: enough to draw, small enough to send
@@ -68,6 +76,8 @@ impl FramePayload {
             silent: f.silent,
             silent_for_ms,
             live_playing,
+            lufs: r1(f.lufs),
+            chroma: f.chroma.iter().map(|c| (c * 100.0).round() / 100.0).collect(),
         }
     }
 }
@@ -172,6 +182,7 @@ pub fn start<R: Runtime>(app: &AppHandle<R>) -> Result<Value, String> {
 
     tap::start(pid)?;
     let (sample_rate, channels, buffer_frames) = tap::format().unwrap_or((48_000.0, 2, 0));
+    remember::MEMORY.tap_started(sample_rate, buffer_frames, crate::settings::offset_ms(app));
 
     let stop = Arc::new(AtomicBool::new(false));
     let ended = Arc::new(AtomicBool::new(false));
@@ -201,6 +212,7 @@ pub fn start<R: Runtime>(app: &AppHandle<R>) -> Result<Value, String> {
                     let n = tap::drain(&mut l, &mut r);
                     if n > 0 {
                         analyzer.push(&l[..n], &r[..n], now_ms);
+                        remember::MEMORY.audio(&l[..n], &r[..n]);
                     }
                     if now >= next_frame {
                         next_frame = now + Duration::from_millis(FRAME_MS);
@@ -334,6 +346,11 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> Result<Value, String> {
 /// showing it. Called whenever a window is hidden or closed — `closing` names
 /// the window that is on its way out, which still reports itself visible.
 pub fn stop_if_unwatched<R: Runtime>(app: &AppHandle<R>, closing: &str) {
+    // With Remember on, listening is the app's own business while Live plays;
+    // the tray's dot says so.
+    if remember::MEMORY.on() {
+        return;
+    }
     let watched = ["main", "listen-float", "listen-visual"].iter().any(|label| {
         *label != closing
             && app
@@ -378,6 +395,8 @@ mod tests {
             clip: false,
             ranges: [-9.0; 6],
             silent: false,
+            lufs: -14.26,
+            chroma: [0.5; 12],
         };
         let p = FramePayload::from(f, Some(0.0), -1, vec![0.123456; WAVE_POINTS]);
         assert_eq!(p.bands[0], -12.3);
@@ -399,6 +418,7 @@ mod tests {
             ("analysis.rs", include_str!("analysis.rs")),
             ("tap.rs", include_str!("tap.rs")),
             ("tap.m", include_str!("tap.m")),
+            ("remember.rs", include_str!("remember.rs")),
         ];
         let forbidden = [
             "std::fs", "File::create", "fs::write", "OpenOptions", "TcpStream", "TcpListener",

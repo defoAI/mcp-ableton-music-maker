@@ -109,6 +109,13 @@ pub const ALL_REMOTE_COMMANDS: &[&str] = &[
     "create_return_track",
     "create_tracks",
     "write_clips",
+    "replace_clip_notes",
+    "set_sidechain",
+    "get_sidechain",
+    "list_sidechains",
+    "set_track_output",
+    "ensure_effects",
+    "param_fraction",
     "arrangement_summary",
     "start_arrangement_record",
     "stop_arrangement_record",
@@ -136,7 +143,10 @@ fn annotations_for(name: &str) -> rmcp::model::ToolAnnotations {
         || name.starts_with("list_")
         || name.starts_with("search_")
         || name.starts_with("measure_")
-        || name == "listen";
+        || matches!(
+            name,
+            "listen_meters" | "heard" | "compare" | "listen_picture"
+        );
     let destructive = name.starts_with("delete_")
         || name.starts_with("clear_")
         || name.starts_with("remove_")
@@ -182,6 +192,7 @@ pub const CORE_TOOLS: &[&str] = &[
     "feel",
     "set_track_mixer",
     "set_send",
+    "set_sidechain",
     "create_return",
     // arrange
     "update_song",
@@ -202,6 +213,15 @@ pub const CORE_TOOLS: &[&str] = &[
     "capture_mix",
     "clear_captures",
     "end_performance",
+    // listen: what was heard, from the Mac app's memory of playback
+    "heard",
+    "listen",
+    "compare",
+    "listen_picture",
+    // the producer answers, in the app
+    "offer_options",
+    "get_feedback",
+    "reply",
     // remember
     "remember",
     "stash",
@@ -226,7 +246,7 @@ impl ToolSpec {
     }
 }
 
-fn pretty(v: &Value) -> String {
+pub(crate) fn pretty(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default()
 }
 
@@ -312,12 +332,20 @@ pub struct AutomationTarget {
     pub send_index: Option<i64>,
 }
 
-/// One automation breakpoint: the parameter reaches `value` at `time` beats.
+/// One automation breakpoint: the parameter reaches `value` (or, for
+/// volume, `db`) at `time` beats.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(inline)]
 pub struct AutomationPoint {
     pub time: f64,
-    pub value: f64,
+    /// The parameter's own value: for volume Live's fader scale, where 0.85
+    /// is 0 dB and 1.0 is +6 dB
+    #[serde(default)]
+    pub value: Option<f64>,
+    /// Volume only: the level in dB (0 = unity, -12, -70 or lower = silence),
+    /// instead of `value`
+    #[serde(default)]
+    pub db: Option<f64>,
 }
 
 /// A ramp in one line: from `from` at `start` to `to` at `start + over`.
@@ -387,6 +415,15 @@ params!(ClipParams {
     track_index: Option<i64>,
     /// The clip by slot index, when `clip` is not given
     clip_index: Option<i64>,
+});
+params!(GetClipNotesParams {
+    /// The track and the clip, as every clip tool takes them
+    #[serde(flatten)]
+    clip: ClipParams,
+    /// Read an Arrangement clip instead: `clip_index` is then its position in
+    /// the track's Arrangement list (get_arrangement_clips), and the notes
+    /// are what that placement plays
+    arrangement: bool = "bool::default",
 });
 params!(DeviceParams {
     /// The track that owns the device: a name, an index, "master", or a
@@ -633,6 +670,14 @@ params!(LoadDrumKitParams {
     /// Path to the drum kit inside the browser (e.g. 'drums/acoustic/kit1')
     kit_path: String,
 });
+params!(StartPlaybackParams {
+    /// Where to play from: a bar (Live's 1-based bars; 3.5 is halfway
+    /// through bar 3) or a locator's name. Leave it out to play from where
+    /// the playhead is.
+    bar: Option<Value>,
+    /// Or a position in beats from the start of the arrangement
+    time: Option<f64>,
+});
 params!(ArrangementTimeParams {
     /// The bar to move the playhead to (Live's 1-based bars; 3.5 is halfway through bar 3)
     bar: Option<f64>,
@@ -682,6 +727,10 @@ params!(SetTrackMixerParams {
     solo: Option<bool>,
     /// Record arm (MIDI and audio tracks only)
     arm: Option<bool>,
+    /// Where the track's audio goes: "main" (the master), "sends_only"
+    /// (its sends and anything keyed from it hear it; the master does not —
+    /// a sidechain trigger nobody hears), or another track's name (a bus)
+    output: Option<Value>,
 });
 params!(SetSendParams {
     /// The track whose send changes: a name or an index
@@ -734,7 +783,7 @@ params!(DeleteArrangementClipParams {
     all: bool = "bool::default",
 });
 params!(DeleteLocatorParams {
-    /// The locator's exact name
+    /// The locator's name, as get_context lists it
     name: String = "String::new",
     /// Or its beat position
     time: Option<f64>,
@@ -808,7 +857,9 @@ params!(SetClipAutomationParams {
     track_index: i64,
     /// Session slot index, or Arrangement position when `arrangement` is true
     clip_index: i64,
-    /// The clip is an Arrangement clip (how Live 11/12 stores arrangement automation)
+    /// Always false: Live's API writes envelopes into Session clips only, so
+    /// true is refused (automate a Session copy, then place it — the
+    /// envelope plays in the Arrangement)
     arrangement: bool = "bool::default",
     /// What to automate
     target: AutomationTarget,
@@ -891,6 +942,19 @@ pub struct SongTrack {
     /// Sends by return name or letter: {"Reverb": 0.3, "B": 0.1}
     #[serde(default)]
     pub sends: BTreeMap<String, f64>,
+    /// Effects after the instrument, in chain order, each with parameters in
+    /// display units and an optional sidechain — wired after every track
+    /// exists, so a trigger may come later in the document
+    #[serde(default)]
+    pub effects: Vec<crate::effects::SongEffect>,
+    /// Duck this whole track from a trigger (AMM Sidechain): {"source":
+    /// "Trigger", "depth_db": 12, "split_hz": 150}
+    #[serde(default)]
+    pub sidechain: Option<crate::effects::SongSidechain>,
+    /// "main" (default), "sends_only" (the master never hears it — a
+    /// sidechain trigger), or another track's name
+    #[serde(default)]
+    pub output: Option<String>,
 }
 fn midi_kind() -> String {
     "midi".to_string()
@@ -1029,11 +1093,26 @@ params!(BuildSongParams {
     /// Locators to set
     #[serde(default)]
     locators: Vec<SongLocator>,
+    /// Returns, by name — found, or made before the tracks so their sends
+    /// reach them — with their effects: {"name": "Verb", "effects": [...]}
+    #[serde(default)]
+    returns: Vec<crate::effects::SongReturn>,
+    /// The master's effects
+    master: Option<crate::effects::SongMaster>,
     /// What to do about tracks, clips and placements the set already has:
     /// "converge" (default — reuse them, so re-running the same document
     /// after a failure finishes it instead of duplicating it), "add" (build
-    /// another copy) or "fail"
+    /// another copy), "fail", or "replace_notes" — converge, and where a slot
+    /// already holds the clip of that name, replace its notes with the
+    /// document's (and, with replace_placements, the notes of every
+    /// Arrangement copy of it), all in one undo step. The melody-change path:
+    /// no track is deleted, nothing made by hand elsewhere is touched.
     on_existing: String = "String::new",
+    /// With on_existing "replace_notes": also replace the notes of the
+    /// Arrangement clips on that track that carry the clip's name — the
+    /// copies its placements made (default true). They keep their placed
+    /// length.
+    replace_placements: bool = "yes",
     /// Validate and describe the plan without touching Live (default false)
     dry_run: bool = "bool::default",
     /// Write a rebuildable copy of the finished set under the server's state
@@ -1074,6 +1153,22 @@ params!(CaptureMixParams {
     /// Record even when the takes will take longer than half a minute of real
     /// time; without it, a long capture is described and not recorded
     confirm: bool = "bool::default",
+    /// Also RMS per "beat", "8th" or "16th" for every take. "8th" and
+    /// "16th" add the duck: how far each part dips inside each beat (a
+    /// sidechain's measure); "beat" has one step a beat, so no duck.
+    /// Default: per bar only
+    resolution: Option<String>,
+    /// "json": the measurements as data instead of the readout — per take
+    /// (the master, then each track) peak, RMS, RMS per bar and per step,
+    /// and the duck (`duck_db`, `duck_steps_db`, `duck_trough_step`, `beats`)
+    #[serde(rename = "as")]
+    as_format: Option<String>,
+    /// The whole Arrangement (from start_bar, default bar 1, to its last
+    /// clip), as a run of takes of up to 32 bars with the Capture track
+    /// cleared between them. Only while the producer has switched on
+    /// "Claude may play the set" in the app: it plays out loud for as long
+    /// as the song is
+    whole_song: bool = "bool::default",
 });
 params!(DeviceVocabularyParams {
     /// "show" (default) what this Live's devices have answered to, or
@@ -1173,7 +1268,14 @@ pub const END_PERFORMANCE: ToolSpec = ToolSpec::new("end_performance");
 pub const KEEP_TRACK_PLAYING: ToolSpec = ToolSpec::new("keep_track_playing");
 pub const GET_CONTEXT: ToolSpec = ToolSpec::new("get_context");
 pub const SET_SCENE: ToolSpec = ToolSpec::new("set_scene");
+pub const LISTEN_METERS: ToolSpec = ToolSpec::new("listen_meters");
+pub const HEARD: ToolSpec = ToolSpec::new("heard");
 pub const LISTEN: ToolSpec = ToolSpec::new("listen");
+pub const COMPARE: ToolSpec = ToolSpec::new("compare");
+pub const LISTEN_PICTURE: ToolSpec = ToolSpec::new("listen_picture");
+pub const OFFER_OPTIONS: ToolSpec = ToolSpec::new("offer_options");
+pub const GET_FEEDBACK: ToolSpec = ToolSpec::new("get_feedback");
+pub const REPLY: ToolSpec = ToolSpec::new("reply");
 pub const VARY_CLIP: ToolSpec = ToolSpec::new("vary_clip");
 pub const UNDO_VARY: ToolSpec = ToolSpec::new("undo_vary");
 pub const FOLLOW_KEY: ToolSpec = ToolSpec::new("follow_key");
@@ -1183,6 +1285,7 @@ pub const PANIC: ToolSpec = ToolSpec::new("panic");
 pub const RETIME_CLIP: ToolSpec = ToolSpec::new("retime_clip");
 pub const SHAPE_SOUND: ToolSpec = ToolSpec::new("shape_sound");
 pub const EXPORT_SET: ToolSpec = ToolSpec::new("export_set");
+pub const SET_SIDECHAIN: ToolSpec = ToolSpec::new("set_sidechain");
 pub const SET_KEY: ToolSpec = ToolSpec::new("set_key");
 pub const CREATE_RETURN: ToolSpec = ToolSpec::new("create_return");
 pub const CLEAR_CAPTURES: ToolSpec = ToolSpec::new("clear_captures");
@@ -1249,16 +1352,41 @@ pub fn get_track_info_body(live: &LiveState, p: &TrackInfoParams) -> ToolResult 
     .map_err(|e| live_err("get track info", e))
 }
 
-pub fn get_clip_notes_body(live: &LiveState, p: &ClipParams) -> ToolResult {
+pub fn get_clip_notes_body(live: &LiveState, p: &GetClipNotesParams) -> ToolResult {
     require(live, "get_clip_notes")?;
-    let target = resolve_track_target(live, p.track.as_ref(), None, p.track_index)?;
-    let slot = resolve_clip_slot(live, &target, p.clip.as_ref(), p.clip_index)?;
-    live.send_command(
-        "get_clip_notes",
-        Some(json!({"track_index": target.index, "clip_index": slot})),
-    )
-    .map(|r| pretty(&r))
-    .map_err(|e| live_err("get clip notes", e))
+    let c = &p.clip;
+    let target = resolve_track_target(live, c.track.as_ref(), None, c.track_index)?;
+    // A script before 1.40.0 ignores `arrangement` and would answer with the
+    // Session clip in that slot: refused rather than wrong.
+    if p.arrangement {
+        let loaded = live.script.get().and_then(|i| i.script_version);
+        if let Some(v) = loaded.as_deref() {
+            if crate::handshake::version_newer("1.40.0", v) {
+                return Err(format!(
+                    "reading an Arrangement clip's notes needs Remote Script 1.40.0 or newer; Live runs {v}. Run `ableton-music-maker-install-script --reload`."
+                ));
+            }
+        }
+    }
+    let slot = if p.arrangement {
+        match (c.clip_index, c.clip.as_ref().and_then(Value::as_i64)) {
+            (Some(i), _) | (None, Some(i)) => i,
+            _ => {
+                return Err(
+                    "with arrangement: true, give the clip's position in the track's Arrangement list as clip_index (get_arrangement_clips lists them)".into(),
+                )
+            }
+        }
+    } else {
+        resolve_clip_slot(live, &target, c.clip.as_ref(), c.clip_index)?
+    };
+    let mut params = json!({"track_index": target.index, "clip_index": slot});
+    if p.arrangement {
+        params["arrangement"] = json!(true);
+    }
+    live.send_command("get_clip_notes", Some(params))
+        .map(|r| pretty(&r))
+        .map_err(|e| live_err("get clip notes", e))
 }
 
 /// A track, a return or the master, addressed the way `load_instrument_or_effect`
@@ -1711,7 +1839,7 @@ fn track_devices(live: &LiveState, target: &TrackTarget) -> Result<(String, Vec<
 }
 
 /// A device by name (a substring is enough) or by index.
-fn resolve_device_index(
+pub(crate) fn resolve_device_index(
     live: &LiveState,
     target: &TrackTarget,
     which: Option<&Value>,
@@ -1867,6 +1995,14 @@ fn render_device(target: &TrackTarget, r: &Value, in_chain: Option<&str>) -> Str
         params.len(),
         if params.len() == 1 { "" } else { "s" }
     );
+    if let Some(sc) = d.get("sidechain").filter(|v| v.is_object()) {
+        out.push_str(&format!(
+            "Sidechain: {}\n",
+            crate::sidechain::state_text(sc)
+        ));
+    } else if let Some(note) = crate::sidechain::unroutable_note(&class) {
+        out.push_str(&format!("Sidechain: {note}\n"));
+    }
     if params.is_empty() {
         out.push_str("This device exposes no parameters.\n");
         return out;
@@ -1959,7 +2095,7 @@ fn device_reply(
 
 /// The device inside a rack that `in_chain` names, with its parameters — from
 /// the reply the script already sends, so this costs no second round trip.
-fn nested_device(
+pub(crate) fn nested_device(
     live: &LiveState,
     target: &TrackTarget,
     device_index: i64,
@@ -3039,14 +3175,28 @@ pub fn edit_devices_body(live: &LiveState, p: &EditDevicesParams) -> ToolResult 
     match action.as_str() {
         "remove" | "delete" => {
             require(live, "delete_device")?;
+            let amm = crate::sidechain::amm_targets(live, &target);
+            let names = chain_names(live, &target, &amm);
             let r = live
                 .send_command(
                     "delete_device",
                     Some(json!({"track_index": target.index, "kind": target.kind, "device_index": device_index})),
                 )
                 .map_err(|e| live_err("remove the device", e))?;
+            let gone = device_index;
+            let repointed = crate::sidechain::repoint_amm(
+                live,
+                &target,
+                &amm,
+                &names,
+                &|i| match i.cmp(&gone) {
+                    std::cmp::Ordering::Less => Some(i),
+                    std::cmp::Ordering::Equal => None,
+                    std::cmp::Ordering::Greater => Some(i - 1),
+                },
+            );
             Ok(format!(
-                "Removed '{}' (was device {device_index}) from {}. {} Cmd-Z in Live puts it back.",
+                "Removed '{}' (was device {device_index}) from {}. {} Cmd-Z in Live puts it back.{repointed}",
                 get_display(&r, "deleted", "the device"),
                 target.label(&get_display(&r, "track_name", "")),
                 chain_line(&r)
@@ -3057,14 +3207,29 @@ pub fn edit_devices_body(live: &LiveState, p: &EditDevicesParams) -> ToolResult 
             let to = p.to_index.ok_or(
                 "move needs to_index: where in the chain the device should end up (0 is first)",
             )?;
+            let amm = crate::sidechain::amm_targets(live, &target);
+            let names = chain_names(live, &target, &amm);
             let r = live
                 .send_command(
                     "move_device",
                     Some(json!({"track_index": target.index, "kind": target.kind, "device_index": device_index, "to_index": to})),
                 )
                 .map_err(|e| live_err("move the device", e))?;
+            let from = device_index;
+            let landed = r.get("to_index").and_then(Value::as_i64).unwrap_or(to);
+            let repointed = crate::sidechain::repoint_amm(live, &target, &amm, &names, &|i| {
+                Some(moved_position(i, from, landed))
+            });
+            if landed == from && to != from {
+                return Ok(format!(
+                    "Live left '{}' on {} at {from}: it keeps a track's instrument ahead of its audio effects, so an effect cannot go before it. {}",
+                    get_display(&r, "moved", "the device"),
+                    target.label(&get_display(&r, "track_name", "")),
+                    chain_line(&r)
+                ));
+            }
             Ok(format!(
-                "Moved '{}' on {} from {device_index} to {}. {}",
+                "Moved '{}' on {} from {device_index} to {}. {}{repointed}",
                 get_display(&r, "moved", "the device"),
                 target.label(&get_display(&r, "track_name", "")),
                 get_display(&r, "to_index", "?"),
@@ -3115,6 +3280,49 @@ pub fn edit_devices_body(live: &LiveState, p: &EditDevicesParams) -> ToolResult 
             "action must be remove, move (with to_index), bypass or enable, not '{other}'"
         )),
     }
+}
+
+/// Where the device at `i` is once the one at `from` has moved to `to`.
+pub fn moved_position(i: i64, from: i64, to: i64) -> i64 {
+    if i == from {
+        to
+    } else if from < to && i > from && i <= to {
+        i - 1
+    } else if to < from && i >= to && i < from {
+        i + 1
+    } else {
+        i
+    }
+}
+
+/// The names on a track's chain, read only when an AMM Sidechain there will
+/// need its target named.
+fn chain_names(
+    live: &LiveState,
+    target: &crate::tools::TrackTarget,
+    amm: &[(i64, i64)],
+) -> Vec<String> {
+    if amm.is_empty() {
+        return Vec::new();
+    }
+    let chain = crate::lom::Path::track_of(&target.kind, target.index).attr("devices");
+    let n = crate::lom::Batch::new()
+        .push(crate::lom::Op::get(&chain, "d"))
+        .run(live)
+        .ok()
+        .and_then(|r| r.get("d").and_then(Value::as_array).map(Vec::len))
+        .unwrap_or(0);
+    let mut names = crate::lom::Batch::new();
+    for i in 0..n {
+        names = names.push(crate::lom::Op::get(
+            &chain.clone().at(i as i64).attr("name"),
+            &format!("n{i}"),
+        ));
+    }
+    let got = names.run(live).map(Value::Object).unwrap_or(Value::Null);
+    (0..n)
+        .map(|i| get_display(&got, &format!("n{i}"), ""))
+        .collect()
 }
 
 /// "Chain: EQ Eight, Glue Compressor, Limiter." from a device reply.
@@ -3539,9 +3747,8 @@ pub fn load_instrument_or_effect_body(live: &LiveState, p: &LoadInstrumentParams
     let uri = if p.uri.contains(':') {
         p.uri.clone()
     } else {
-        let hits = find_items(live, &p.uri, "all", 1)?;
-        match hits.first() {
-            Some(h) => h.uri.clone(),
+        match best_item(live, &p.uri)? {
+            Some(h) => h.uri,
             None => return Err(format!("nothing in the browser matches \"{}\"", p.uri)),
         }
     };
@@ -3554,18 +3761,23 @@ pub fn load_instrument_or_effect_body(live: &LiveState, p: &LoadInstrumentParams
     if !r.get("loaded").and_then(Value::as_bool).unwrap_or(false) {
         return Err(format!("Failed to load instrument with URI '{}'", p.uri));
     }
+    // The browser item is what was asked for; the device is what Live made
+    // of it. A preset loads as its device, named after neither ("Atmos Pad"
+    // arrives as "AtmosPad", or as "Wavetable"), so the reply carries both,
+    // and the item by URI, or a client cannot tell the right preset loaded.
+    let item = get_display(&r, "item_name", &p.uri);
+    let item_uri = get_display(&r, "uri", &uri);
     match r.get("loaded_device").filter(|d| d.is_object()) {
         Some(dev) => Ok(format!(
-            "Loaded '{}' as device {} on track {} ('{}'). Devices on the track now: {}",
-            get_display(dev, "name", &get_display(&r, "item_name", "device")),
-            get_display(dev, "index", "?"),
+            "Loaded '{item}' ({item_uri}) on track {} ('{}'): device {} '{}'. Devices on the track now: {}",
             target.index,
             target.label(&get_display(&r, "track_name", "")),
+            get_display(dev, "index", "?"),
+            get_display(dev, "name", &item),
             join_names(r.get("devices_after"))
         )),
         None => Ok(format!(
-            "Loaded '{}' on track {} ('{}'). Devices on the track now: {}",
-            get_display(&r, "item_name", &p.uri),
+            "Loaded '{item}' ({item_uri}) on track {} ('{}'). The chain's device names did not change — a preset replacing a device of the same name loads that way. Devices on the track now: {}",
             target.index,
             target.label(&get_display(&r, "track_name", "")),
             join_names(r.get("devices_after"))
@@ -3713,10 +3925,51 @@ pub fn delete_clip_body(live: &LiveState, p: &ClipParams) -> ToolResult {
     .map_err(|e| live_err("delete clip", e))
 }
 
-pub fn start_playback_body(live: &LiveState, _p: &Empty) -> ToolResult {
-    live.send_command("start_playback", None)
-        .map_err(|e| live_err("start playback", e))?;
-    Ok("Started playback".to_string())
+/// Play from a bar, or from where the playhead is, and say where Live is
+/// actually playing — read back from Live a frame after the start, never
+/// assumed. A start that does not land is stopped and is an error.
+pub fn start_playback_body(live: &LiveState, p: &StartPlaybackParams) -> ToolResult {
+    let (_, bpb) = tempo_and_meter(live);
+    let wanted = match (resolve_bar(live, bpb, p.bar.as_ref())?, p.time) {
+        (Some(b), _) if b >= 1.0 => Some((b - 1.0) * bpb),
+        (Some(b), _) => return Err(format!("bar {b} is before bar 1 (Live's bars start at 1)")),
+        (None, Some(t)) if t >= 0.0 => Some(t),
+        (None, Some(t)) => return Err(format!("beat {t} is before the start")),
+        (None, None) => None,
+    };
+    let r = match wanted {
+        Some(t) => {
+            require(live, "play_from")?;
+            live.send_command("play_from", Some(json!({"time": t})))
+                .map_err(|e| live_err(&format!("play from bar {}", bar_text(t, bpb)), e))?
+        }
+        None => live
+            .send_command("start_playback", None)
+            .map_err(|e| live_err("start playback", e))?,
+    };
+    let at = r.get("at").and_then(Value::as_f64);
+    if r.get("already_playing").and_then(Value::as_bool) == Some(true) {
+        return Ok(match at {
+            Some(a) => format!(
+                "Already playing, at bar {}. Nothing moved; give `bar` to play from somewhere else.",
+                bar_text(a, bpb)
+            ),
+            None => "Already playing.".to_string(),
+        });
+    }
+    match (r.get("playing_from").and_then(Value::as_f64), at) {
+        (Some(from), Some(a)) => Ok(format!(
+            "Playing from bar {} — Live confirmed the playhead at bar {} (beat {a:.2}) a frame after the start.",
+            bar_text(from, bpb),
+            bar_text(a, bpb)
+        )),
+        // A Remote Script older than 1.39.0 says only that it is playing,
+        // and plays from Live's start marker.
+        _ => Ok(
+            "Started playback (from Live's start marker: the Remote Script in Live is older than this server and cannot confirm the position — reinstall it)."
+                .to_string(),
+        ),
+    }
 }
 
 pub fn stop_playback_body(live: &LiveState, _p: &Empty) -> ToolResult {
@@ -3949,7 +4202,7 @@ fn beats_from(
 }
 
 /// `33` or `33.5`: a beat position as a bar.
-fn bar_text(beat: f64, bpb: f64) -> String {
+pub(crate) fn bar_text(beat: f64, bpb: f64) -> String {
     let bar = beat / bpb.max(1.0) + 1.0;
     if (bar - bar.round()).abs() < 1e-6 {
         format!("{}", bar.round() as i64)
@@ -4341,14 +4594,14 @@ pub fn set_track_mixer_body(live: &LiveState, p: &SetTrackMixerParams) -> ToolRe
     require(live, "set_track_mixer")?;
     let target = resolve_track_target(live, p.track.as_ref(), Some(&p.kind), p.track_index)?;
     let volume_db = p.volume_db.or(p.volume);
-    if volume_db.is_none()
-        && p.fader.is_none()
-        && p.pan.is_none()
-        && p.mute.is_none()
-        && p.solo.is_none()
-        && p.arm.is_none()
-    {
-        return Err("Nothing to set: give volume (dB), pan, mute, solo or arm.".into());
+    let mixer_given = volume_db.is_some()
+        || p.fader.is_some()
+        || p.pan.is_some()
+        || p.mute.is_some()
+        || p.solo.is_some()
+        || p.arm.is_some();
+    if !mixer_given && p.output.is_none() {
+        return Err("Nothing to set: give volume (dB), pan, mute, solo, arm or output.".into());
     }
     if let Some(db) = volume_db {
         if !(-80.0..=6.0).contains(&db) {
@@ -4362,20 +4615,75 @@ pub fn set_track_mixer_body(live: &LiveState, p: &SetTrackMixerParams) -> ToolRe
             return Err(format!("fader is Live's raw 0–1 parameter, got {f}"));
         }
     }
-    let r = live
-        .send_command(
-            "set_track_mixer",
-            Some(json!({
-                "track_index": target.index, "kind": target.kind,
-                "volume": p.fader, "volume_db": volume_db, "pan": p.pan, "mute": p.mute, "solo": p.solo, "arm": p.arm,
-            })),
-        )
-        .map_err(|e| live_err("set the track mixer", e))?;
-    Ok(format!(
-        "'{}' now: {}",
-        target.label(&get_display(&r, "name", "")),
-        mixer_summary(&r)
-    ))
+    let output = match &p.output {
+        None => None,
+        Some(v) => {
+            require(live, "set_track_output")?;
+            if target.kind != "track" {
+                return Err(
+                    "output is routed on a track; a return's and the master's are Live's own"
+                        .into(),
+                );
+            }
+            let to = match v {
+                Value::String(s) if matches!(s.trim().to_lowercase().replace([' ', '-'], "_").as_str(), "main" | "master" | "sends_only") => {
+                    json!(s.trim().to_lowercase().replace([' ', '-'], "_"))
+                }
+                // Another track, a bus: matched exactly, as a sidechain source is.
+                other => match crate::sidechain::resolve_source(live, other)? {
+                    Some(src) if src.kind == "track" => json!({"kind": "track", "index": src.index}),
+                    Some(src) => return Err(format!("'{}' is the {}: a track's output goes to the master (\"main\"), \"sends_only\", or another track", src.name, src.kind)),
+                    None => return Err("output is \"main\", \"sends_only\" or a track's name".into()),
+                },
+            };
+            Some(
+                live.send_command(
+                    "set_track_output",
+                    Some(json!({"track_index": target.index, "kind": target.kind, "to": to})),
+                )
+                .map_err(|e| live_err("route the track's output", e))?,
+            )
+        }
+    };
+    let mut text = String::new();
+    if mixer_given {
+        let r = live
+            .send_command(
+                "set_track_mixer",
+                Some(json!({
+                    "track_index": target.index, "kind": target.kind,
+                    "volume": p.fader, "volume_db": volume_db, "pan": p.pan, "mute": p.mute, "solo": p.solo, "arm": p.arm,
+                })),
+            )
+            .map_err(|e| live_err("set the track mixer", e))?;
+        text = format!(
+            "'{}' now: {}",
+            target.label(&get_display(&r, "name", "")),
+            mixer_summary(&r)
+        );
+    }
+    if let Some(o) = output {
+        let shown = get_display(&o, "output", "?");
+        let line = format!(
+            "'{}' output → {shown} (was {}), read back from Live.{}",
+            target.label(&get_display(&o, "track", "")),
+            o.pointer("/previous/output")
+                .and_then(Value::as_str)
+                .unwrap_or("?"),
+            if shown == "Sends Only" {
+                " The master no longer hears it; its sends, and anything keyed from it at Pre FX or Post FX, still do."
+            } else {
+                ""
+            }
+        );
+        if text.is_empty() {
+            text = line;
+        } else {
+            text.push('\n');
+            text.push_str(&line);
+        }
+    }
+    Ok(text)
 }
 
 pub fn set_send_body(live: &LiveState, p: &SetSendParams) -> ToolResult {
@@ -4678,7 +4986,35 @@ pub(crate) fn browser_sample(
     Ok(find_items(live, query, "samples", 1)?.into_iter().next())
 }
 
-fn find_items(
+/// The browser item plain words mean: the one whose name *is* the words
+/// (Live's Compressor for "Compressor", never the first preset that
+/// mentions it — "Master EQ & Compressor" came first on a real Live 12.4.6),
+/// a built-in device before a preset of the same name, else the best hit.
+pub(crate) fn best_item(
+    live: &LiveState,
+    words: &str,
+) -> Result<Option<crate::library::Item>, String> {
+    let hits = find_items(live, words, "all", 25)?;
+    let plain = |n: &str| {
+        n.trim_end_matches(".adv")
+            .trim_end_matches(".adg")
+            .trim()
+            .to_lowercase()
+    };
+    let want = words.trim().to_lowercase();
+    let exact = hits
+        .iter()
+        .filter(|h| plain(&h.name) == want)
+        .min_by_key(|h| {
+            !(h.uri.starts_with("query:AudioFx#")
+                || h.uri.starts_with("query:Synths#")
+                || h.uri.starts_with("query:Instruments#"))
+        })
+        .cloned();
+    Ok(exact.or_else(|| hits.into_iter().next()))
+}
+
+pub(crate) fn find_items(
     live: &LiveState,
     query: &str,
     category: &str,
@@ -5454,8 +5790,9 @@ pub fn play_and_measure_body(live: &LiveState, p: &PlayAndMeasureParams) -> Tool
     require(live, "stop_playback")?;
     let seconds = p.seconds.clamp(0.5, 10.0);
     let interval = std::time::Duration::from_millis(p.interval_ms.clamp(50, 1000) as u64);
-    // start_playing would jump to the start marker; play_from continues from
-    // the position, so the section asked for is the section measured.
+    // play_from starts where it is asked and confirms it, so the section
+    // asked for is the section measured; start_playback plays from the
+    // playhead.
     match p.start_time {
         Some(t) if live.script.has_capability("play_from") => {
             live.send_command("play_from", Some(json!({"time": t})))
@@ -5516,7 +5853,7 @@ pub fn play_and_measure_body(live: &LiveState, p: &PlayAndMeasureParams) -> Tool
         match p.start_time {
             Some(t) if live.script.has_capability("play_from") => format!(" from beat {t}"),
             Some(t) => format!(" from the start marker (this Remote Script cannot play from beat {t}; reinstall it)"),
-            None => " from the start marker".to_string(),
+            None => " from where the playhead was".to_string(),
         }
     );
     let mut silent = Vec::new();
@@ -5552,14 +5889,22 @@ fn automation_target_json(t: &AutomationTarget) -> Result<Value, String> {
 pub fn set_clip_automation_body(live: &LiveState, p: &SetClipAutomationParams) -> ToolResult {
     require(live, "set_clip_automation")?;
     if p.arrangement {
-        return Err("Live's API writes automation into Session clips only (an Arrangement clip answers \"Not a session clip\"). Automate the Session clip, then place it with arrange or duplicate_to_arrangement: the envelope travels with the clip.".into());
+        return Err("Live's API writes automation into Session clips only: an Arrangement clip answers \"Not a session clip\", and a track's Arrangement automation lane has no API at all. Automate a Session copy of the clip, then place the copy at those bars with arrange: its envelope plays wherever it is placed, over the track's own automation.".into());
     }
     let target = automation_target_json(&p.target)?;
-    let mut points: Vec<Value> = p
-        .points
-        .iter()
-        .map(|pt| json!({"time": pt.time, "value": pt.value}))
-        .collect();
+    let mut points: Vec<Value> = Vec::new();
+    for pt in &p.points {
+        points.push(match (pt.value, pt.db) {
+            (_, Some(db)) => json!({"time": pt.time, "db": db}),
+            (Some(v), None) => json!({"time": pt.time, "value": v}),
+            (None, None) => {
+                return Err(format!(
+                    "the point at beat {} needs a value (or db, for volume)",
+                    pt.time
+                ))
+            }
+        });
+    }
     if let Some(r) = &p.ramp {
         if r.over <= 0.0 {
             return Err("ramp.over must be greater than 0".into());
@@ -5579,15 +5924,37 @@ pub fn set_clip_automation_body(live: &LiveState, p: &SetClipAutomationParams) -
             })),
         )
         .map_err(|e| live_err("write the automation", e))?;
-    Ok(format!(
-        "Automated {} in clip '{}': {} points as {} steps ({}); range {}",
+    let mut text = format!(
+        "Automated {} in clip '{}': {} points as {} steps ({}); range {}. Absolute automation: while the clip plays, the parameter itself takes these values and its own setting is ignored.",
         get_display(&r, "target", "the parameter"),
         get_display(&r, "clip", "clip"),
         get_display(&r, "points", "?"),
         get_display(&r, "steps_written", "?"),
         get_display(&r, "mode", &p.mode),
         get_display(&r, "range", "?")
-    ))
+    );
+    let readback: Vec<String> = r
+        .get("readback")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|row| {
+            let reads = row.get("reads").and_then(Value::as_f64).unwrap_or(f64::NAN);
+            match db_text(row.get("db").and_then(Value::as_f64)) {
+                Some(db) => format!("beat {}: {reads:.3} ({db})", get_display(row, "time", "?")),
+                None => format!("beat {}: {reads:.3}", get_display(row, "time", "?")),
+            }
+        })
+        .collect();
+    if !readback.is_empty() {
+        text.push_str(&format!("\nRead back from Live: {}.", readback.join(", ")));
+    }
+    if let Some(fader) = db_text(r.get("fader_db").and_then(Value::as_f64)) {
+        text.push_str(&format!(
+            " The fader is at {fader}; the envelope replaces it while the clip plays, it does not scale it."
+        ));
+    }
+    Ok(text)
 }
 
 pub fn get_clip_automation_body(live: &LiveState, p: &GetClipAutomationParams) -> ToolResult {
@@ -5607,7 +5974,7 @@ pub fn get_clip_automation_body(live: &LiveState, p: &GetClipAutomationParams) -
 // ── Capture: record the master and measure it ───────────────────────────────
 
 /// Tempo and beats per bar from the set, with Live's defaults as fallback.
-fn tempo_and_meter(live: &LiveState) -> (f64, f64) {
+pub(crate) fn tempo_and_meter(live: &LiveState) -> (f64, f64) {
     match live.send_command("get_session_info", None) {
         Ok(s) => (
             s.get("tempo").and_then(Value::as_f64).unwrap_or(120.0),
@@ -5705,14 +6072,30 @@ struct Timing {
     beats_per_bar: f64,
 }
 
-/// One take, recorded and measured. The slot is left holding it; the caller
-/// decides whether it is a take worth keeping.
+/// What a take said about itself while it recorded.
+struct Recorded {
+    slot: i64,
+    path: String,
+    /// Where the playhead was when the slot was fired.
+    confirmed: f64,
+    /// Where the playhead was the first time Live said the slot was
+    /// recording. None from a Remote Script older than 1.39.0, which does
+    /// not report it.
+    seen_at: Option<f64>,
+    /// Tracks that were off the Arrangement while the take recorded.
+    off_arrangement: Vec<String>,
+    /// The start_capture reply: the slot it rotated, the tracks it put back.
+    started: Value,
+}
+
+/// One take, recorded. The slot is left holding it; the caller decides
+/// whether it is a take worth keeping.
 fn record_take(
     live: &LiveState,
     p: &CaptureMixParams,
     name: &str,
     t: &Timing,
-) -> Result<(i64, String, f64), String> {
+) -> Result<Recorded, String> {
     let (start, tempo, seconds_per_bar) = (t.start, t.tempo, t.seconds_per_bar);
     let started = live
         .send_command(
@@ -5736,6 +6119,8 @@ fn record_take(
         .unwrap_or(2.0);
     let budget = (p.bars as f64 * seconds_per_bar + preroll_beats * 60.0 / tempo + 5.0).min(90.0);
     let deadline = Instant::now() + std::time::Duration::from_secs_f64(budget);
+    let mut seen_at: Option<f64> = None;
+    let mut off_arrangement: Vec<String> = Vec::new();
     let status = loop {
         std::thread::sleep(std::time::Duration::from_millis(250));
         let s = live
@@ -5746,6 +6131,22 @@ fn record_take(
             .get("is_recording")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        if recording {
+            if seen_at.is_none() {
+                seen_at = s.get("song_time").and_then(Value::as_f64);
+            }
+            for name in s
+                .get("off_arrangement")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if !off_arrangement.iter().any(|n| n == name) {
+                    off_arrangement.push(name.to_string());
+                }
+            }
+        }
         let file = s.get("file_path").and_then(Value::as_str).unwrap_or("");
         if has_clip && !recording && !file.is_empty() {
             break s;
@@ -5759,15 +6160,18 @@ fn record_take(
     // Recording is done: stop the transport ourselves and disarm the guard.
     let _ = live.send_command("stop_capture", Some(json!({"slot": slot})));
     guard.armed = false;
-    Ok((
+    Ok(Recorded {
         slot,
-        status
+        path: status
             .get("file_path")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
         confirmed,
-    ))
+        seen_at,
+        off_arrangement,
+        started,
+    })
 }
 
 /// How long a per-track capture may take before it asks. Each take is real
@@ -5778,7 +6182,7 @@ const CAPTURE_BUDGET_S: f64 = 30.0;
 /// At most this many tracks get their own take in one call.
 const MAX_CAPTURE_TRACKS: usize = 4;
 
-/// One take: recorded, retried if it began before the playhead arrived, and
+/// One take: recorded, retried if it began in the wrong place, and
 /// measured. Everything that makes a capture a mix observation rather than a
 /// recording lives here, so the master and a soloed track get it alike.
 struct CaptureTake {
@@ -5788,6 +6192,120 @@ struct CaptureTake {
     transients: Option<crate::audio::Transients>,
     /// What had to be said about how the take came out, before its numbers.
     notes: String,
+    /// RMS per step and the duck, when a resolution finer than a bar was asked.
+    steps: Option<StepReading>,
+}
+
+/// A take measured step by step.
+struct StepReading {
+    label: &'static str,
+    steps: Vec<f64>,
+    duck: Option<crate::audio::Duck>,
+}
+
+/// Steps per beat for a `resolution`, and what a step is called.
+fn resolution_steps(resolution: Option<&str>) -> Result<Option<(usize, &'static str)>, String> {
+    match resolution.map(|r| r.trim().to_lowercase()) {
+        None => Ok(None),
+        Some(r) => match r.as_str() {
+            "" | "bar" => Ok(None),
+            "beat" | "quarter" | "4th" => Ok(Some((1, "beat"))),
+            "8th" | "eighth" => Ok(Some((2, "8th"))),
+            "16th" | "sixteenth" => Ok(Some((4, "16th"))),
+            other => Err(format!(
+                "resolution is bar, beat, 8th or 16th, not '{other}'"
+            )),
+        },
+    }
+}
+
+fn step_reading(
+    audio: &crate::audio::Audio,
+    p: &CaptureMixParams,
+    tempo: f64,
+) -> Option<StepReading> {
+    let (per_beat, label) = resolution_steps(p.resolution.as_deref()).ok()??;
+    let seconds = 60.0 / tempo / per_beat as f64;
+    let steps = crate::audio::rms_steps(audio, seconds);
+    let duck = crate::audio::duck(&steps, per_beat);
+    Some(StepReading { label, steps, duck })
+}
+
+/// "RMS per 16th: …" and the duck, as measured.
+fn steps_text(r: &StepReading) -> String {
+    const SHOWN: usize = 64;
+    let mut out = format!(
+        "RMS per {}: {}{}\n",
+        r.label,
+        r.steps
+            .iter()
+            .take(SHOWN)
+            .map(|v| format!("{v:.1}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        if r.steps.len() > SHOWN {
+            format!(" … ({} in all)", r.steps.len())
+        } else {
+            String::new()
+        }
+    );
+    match &r.duck {
+        Some(d) if d.median_db >= 1.0 => {
+            let trough = d
+                .profile
+                .iter()
+                .enumerate()
+                .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i + 1)
+                .unwrap_or(1);
+            out.push_str(&format!(
+                "Duck: {:.1} dB per beat (median of {} beats); the trough falls on {} {trough} of {} — {} dB below each beat's loudest {}.\n",
+                d.median_db,
+                d.beats,
+                r.label,
+                d.steps_per_beat,
+                d.profile.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(" "),
+                r.label
+            ));
+        }
+        Some(d) => out.push_str(&format!(
+            "Duck: none — under 1 dB per beat ({:.1} dB, median of {} beats).\n",
+            d.median_db, d.beats
+        )),
+        None if r.label == "beat" => {
+            out.push_str("Duck: needs 8th or 16th steps to see inside a beat.\n")
+        }
+        None => out.push_str("Duck: nothing plays here to measure.\n"),
+    }
+    out
+}
+
+/// What the start said it did to the set to make room and to record the
+/// Arrangement: worth a line, never silent.
+fn start_notes(started: &Value) -> String {
+    let mut out = String::new();
+    if let Some(r) = started.get("rotated").filter(|r| r.is_object()) {
+        out.push_str(&format!(
+            "The Capture track was full: replaced its oldest take, '{}' (slot {}).\n",
+            get_display(r, "name", "?"),
+            get_display(r, "slot", "?")
+        ));
+    }
+    let returned: Vec<&str> = started
+        .get("returned_to_arrangement")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if !returned.is_empty() {
+        out.push_str(&format!(
+            "{} {} following Session clips; put back on the Arrangement before recording, so the take is the Arrangement.\n",
+            returned.join(", "),
+            if returned.len() == 1 { "was" } else { "were" }
+        ));
+    }
+    out
 }
 
 fn take_and_measure(
@@ -5799,88 +6317,147 @@ fn take_and_measure(
     soloed: Option<&str>,
 ) -> Result<CaptureTake, String> {
     let (start, seconds_per_bar, beats_per_bar) = (t.start, t.seconds_per_bar, t.beats_per_bar);
-    // A take whose head is silent means the playhead had not arrived: it says
-    // nothing about the music, so it is discarded and recorded again rather
-    // than measured. Anything under an eighth of a bar is Live's own latency.
+    // A take whose head is silent may mean the playhead had not arrived.
+    // Anything under an eighth of a bar is Live's own latency.
     let tolerance = seconds_per_bar / 8.0;
-    let mut discarded: Vec<String> = Vec::new();
+    let end = start + p.bars as f64 * beats_per_bar;
+    // Takes recorded somewhere else, by where Live was; and, from a script
+    // too old to say where it was, takes that opened with silence.
+    let mut misplaced: Vec<String> = Vec::new();
+    let mut silent_heads: Vec<String> = Vec::new();
+    let delete = |slot: i64| {
+        let _ = live.send_command(
+            "delete_clip",
+            Some(json!({"track_index": capture_track, "clip_index": slot})),
+        );
+    };
     loop {
-        let (slot, path, confirmed) = record_take(live, p, name, t)?;
-        let audio = crate::audio::read_file(std::path::Path::new(&path))?;
+        let rec = record_take(live, p, name, t)?;
+        let slot = rec.slot;
+        // Session clips playing under the take: what was recorded is not
+        // the Arrangement, so it is not a reading of it.
+        if !rec.off_arrangement.is_empty() {
+            delete(slot);
+            return Err(format!(
+                "Could not capture {} bar(s) from {}: {} left the Arrangement while the take recorded (a Session clip was launched on {}), so the take is not the Arrangement. Nothing was measured; capture slot {slot} was cleared. adv_back_to_arrangement, then capture again.",
+                p.bars,
+                bar_text(start, beats_per_bar),
+                rec.off_arrangement.join(", "),
+                if rec.off_arrangement.len() == 1 { "it" } else { "them" }
+            ));
+        }
+        // Where Live was when the slot began recording. Anywhere from the
+        // preroll to the end of the take is this take; anywhere else is not.
+        let begin = rec
+            .started
+            .get("begin_beat")
+            .and_then(Value::as_f64)
+            .unwrap_or(start);
+        if let Some(at) = rec.seen_at {
+            if at < begin - 0.1 || at > end + 0.5 {
+                delete(slot);
+                misplaced.push(format!("bar {}", bar_text(at, beats_per_bar)));
+                if misplaced.len() + silent_heads.len() >= 2 {
+                    return Err(format!(
+                        "Could not capture {} bar(s) from {}: Live was playing {} when the takes began recording, not bar {}. Nothing was measured and capture slot {slot} was cleared. Is Live's transport being driven from somewhere else?",
+                        p.bars,
+                        bar_text(start, beats_per_bar),
+                        misplaced.join(" and "),
+                        bar_text(start, beats_per_bar)
+                    ));
+                }
+                continue;
+            }
+        }
+        let audio = crate::audio::read_file(std::path::Path::new(&rec.path))?;
+        let steps = step_reading(&audio, p, t.tempo);
         let m = crate::audio::measure(&audio, seconds_per_bar);
         let transients = if p.transients {
             crate::audio::transients(&audio)
         } else {
             None
         };
-        let mut notes = String::new();
+        let mut notes = start_notes(&rec.started);
+        if !misplaced.is_empty() {
+            notes.push_str(&format!(
+                "The first take began recording at {} — not bar {} — and was discarded and recorded again.\n",
+                misplaced.join(" and "),
+                bar_text(start, beats_per_bar)
+            ));
+        }
         // Silent from end to end is the set, not a failed take: nothing plays
         // there. Say so instead of blaming the playhead, and do not re-record.
         if m.peak_dbfs <= -60.0 {
-            // Live plays Session clips over the Arrangement while the tracks
-            // are "back to arranger": the timeline is silent and that is not
-            // the capture's doing.
-            let session = live
-                .send_command("get_session_info", None)
-                .ok()
-                .and_then(|r| r.get("back_to_arranger").and_then(Value::as_bool))
-                .unwrap_or(false);
             notes.push_str(&format!(
                 "Nothing plays from {} for {} bar{}: the take is silent end to end. That is the set, not a failed capture.{}\n",
                 bar_text(start, beats_per_bar),
                 p.bars,
                 if p.bars == 1 { "" } else { "s" },
-                match (soloed, session) {
-                    (Some(track), _) => format!(
+                match soloed {
+                    Some(track) => format!(
                         " '{track}' was soloed for this take — it plays nothing here, or Live's solo is routed to the cue output instead of the master, which a capture cannot hear."
                     ),
-                    (None, true) =>
-                        " The tracks are following Session clips, so the Arrangement is not what you hear — adv_back_to_arrangement puts them back on the timeline.".to_string(),
-                    (None, false) => " Check that something is placed there.".to_string(),
+                    None => " Check that something is placed there.".to_string(),
                 }
             ));
             return Ok(CaptureTake {
                 slot,
-                path,
+                path: rec.path,
                 m,
                 transients,
                 notes,
+                steps,
             });
         }
-        if m.leading_silence_s <= tolerance {
-            if !discarded.is_empty() {
-                notes = format!(
-                    "The first take's opening {} was silent — the playhead had not reached {}. Discarded it and recorded again.\n",
-                    discarded.join(" and "),
-                    bar_text(start, beats_per_bar)
-                );
+        let head_is_quiet = m.leading_silence_s > tolerance;
+        match (head_is_quiet, rec.seen_at) {
+            // The position was read from Live while it recorded, so a quiet
+            // head is the music — a fade-in, a rest, a part that enters late
+            // — and is measured as it is, not discarded.
+            (true, Some(at)) => notes.push_str(&format!(
+                "The first {:.2} s are silent. Live's playhead was in place when the take began recording (beat {at:.2}), so that is what plays from bar {} — a fade-in or a rest — not a late start.\n",
+                m.leading_silence_s,
+                bar_text(start, beats_per_bar)
+            )),
+            // A script that cannot say where it was: a quiet head is the one
+            // sign of an early start there is, so the take is recorded again.
+            (true, None) => {
+                silent_heads.push(format!("{:.2} s", m.leading_silence_s));
+                delete(slot);
+                if misplaced.len() + silent_heads.len() >= 2 {
+                    return Err(format!(
+                        "Could not capture {} bar(s) from {}: both takes began before the playhead reached it ({} of silence at the head). Nothing was measured and no reading is offered — a capture that starts early is not a mix observation. Capture slot {slot} was cleared. The Remote Script in Live is too old to say where the playhead was, so a part that enters late cannot be told from an early start: reinstall it (1.39.0 or newer) to have the position checked instead.",
+                        p.bars,
+                        bar_text(start, beats_per_bar),
+                        silent_heads.join(" and ")
+                    ));
+                }
+                continue;
             }
-            if confirmed.is_finite() {
-                notes.push_str(&format!(
-                    "Playhead confirmed at beat {confirmed:.2} before recording began.\n"
-                ));
+            (false, _) => {
+                if !silent_heads.is_empty() {
+                    notes.push_str(&format!(
+                        "The first take's opening {} was silent — the playhead had not reached {}. Discarded it and recorded again.\n",
+                        silent_heads.join(" and "),
+                        bar_text(start, beats_per_bar)
+                    ));
+                }
             }
-            return Ok(CaptureTake {
-                slot,
-                path,
-                m,
-                transients,
-                notes,
-            });
         }
-        discarded.push(format!("{:.2} s", m.leading_silence_s));
-        let _ = live.send_command(
-            "delete_clip",
-            Some(json!({"track_index": capture_track, "clip_index": slot})),
-        );
-        if discarded.len() >= 2 {
-            return Err(format!(
-                "Could not capture {} bar(s) from {}: both takes began before the playhead reached it ({} of silence at the head). Nothing was measured and no reading is offered — a capture that starts early is not a mix observation. Capture slot {slot} was cleared. Is Live's transport being driven from somewhere else?",
-                p.bars,
-                bar_text(start, beats_per_bar),
-                discarded.join(" and ")
+        if rec.confirmed.is_finite() {
+            notes.push_str(&format!(
+                "Playhead confirmed at beat {:.2} before recording began.\n",
+                rec.confirmed
             ));
         }
+        return Ok(CaptureTake {
+            slot,
+            path: rec.path,
+            m,
+            transients,
+            notes,
+            steps,
+        });
     }
 }
 
@@ -5998,14 +6575,60 @@ fn set_solo(live: &LiveState, index: i64, on: bool) -> Result<(), String> {
         .map(|_| ())
 }
 
+/// A take of one track, soloed, cannot hear a sidechain keyed at Post Mixer
+/// from another track: soloing silences that track's mixer, so the duck is
+/// missing from this take only (measured on Live 12.4.6, 2026-10-15). Said,
+/// so no reading is taken as "no duck".
+fn post_mixer_note(live: &LiveState, t: &TrackTarget) -> String {
+    if !live.script.has_capability("list_sidechains") {
+        return String::new();
+    }
+    let Ok(listed) = live.send_command(
+        "list_sidechains",
+        Some(json!({"kind": "track", "index": t.index})),
+    ) else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for e in listed
+        .get("sidechains")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let sc = e.get("sidechain").cloned().unwrap_or(Value::Null);
+        if sc.get("tap").and_then(Value::as_str) == Some("post_mixer")
+            && sc.get("source_kind").and_then(Value::as_str) == Some("track")
+            && sc.get("source_index").and_then(Value::as_i64) != Some(t.index)
+        {
+            out.push_str(&format!(
+                "{} keys from {} at Post Mixer, and soloing {} for this take silences {}'s mixer: this take does not hear that duck. Capture the master, or key from Post FX, which keys under a solo.\n",
+                get_display(e, "device", "a device"),
+                get_display(&sc, "source", "?"),
+                t.name,
+                get_display(&sc, "source", "?")
+            ));
+        }
+    }
+    out
+}
+
 /// What a take of one track reads as, under the master's block.
 fn track_capture_text(name: &str, index: i64, take: &CaptureTake, asked: bool) -> String {
+    let bars: Vec<String> = take
+        .m
+        .rms_per_bar
+        .iter()
+        .map(|v| format!("{v:.1}"))
+        .collect();
     format!(
-        "\n{name} (track {index}, Capture slot {})\n{}{}{}",
+        "\n{name} (track {index}, Capture slot {})\n{}{}{}RMS per bar: {}\n{}",
         take.slot,
         take.notes,
         analysis_text(&take.m),
-        transient_text(take, asked)
+        transient_text(take, asked),
+        bars.join(" "),
+        take.steps.as_ref().map(steps_text).unwrap_or_default()
     )
 }
 
@@ -6037,8 +6660,76 @@ fn transient_text(take: &CaptureTake, asked: bool) -> String {
     }
 }
 
+/// One take as data: what `as: "json"` hands a program instead of the
+/// readout, so a duck is read as a number rather than parsed out of a
+/// sentence.
+fn take_json(track: Option<&str>, take: &CaptureTake) -> Value {
+    let m = &take.m;
+    let mut out = json!({
+        "track": track,
+        "slot": take.slot,
+        "file": take.path,
+        "duration_s": m.duration_s,
+        "peak_dbfs": m.peak_dbfs,
+        "rms_dbfs": m.rms_dbfs,
+        "crest_db": m.crest_db,
+        "lf_hf_db": m.lf_hf_db,
+        "clipped_samples": m.clipped_samples,
+        "rms_per_bar_db": m.rms_per_bar,
+        "silent_bars": m.silent_bars,
+        "octave_shares": crate::audio::octave_labels()
+            .into_iter()
+            .zip(m.octaves.iter())
+            .map(|(l, v)| json!({"band": l, "share": v}))
+            .collect::<Vec<_>>(),
+    });
+    if let Some(r) = &take.steps {
+        out["step"] = json!(r.label);
+        out["rms_steps_db"] = json!(r.steps);
+        match &r.duck {
+            Some(d) => {
+                let trough = d
+                    .profile
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(i, _)| i + 1)
+                    .unwrap_or(1);
+                out["duck_db"] = json!(d.median_db);
+                out["duck_steps_db"] = json!(d.profile);
+                out["duck_trough_step"] = json!(trough);
+                out["beats"] = json!(d.beats);
+            }
+            None => {
+                out["duck_db"] = Value::Null;
+                out["duck_why_not"] = json!(if r.label == "beat" {
+                    "needs 8th or 16th steps to see inside a beat"
+                } else {
+                    "nothing plays here to measure"
+                });
+            }
+        }
+    }
+    if let Some(t) = &take.transients {
+        out["transients"] = json!({
+            "onsets": t.onsets,
+            "median_attack_ms": t.median_attack_ms,
+            "median_onset_crest_db": t.median_onset_crest_db,
+            "median_spacing_ms": t.median_spacing_ms,
+        });
+    }
+    let notes = take.notes.trim();
+    if !notes.is_empty() {
+        out["notes"] = json!(notes);
+    }
+    out
+}
+
 pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
     guard_performance(live, "capture_mix", "would stop and move the transport")?;
+    if p.whole_song {
+        return capture_whole_song(live, p);
+    }
     for cmd in [
         "ensure_capture_track",
         "start_capture",
@@ -6050,6 +6741,13 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
     if !(1..=64).contains(&p.bars) {
         return Err(format!("bars must be between 1 and 64, got {}", p.bars));
     }
+    resolution_steps(p.resolution.as_deref())?;
+    let as_json = match p.as_format.as_deref().map(|f| f.trim().to_lowercase()) {
+        None => false,
+        Some(f) if f.is_empty() || f == "text" => false,
+        Some(f) if f == "json" => true,
+        Some(other) => return Err(format!("as is \"json\" or \"text\", not '{other}'")),
+    };
     let (tempo, beats_per_bar) = tempo_and_meter(live);
     let start_bar = resolve_bar(live, beats_per_bar, p.start_bar.as_ref())?;
     let start = match (start_bar, p.start) {
@@ -6179,7 +6877,8 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
             Some(&t.name),
         );
         set_solo(live, t.index, false)?;
-        let take = take?;
+        let mut take = take?;
+        take.notes.push_str(&post_mixer_note(live, t));
         name_clip(
             take.slot,
             &format!(
@@ -6193,6 +6892,29 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
         per_track.push((t.clone(), take));
     }
     guard.restore();
+
+    if as_json {
+        let mut doc = json!({
+            "name": p.name,
+            "start_bar": bar_text(start, beats_per_bar),
+            "start_beat": start,
+            "bars": p.bars,
+            "tempo": tempo,
+            "resolution": p.resolution.as_deref().unwrap_or("bar"),
+            "capture_track": track_index,
+            "capture_track_created": created,
+            "master": take_json(None, &master),
+            "tracks": per_track
+                .iter()
+                .map(|(t, take)| take_json(Some(&t.name), take))
+                .collect::<Vec<_>>(),
+            "skipped_muted": skipped,
+        });
+        if let Some(said) = drift_note_now(live) {
+            doc["drift"] = json!(said);
+        }
+        return serde_json::to_string_pretty(&doc).map_err(|e| e.to_string());
+    }
 
     let mut text = String::new();
     if created {
@@ -6223,6 +6945,9 @@ pub fn capture_mix_body(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
         tempo,
         &transient_text(&master, p.transients),
     ));
+    if let Some(r) = &master.steps {
+        text.push_str(&steps_text(r));
+    }
     for (t, take) in &per_track {
         text.push_str(&track_capture_text(&t.name, t.index, take, p.transients));
     }
@@ -6445,11 +7170,12 @@ pub fn delete_track_body(live: &LiveState, p: &TrackParams) -> ToolResult {
                 text
             }
         })?;
+    let deleted = get_display(&r, "deleted", "track");
     Ok(format!(
-        "Deleted track {} ('{}'); {} tracks remain and later indices moved down by one.",
+        "Deleted track {} ('{deleted}'); {} tracks remain and later indices moved down by one.{}",
         target.index,
-        get_display(&r, "deleted", "track"),
-        get_display(&r, "track_count", "?")
+        get_display(&r, "track_count", "?"),
+        crate::sidechain::unkeyed_text(&deleted, r.get("unkeyed").unwrap_or(&Value::Null))
     ))
 }
 
@@ -6548,9 +7274,9 @@ params!(StartPerformanceParams {
 params!(GetContextParams {
     /// Also read the browser inventory (instruments, effects, packs); slower, so off by default
     include_library: bool = "bool::default",
-    /// Return the raw JSON instead of the readout
+    /// Return the JSON instead of the readout (the same as as: "json")
     json: bool = "bool::default",
-    /// Hand the song back instead of the readout: "song" (its sections, their phrase lengths and the setlist — no notes, so it is cheap to ask for often), "section" with `section` (that row's clips and their notes), or "document" (the whole set, the shape update_song {"document": …} takes back)
+    /// Hand the set back instead of the readout: "json" (for a program: every track with its index, kind, devices, Session `slots` count and clips by slot and name; the scenes; the Arrangement `locators` by name and beat; the returns), "song" (its sections, their phrase lengths and the setlist — no notes, so it is cheap to ask for often), "section" with `section` (that row's clips and their notes), or "document" (the whole set, the shape update_song {"document": …} takes back)
     #[serde(rename = "as")]
     as_level: Option<String>,
     /// With as: "section" — which section
@@ -6597,7 +7323,7 @@ params!(SetSceneParams {
     /// Bars per phrase for "next_phrase" cues (default 16)
     phrase_bars: Option<i64>,
 });
-params!(ListenParams {
+params!(ListenMetersParams {
     /// Bars to listen for (default 1, max 16), from the next bar line
     bars: f64 = "one",
     /// Record the bars through the Capture track (never touches the transport) and add RMS and low/mid/high balance
@@ -6890,7 +7616,7 @@ pub fn get_context_body(live: &LiveState, p: &GetContextParams) -> ToolResult {
         .map_err(|e| live_err("read the set", e))?;
     // Every learned device fact is stamped with the Live it was measured on.
     live.note_live_version(&get_display(&ctx, "live_version", ""));
-    if p.json {
+    if p.json || level == "json" {
         return Ok(pretty(&ctx));
     }
     match level.as_str() {
@@ -6899,7 +7625,7 @@ pub fn get_context_body(live: &LiveState, p: &GetContextParams) -> ToolResult {
         "section" | "row" => return section_level(live, &ctx, p.section.as_deref()),
         other => {
             return Err(format!(
-                "as is \"song\" (the sections and the setlist), \"section\" with a section name (that row's notes) or \"document\" (the whole set), not \"{other}\"."
+                "as is \"json\" (the set for a program), \"song\" (the sections and the setlist), \"section\" with a section name (that row's notes) or \"document\" (the whole set), not \"{other}\"."
             ))
         }
     }
@@ -6910,6 +7636,20 @@ pub fn get_context_body(live: &LiveState, p: &GetContextParams) -> ToolResult {
         )
     });
     let text = crate::context::context_text(&ctx, since);
+    // What has been heard of this set rides under the clock line, so every
+    // session starts knowing what is stale.
+    let header = song_memory_header(live, &ctx);
+    let text = match live
+        .songs
+        .snapshot()
+        .and_then(|m| crate::listening::context_line(&m.key))
+    {
+        Some(line) => match text.find('\n') {
+            Some(at) => format!("{}\n{line}{}", &text[..at], &text[at..]),
+            None => format!("{text}\n{line}"),
+        },
+        None => text,
+    };
     let text = text.replace(
         crate::context::FOOTER,
         &format!(
@@ -6922,7 +7662,7 @@ pub fn get_context_body(live: &LiveState, p: &GetContextParams) -> ToolResult {
     // #63: the whole memory rides back on the call the agent makes first
     // anyway. A "load my memory" call is one an agent can fail to make, and
     // the turn it skips it on is the first turn of a session.
-    Ok(format!("{}{text}", song_memory_header(live, &ctx)))
+    Ok(format!("{header}{text}"))
 }
 
 /// The one drift line, for the replies that are not `get_context`.
@@ -7073,7 +7813,7 @@ fn meter_level(v: &Value) -> f64 {
     meter_peak(v)
 }
 
-pub fn listen_body(live: &LiveState, p: &ListenParams) -> ToolResult {
+pub fn listen_meters_body(live: &LiveState, p: &ListenMetersParams) -> ToolResult {
     require(live, "get_track_meters")?;
     if !(0.25..=16.0).contains(&p.bars) {
         return Err(format!("bars must be between 0.25 and 16, got {}", p.bars));
@@ -8730,6 +9470,127 @@ pub fn end_performance_body(live: &LiveState, p: &EndPerformanceParams) -> ToolR
     Ok(text)
 }
 
+/// The longest take of a whole-song capture, in bars.
+const WHOLE_SONG_TAKE_BARS: i64 = 32;
+
+/// Part D of Claude listens: the whole Arrangement captured as a run of
+/// takes while the room is empty. Refused unless the producer switched on
+/// "Claude may play the set"; stops between takes if they switch it off.
+fn capture_whole_song(live: &LiveState, p: &CaptureMixParams) -> ToolResult {
+    use crate::lom::{Batch, Op, Path};
+    if !crate::feedback::away_on() {
+        return Err("Claude may play the set is off, so nothing was recorded: a whole-song capture plays the song out loud for as long as it is. Ask the producer to switch it on in the app (Feedback › Claude may play the set) when they step away — or ask them to play it, and read it with listen.".into());
+    }
+    if !p.tracks.is_empty() {
+        return Err("whole_song measures the master; measure single tracks over a few bars with tracks and bars.".into());
+    }
+    let (_, beats_per_bar) = tempo_and_meter(live);
+    let first = resolve_bar(live, beats_per_bar, p.start_bar.as_ref())?
+        .unwrap_or(1.0)
+        .max(1.0) as i64;
+    let end_beat = Batch::new()
+        .push(Op::get(&Path::song().attr("last_event_time"), "end"))
+        .run(live)
+        .ok()
+        .and_then(|o| o.get("end").and_then(Value::as_f64))
+        .ok_or("could not read where the Arrangement ends (song.last_event_time)")?;
+    let last = ((end_beat / beats_per_bar).ceil() as i64).max(first);
+    if last - first + 1 > 256 {
+        return Err(format!(
+            "the Arrangement runs to bar {last}: more than 256 bars from bar {first}. Give start_bar nearer the end, or read what the producer played with listen."
+        ));
+    }
+    let mut out = vec![format!(
+        "Whole song, bars {first}–{last}, in takes of up to {WHOLE_SONG_TAKE_BARS} bars (Claude may play the set is on)."
+    )];
+    let mut at = first;
+    let mut n = 0;
+    let total = ((last - first) / WHOLE_SONG_TAKE_BARS) + 1;
+    while at <= last {
+        if !crate::feedback::away_on() {
+            out.push(format!(
+                "Stopped before bar {at}: Claude may play the set was switched off."
+            ));
+            break;
+        }
+        n += 1;
+        let bars = (last - at + 1).min(WHOLE_SONG_TAKE_BARS);
+        let mut take = p.clone();
+        take.whole_song = false;
+        take.start_bar = Some(json!(at));
+        take.start = None;
+        take.bars = bars;
+        take.confirm = true;
+        take.as_format = None;
+        take.name = format!("{} {n}", p.name);
+        let text = capture_mix_body(live, &take).map_err(|e| {
+            format!(
+                "{}\nTake {n} of {total} (bars {at}–{}) failed: {e}",
+                out.join("\n"),
+                at + bars - 1
+            )
+        })?;
+        out.push(format!(
+            "Take {n} of {total}: bars {at}–{}\n{text}",
+            at + bars - 1
+        ));
+        at += bars;
+        if at <= last {
+            crate::arrange::clear_captures_body(
+                live,
+                &crate::arrange::ClearCapturesParams { keep_track: true },
+            )
+            .map_err(|e| {
+                format!(
+                    "{}\nCould not clear the Capture track between takes: {e}",
+                    out.join("\n")
+                )
+            })?;
+        }
+    }
+    Ok(out.join("\n\n"))
+}
+
+/// A successful call that changed the set moves its revision: one line in
+/// the open song's change log, so the listening memory can tell a take of the
+/// current set from one made before the change. Only once the song is open
+/// (get_context opens it); nothing is asked of Live here.
+fn note_change<P: Serialize>(live: &LiveState, tool: &str, params: &P) {
+    let read_only = annotations_for(tool).read_only_hint.unwrap_or(false);
+    if !crate::listening::is_change(tool, read_only) {
+        return;
+    }
+    let Some(memory) = live.songs.snapshot() else {
+        return;
+    };
+    let args = serde_json::to_value(params).unwrap_or(Value::Null);
+    let what = if tool == "batch" {
+        let steps: Vec<String> = args
+            .get("steps")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.get("tool").and_then(Value::as_str))
+                    .map(|t| t.strip_prefix(ADVANCED_PREFIX).unwrap_or(t).to_string())
+                    .filter(|t| {
+                        crate::listening::is_change(
+                            t,
+                            annotations_for(t).read_only_hint.unwrap_or(false),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if steps.is_empty() {
+            return;
+        }
+        format!("batch: {}", steps.join(", "))
+    } else {
+        crate::listening::describe_change(tool, &args)
+    };
+    crate::listening::record_change(&memory.key, "claude", &what);
+}
+
 /// Run one tool by name with JSON arguments — the batch and build_song
 /// dispatcher. Every Live-facing tool is here; batch itself is not.
 pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
@@ -8740,7 +9601,7 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "get_session_info" => (Empty, get_session_info_body),
         "get_remote_script_info" => (Empty, get_remote_script_info_body),
         "get_track_info" => (TrackInfoParams, get_track_info_body),
-        "get_clip_notes" => (ClipParams, get_clip_notes_body),
+        "get_clip_notes" => (GetClipNotesParams, get_clip_notes_body),
         "get_device_parameters" => (DeviceParams, get_device_parameters_body),
         "set_device_parameter" => (SetDeviceParameterParams, set_device_parameter_body),
         "edit_devices" => (EditDevicesParams, edit_devices_body),
@@ -8759,7 +9620,7 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "fire_clip" => (FireClipParams, fire_clip_body),
         "stop_clip" => (ClipParams, stop_clip_body),
         "delete_clip" => (ClipParams, delete_clip_body),
-        "start_playback" => (Empty, start_playback_body),
+        "start_playback" => (StartPlaybackParams, start_playback_body),
         "stop_playback" => (Empty, stop_playback_body),
         "get_browser_tree" => (BrowserTreeParams, get_browser_tree_body),
         "get_browser_items_at_path" => (BrowserPathParams, get_browser_items_at_path_body),
@@ -8806,7 +9667,13 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "keep_track_playing" => (KeepTrackPlayingParams, keep_track_playing_body),
         "get_context" => (GetContextParams, get_context_body),
         "set_scene" => (SetSceneParams, set_scene_body),
-        "listen" => (ListenParams, listen_body),
+        "listen_meters" => (ListenMetersParams, listen_meters_body),
+        "heard" => (crate::listening::HeardParams, crate::listening::heard_body),
+        "listen" => (crate::listening::ListenParams, crate::listening::listen_body),
+        "compare" => (crate::listening::CompareParams, crate::listening::compare_body),
+        "offer_options" => (crate::feedback::OfferOptionsParams, crate::feedback::offer_options_body),
+        "get_feedback" => (crate::feedback::GetFeedbackParams, crate::feedback::get_feedback_body),
+        "reply" => (crate::feedback::ReplyParams, crate::feedback::reply_body),
         "vary_clip" => (VaryClipParams, vary_clip_body),
         "undo_vary" => (UndoVaryParams, undo_vary_body),
         "follow_key" => (FollowKeyParams, follow_key_body),
@@ -8816,6 +9683,7 @@ pub fn run_named(live: &LiveState, name: &str, args: Value) -> ToolResult {
         "retime_clip" => (RetimeClipParams, retime_clip_body),
         "shape_sound" => (ShapeSoundParams, shape_sound_body),
         "export_set" => (crate::sets::ExportSetParams, crate::sets::export_set_body),
+        "set_sidechain" => (crate::sidechain::SetSidechainParams, crate::sidechain::set_sidechain_body),
         "set_key" => (crate::arrange::SetKeyParams, crate::arrange::set_key_body),
         "create_return" => (crate::arrange::CreateReturnParams, crate::arrange::create_return_body),
         "clear_captures" => (crate::arrange::ClearCapturesParams, crate::arrange::clear_captures_body),
@@ -9137,13 +10005,148 @@ pub fn batch_body(live: &LiveState, p: &BatchParams) -> ToolResult {
 
 /// Resolve a build_song track reference: a name defined in the document,
 /// or an existing track's index written as a string.
-fn song_track_index(name: &str, created: &BTreeMap<String, i64>) -> Result<i64, String> {
-    if let Some(i) = created.get(name) {
+/// Every track, return and the master that has effects or a sidechain in the
+/// document, in document order.
+fn effect_holders(p: &BuildSongParams) -> Vec<crate::effects::Holder> {
+    let mut out = Vec::new();
+    for t in &p.tracks {
+        if !t.effects.is_empty() || t.sidechain.is_some() {
+            out.push(crate::effects::Holder {
+                kind: "track",
+                name: t.name.clone(),
+                effects: t.effects.clone(),
+                sidechain: t.sidechain.clone(),
+            });
+        }
+    }
+    for r in &p.returns {
+        if !r.effects.is_empty() || r.sidechain.is_some() {
+            out.push(crate::effects::Holder {
+                kind: "return",
+                name: r.name.clone(),
+                effects: r.effects.clone(),
+                sidechain: r.sidechain.clone(),
+            });
+        }
+    }
+    if let Some(m) = p.master.as_ref().filter(|m| !m.effects.is_empty()) {
+        out.push(crate::effects::Holder {
+            kind: "master",
+            name: "Master".into(),
+            effects: m.effects.clone(),
+            sidechain: None,
+        });
+    }
+    out
+}
+
+fn song_track_index(
+    name: &str,
+    created: &BTreeMap<String, i64>,
+    existing: &BTreeMap<String, i64>,
+) -> Result<i64, String> {
+    if let Some(i) = created.get(name).or_else(|| existing.get(name)) {
         return Ok(*i);
     }
     name.trim().parse::<i64>().map_err(|_| {
-        format!("track '{name}' is not defined in `tracks` and is not an existing track index")
+        format!("track '{name}' is not defined in `tracks` and the set has no track by that name")
     })
+}
+
+/// The tracks a document names without defining them, found in the set by
+/// name (case and surrounding space ignored). A name the set does not have
+/// is refused with the names it does have; a name two tracks share is
+/// refused with their indexes. Asks Live only when some name needs it.
+fn existing_track_names<'a>(
+    live: &LiveState,
+    defined: &[&str],
+    named: impl Iterator<Item = &'a str>,
+) -> Result<BTreeMap<String, i64>, String> {
+    let wanted: Vec<&str> = named
+        .filter(|n| !defined.contains(n) && n.trim().parse::<i64>().is_err())
+        .collect();
+    let mut out = BTreeMap::new();
+    if wanted.is_empty() {
+        return Ok(out);
+    }
+    let state = read_perf_state(live)?;
+    for name in wanted {
+        if out.contains_key(name) {
+            continue;
+        }
+        let key = name.trim().to_lowercase();
+        let hits: Vec<i64> = state
+            .tracks
+            .iter()
+            .filter(|t| t.name.trim().to_lowercase() == key)
+            .map(|t| t.index)
+            .collect();
+        match hits.as_slice() {
+            [one] => {
+                out.insert(name.to_string(), *one);
+            }
+            [] => {
+                return Err(format!(
+                    "track '{name}' is not defined in `tracks` and the set has no track by that name (it has: {})",
+                    state
+                        .tracks
+                        .iter()
+                        .map(|t| format!("'{}'", t.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
+            many => {
+                return Err(format!(
+                    "track '{name}' names {} tracks in the set (indexes {}); give the index as the track (\"{}\")",
+                    many.len(),
+                    many.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", "),
+                    many[0]
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// What a `replace_clip_notes` did, a line a clip: where, how many notes,
+/// and the Arrangement copies by bar.
+fn replaced_text(r: &Value, placements: bool) -> String {
+    let mut out = String::new();
+    for c in r
+        .get("replaced")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let copies: Vec<String> = c
+            .get("arrangement_copies")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a.get("start_time").and_then(Value::as_f64))
+            .map(|t| bar_text(t, 4.0))
+            .collect();
+        let tail = match (placements, copies.len()) {
+            (false, _) => " The Arrangement was left as it was (replace_placements: false).".to_string(),
+            (true, 0) => " No Arrangement clip on the track carries its name, so there was nothing to replace there.".to_string(),
+            (true, n) => format!(
+                " Also replaced in its {n} Arrangement cop{} at bar{} {}.",
+                if n == 1 { "y" } else { "ies" },
+                if n == 1 { "" } else { "s" },
+                copies.join(", ")
+            ),
+        };
+        out.push_str(&format!(
+            "Replaced the notes of '{}' on {} slot {} ({} notes).{tail}\n",
+            get_display(c, "name", "?"),
+            get_display(c, "track", "?"),
+            get_display(c, "clip_index", "?"),
+            get_display(c, "notes", "?"),
+        ));
+    }
+    out.push_str("All of it is one undo step in Live.\n");
+    out
 }
 
 /// How many tracks go to Live in one `create_tracks`. Each track
@@ -9189,13 +10192,22 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
         "" | "converge" => "converge".to_string(),
         "add" => "add".to_string(),
         "fail" => "fail".to_string(),
+        "replace_notes" | "replace" => "replace_notes".to_string(),
         other => {
             return Err(format!(
-                "on_existing must be converge, add or fail, not '{other}'"
+                "on_existing must be converge, add, fail or replace_notes, not '{other}'"
             ))
         }
     };
     let mode = mode.as_str();
+    // replace_notes reuses tracks and placements the way converge does; only
+    // a clip that is already there is treated differently.
+    let converging = matches!(mode, "converge" | "replace_notes");
+    let tracks_mode = if mode == "replace_notes" {
+        "converge"
+    } else {
+        mode
+    };
     let mut names: Vec<&str> = Vec::new();
     for t in &p.tracks {
         if t.name.trim().is_empty() {
@@ -9242,15 +10254,23 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     let parts = crate::parts::Resolved::build(&feels, bpm, 4.0)?;
     let mut parts_used: Vec<String> = Vec::new();
 
+    // A clip or placement may name a track the set already has, not only
+    // one this document defines: resolved once, against Live, and only when
+    // some name needs it — so a document that is all new tracks costs no
+    // read and a dry run of one stays off Live.
+    let existing = existing_track_names(
+        live,
+        &names,
+        p.clips
+            .iter()
+            .map(|c| c.track.as_str())
+            .chain(p.placements.iter().map(|pl| pl.track.as_str())),
+    )?;
     let mut planned_notes: Vec<Vec<Note>> = Vec::new();
     let mut defined_clips: Vec<(String, i64)> = Vec::new();
     for c in &p.clips {
-        let known = names.contains(&c.track.as_str()) || c.track.trim().parse::<i64>().is_ok();
-        if !known {
-            return Err(format!(
-                "clip '{}': track '{}' is neither defined in tracks nor an index",
-                c.name, c.track
-            ));
+        if c.name.trim().is_empty() && mode == "replace_notes" {
+            return Err("replace_notes finds a clip by its name: every clip needs one".to_string());
         }
         if c.length <= 0.0 {
             return Err(format!("clip '{}': length must be greater than 0", c.name));
@@ -9293,10 +10313,11 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     }
     let mut placements: Vec<(usize, Vec<f64>)> = Vec::new();
     for (i, pl) in p.placements.iter().enumerate() {
-        let existing_track = pl.track.trim().parse::<i64>().is_ok();
+        let existing_track =
+            pl.track.trim().parse::<i64>().is_ok() || existing.contains_key(&pl.track);
         if !defined_clips.contains(&(pl.track.clone(), pl.slot)) && !existing_track {
             return Err(format!(
-                "placement {}: no clip is defined for track '{}' slot {} — define it in `clips`, or give an existing track's index (\"3\") to place a clip that is already in the set",
+                "placement {}: no clip is defined for track '{}' slot {} — define it in `clips`, or name a track the set already has to place a clip that is already in it",
                 i + 1,
                 pl.track,
                 pl.slot
@@ -9423,6 +10444,29 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
                 .join(", ")
         ));
     }
+    // Effects and sidechains: every effect resolves, every source exists and
+    // names one track, no parameter a known device lacks. Checked here, so a
+    // dry run catches a misspelled trigger before a single track is made.
+    let holders = effect_holders(p);
+    if !holders.is_empty() {
+        let doc_returns: Vec<&str> = p.returns.iter().map(|r| r.name.as_str()).collect();
+        for note in crate::effects::validate(live, &holders, &names, &doc_returns)? {
+            plan.push_str(&note);
+            plan.push('\n');
+        }
+        let wired = holders
+            .iter()
+            .map(|h| {
+                h.effects.iter().filter(|e| e.sidechain.is_some()).count()
+                    + usize::from(h.sidechain.is_some())
+            })
+            .sum::<usize>();
+        plan.push_str(&format!(
+            "{} effect(s) on {} track(s), return(s) or the master; {wired} sidechain(s), wired after every track exists.\n",
+            holders.iter().map(|h| h.effects.len()).sum::<usize>(),
+            holders.len()
+        ));
+    }
     if p.dry_run {
         plan.push_str("Dry run: nothing was sent to Live.");
         return Ok(plan);
@@ -9477,6 +10521,11 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
                 .join(", ")
         ));
     }
+    if !p.returns.is_empty() {
+        let made = crate::effects::ensure_returns(live, &p.returns, mode != "add")
+            .map_err(|e| fail(&done, e))?;
+        done.push_str(&made);
+    }
     // Every track in one round trip: the instruments are resolved to URIs
     // here (the library index), the script creates, names, loads and mixes.
     let mut created: BTreeMap<String, i64> = BTreeMap::new();
@@ -9524,7 +10573,7 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
             specs.push(json!({
                 "name": t.name, "kind": t.kind, "instrument_uri": uri,
                 "volume": t.fader, "volume_db": t.volume_db.or(t.volume), "pan": t.pan,
-                "color_index": t.color_index, "sends": sends,
+                "color_index": t.color_index, "sends": sends, "output": t.output,
             }));
         }
         // Stopping part-way through the tracks is the failure this is shaped
@@ -9584,7 +10633,7 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
             let r = live
                 .send_command(
                     "create_tracks",
-                    Some(json!({"tracks": group, "on_existing": mode})),
+                    Some(json!({"tracks": group, "on_existing": tracks_mode})),
                 )
                 .map_err(|e| stopped(&done, first, live_err("create the tracks", e)))?;
             let entries = r
@@ -9627,16 +10676,31 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
             done.push_str(&format!("Found in the library: {}.\n", found.join(", ")));
         }
     }
+    // Effects, their parameters, then every sidechain — now that every track
+    // the document names exists.
+    if !holders.is_empty() {
+        let index_of = |name: &str| song_track_index(name, &created, &existing);
+        let applied = crate::effects::apply(live, &holders, &index_of, converging)
+            .map_err(|e| fail(&done, e))?;
+        done.push_str(&applied);
+    }
     // What the reused tracks already hold, so a re-run writes only what is
     // missing. Fresh tracks are empty by construction and cost no read.
+    // A track that was already in the set — reused by name, or named by a
+    // clip without being in `tracks` — may hold the clips; a fresh one cannot.
+    let fresh: Vec<i64> = created
+        .values()
+        .copied()
+        .filter(|i| !reused.contains(i))
+        .collect();
     let mut slots_taken: BTreeMap<(i64, i64), String> = BTreeMap::new();
-    if mode == "converge" && !reused.is_empty() {
+    if converging {
         let mut seen: Vec<i64> = Vec::new();
         for c in &p.clips {
-            let Ok(index) = song_track_index(&c.track, &created) else {
+            let Ok(index) = song_track_index(&c.track, &created, &existing) else {
                 continue;
             };
-            if seen.contains(&index) || !reused.contains(&index) {
+            if seen.contains(&index) || fresh.contains(&index) {
                 continue;
             }
             seen.push(index);
@@ -9663,12 +10727,16 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
     }
     // Every clip in one round trip; copies in other rows are made inside
     // Live from the first one, so the notes travel once.
+    // With replace_notes, the clips already there have their notes replaced
+    // in a second round trip, which is one undo step in Live.
+    let mut replacing: Vec<Value> = Vec::new();
     if !p.clips.is_empty() {
         require(live, "write_clips").map_err(|e| fail(&done, e))?;
         let mut specs: Vec<Value> = Vec::new();
         let mut lines: Vec<String> = Vec::new();
         for (c, notes) in p.clips.iter().zip(planned_notes.iter()) {
-            let track_index = song_track_index(&c.track, &created).map_err(|e| fail(&done, e))?;
+            let track_index =
+                song_track_index(&c.track, &created, &existing).map_err(|e| fail(&done, e))?;
             let mut slots: Vec<i64> = match c.slot {
                 Some(s) => vec![s],
                 None if !c.slots.is_empty() => Vec::new(),
@@ -9681,17 +10749,29 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
             }
             let first = slots[0];
             let mut written_here = 0usize;
+            let length = c.bars.map(|b| b * 4.0).unwrap_or(c.length);
+            // A new row copies the first row inside Live — unless the first
+            // row was already there and is about to get new notes, in which
+            // case a copy would carry the old ones.
+            let first_existed =
+                slots_taken.get(&(track_index, first)) == Some(&c.name.to_lowercase());
             for (i, slot) in slots.iter().enumerate() {
                 if slots_taken.get(&(track_index, *slot)) == Some(&c.name.to_lowercase()) {
-                    skipped_clips += 1;
+                    if mode == "replace_notes" {
+                        replacing.push(json!({
+                            "track_index": track_index, "clip_index": slot, "notes": notes,
+                            "length": length, "arrangement": p.replace_placements,
+                        }));
+                    } else {
+                        skipped_clips += 1;
+                    }
                     continue;
                 }
                 written_here += 1;
-                if i == 0 {
-                    // `bars` is the same length in the unit the rest of the
-                    // surface uses. 4/4 here: the signature is not read for
-                    // this, and a document that wants another one says beats.
-                    let length = c.bars.map(|b| b * 4.0).unwrap_or(c.length);
+                // `bars` is the same length in the unit the rest of the
+                // surface uses. 4/4 here: the signature is not read for this,
+                // and a document that wants another one says beats.
+                if i == 0 || (first_existed && mode == "replace_notes") {
                     specs.push(json!({"track_index": track_index, "clip_index": slot, "name": c.name, "length": length, "notes": notes}));
                 } else {
                     specs.push(json!({"track_index": track_index, "clip_index": slot, "name": c.name, "copy_of": first}));
@@ -9713,10 +10793,10 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
                 notes.len()
             ));
         }
-        if specs.is_empty() {
+        if specs.is_empty() && replacing.is_empty() {
             // Everything this document asks for is already in those slots.
             done.push_str("Every clip was already in its slot; nothing was written.\n");
-        } else {
+        } else if !specs.is_empty() {
             let r = live
                 .send_command("write_clips", Some(json!({"clips": specs})))
                 .map_err(|e| fail(&done, live_err("write the clips", e)))?;
@@ -9733,13 +10813,22 @@ pub fn build_song_body(live: &LiveState, p: &BuildSongParams) -> ToolResult {
                 if written == 1 { "" } else { "s" }
             ));
         }
+        if !replacing.is_empty() {
+            require(live, "replace_clip_notes").map_err(|e| fail(&done, e))?;
+            let r = live
+                .send_command("replace_clip_notes", Some(json!({"clips": replacing})))
+                .map_err(|e| fail(&done, live_err("replace the notes", e)))?;
+            done.push_str(&replaced_text(&r, p.replace_placements));
+        }
     }
     for (i, times) in &placements {
         let pl = &p.placements[*i];
-        let track_index = song_track_index(&pl.track, &created).map_err(|e| fail(&done, e))?;
-        // On a reused track, a beat that already holds this clip is left alone.
+        let track_index =
+            song_track_index(&pl.track, &created, &existing).map_err(|e| fail(&done, e))?;
+        // On a track that was already there, a beat that already holds this
+        // clip is left alone.
         let mut times = times.clone();
-        if mode == "converge" && reused.contains(&track_index) {
+        if converging && !fresh.contains(&track_index) {
             if let Ok(r) = live.send_command(
                 "get_arrangement_clips",
                 Some(json!({"track_index": track_index})),
@@ -9880,6 +10969,15 @@ fn run_blocking<P: Serialize>(
     params: &P,
     body: fn(&LiveState, &P) -> ToolResult,
 ) -> ToolResult {
+    run_blocking_with(live, spec, params, body)
+}
+
+fn run_blocking_with<P: Serialize>(
+    live: &LiveState,
+    spec: &ToolSpec,
+    params: &P,
+    body: impl FnOnce(&LiveState, &P) -> ToolResult,
+) -> ToolResult {
     let start = Instant::now();
     connection::begin_trace();
     let _ = take_notes(live);
@@ -9887,6 +10985,9 @@ fn run_blocking<P: Serialize>(
     // never calls `remember` still leaves a trace of what it did.
     live.songs.note_call(spec.name);
     let result = body(live, params);
+    if result.is_ok() {
+        note_change(live, spec.name, params);
+    }
     // A guard may have ended a stale performance on the way in; the tool that
     // was being called says so.
     let result = match (take_notes(live), result) {
@@ -9917,6 +11018,22 @@ fn run_blocking<P: Serialize>(
     // threshold nothing is said; over it the artist learns which edits to
     // make before the show.
     let result = match held_line(&trace) {
+        Some(line) => match result {
+            Ok(text) => Ok(format!("{text}\n{line}")),
+            Err(text) => Err(format!("{text}\n{line}")),
+        },
+        None => result,
+    };
+    // A server that outlived an update of Live's Remote Script says so on
+    // every reply until it is restarted (or the script is brought back to
+    // the one it embeds): the handlers it talks to are not the ones it was
+    // built against, and nothing else would tell the client.
+    let result = match live
+        .script
+        .get()
+        .as_ref()
+        .and_then(crate::handshake::version_drift_line)
+    {
         Some(line) => match result {
             Ok(text) => Ok(format!("{text}\n{line}")),
             Err(text) => Err(format!("{text}\n{line}")),
@@ -9992,6 +11109,39 @@ impl Server {
             Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
         }
     }
+
+    /// The same, for a body that draws: its caption is the text the activity
+    /// line and the client see, and the PNG rides beside it as image content.
+    pub async fn run_picture<P>(
+        &self,
+        spec: &'static ToolSpec,
+        params: P,
+        body: fn(&LiveState, &P) -> crate::picture::PictureResult,
+    ) -> CallToolResult
+    where
+        P: Serialize + Send + 'static,
+    {
+        let live = self.live.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let png = std::sync::Mutex::new(Vec::new());
+            let text = run_blocking_with(&live, spec, &params, |live, p| {
+                body(live, p).map(|(caption, bytes)| {
+                    *png.lock().unwrap_or_else(|e| e.into_inner()) = bytes;
+                    caption
+                })
+            });
+            text.map(|t| (t, png.into_inner().unwrap_or_default()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("{} failed unexpectedly: {e}", spec.name)));
+        match result {
+            Ok((text, png)) => CallToolResult::success(vec![
+                ContentBlock::text(text),
+                ContentBlock::image(crate::picture::base64(&png), "image/png"),
+            ]),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
+        }
+    }
 }
 
 #[tool_router(router = main_tool_router)]
@@ -10002,7 +11152,11 @@ impl Server {
     /// the returns; the sections (scene rows with their phrase lengths, the
     /// playing one in [brackets]) and the song from the Setlist scene; the
     /// performance clock and what fired since the last read; and a one-line
-    /// workflow reminder. include_library adds the browser inventory (slower);
+    /// workflow reminder. Every keyed device is shown with its source and
+    /// tap (`sidechains` per track and return in the JSON; a device keyed
+    /// from its own track reads that track's name with `self: true`), and
+    /// `warnings` names a sidechain with no source or an AMM Sidechain that
+    /// lost its target. include_library adds the browser inventory (slower);
     /// json: true returns the raw payload.
     #[tool(name = "get_context")]
     async fn get_context(&self, Parameters(p): Parameters<GetContextParams>) -> CallToolResult {
@@ -10029,11 +11183,16 @@ impl Server {
         self.run(&GET_TRACK_INFO, p, get_track_info_body).await
     }
 
-    /// Read all MIDI notes from a Session-view clip. Returns pitch,
-    /// start_time, duration, velocity, mute (and extended fields when
-    /// available). The track and the clip are a name or an index.
+    /// Read all MIDI notes from a clip. Returns pitch, start_time,
+    /// duration, velocity, mute (and extended fields when available). The
+    /// track and the clip are a name or an index; `arrangement: true` reads
+    /// an Arrangement clip by its position in get_arrangement_clips, which is
+    /// how to check that a change reached every placement.
     #[tool(name = "get_clip_notes")]
-    async fn get_clip_notes(&self, Parameters(p): Parameters<ClipParams>) -> CallToolResult {
+    async fn get_clip_notes(
+        &self,
+        Parameters(p): Parameters<GetClipNotesParams>,
+    ) -> CallToolResult {
         self.run(&GET_CLIP_NOTES, p, get_clip_notes_body).await
     }
 
@@ -10244,9 +11403,17 @@ impl Server {
         self.run(&DELETE_CLIP, p, delete_clip_body).await
     }
 
-    /// Start playing the Ableton session.
+    /// Play the Arrangement from where the playhead is — where
+    /// adv_set_arrangement_time put it — or from `bar` (a bar number or a
+    /// locator's name). The reply is where Live is actually playing, read
+    /// back a frame after the start; a start that does not land there is
+    /// stopped and reported as an error, never left playing the wrong bars.
+    /// Already playing and no `bar`: nothing moves.
     #[tool(name = "start_playback")]
-    async fn start_playback(&self, Parameters(p): Parameters<Empty>) -> CallToolResult {
+    async fn start_playback(
+        &self,
+        Parameters(p): Parameters<StartPlaybackParams>,
+    ) -> CallToolResult {
         self.run(&START_PLAYBACK, p, start_playback_body).await
     }
 
@@ -10341,10 +11508,13 @@ impl Server {
         self.run(&CREATE_LOCATOR, p, create_locator_body).await
     }
 
-    /// Set a track's fader (volume_db, e.g. -6), pan, mute, solo or arm in
-    /// one call. The track is a name, an index, "master", or a return's name
-    /// or letter; returns (kind "return") and the master (kind "master")
-    /// work too. The reply reads the fader back in dB.
+    /// Set a track's fader (volume_db, e.g. -6), pan, mute, solo, arm or
+    /// output in one call. The track is a name, an index, "master", or a
+    /// return's name or letter; returns (kind "return") and the master (kind
+    /// "master") work too. `output` routes a track to "main", to
+    /// "sends_only" — the master stops hearing it while its sends and any
+    /// sidechain keyed from it do not (a trigger track nobody hears) — or to
+    /// another track. The reply reads the fader and the output back.
     #[tool(name = "set_track_mixer")]
     async fn set_track_mixer(
         &self,
@@ -10360,6 +11530,49 @@ impl Server {
     #[tool(name = "set_send")]
     async fn set_send(&self, Parameters(p): Parameters<SetSendParams>) -> CallToolResult {
         self.run(&SET_SEND, p, set_send_body).await
+    }
+
+    /// Key one part from another — duck, gate, or move a device on every hit
+    /// of a trigger track. `source` is the trigger: a track's name, matched
+    /// exactly ("Kick" never means "Kick B"), an index, a return, "master",
+    /// or null for none. `tap` is where on it the key is taken: post_fx
+    /// (default), pre_fx or post_mixer.
+    ///
+    /// With no `device`, the track is ducked by AMM Sidechain, a Max for Live
+    /// device this server installs into your User Library (Live Suite, or
+    /// Max for Live): threshold_db, ratio, depth_db, attack_ms, release_ms,
+    /// split_hz (duck only below it, so the low end makes room and the rest
+    /// does not move), mix; mode "gate" opens the track only on the hits.
+    /// `device: "Compressor"` keys Live's Compressor through its own
+    /// sidechain: on, gain_db, mix, eq_on/eq_type/eq_freq/eq_q/eq_gain_db,
+    /// listen. A new Compressor's S/C EQ is a high pass at 80 Hz.
+    ///
+    /// Live's API cannot route the sidechain of Glue Compressor, Gate, Auto
+    /// Filter, Multiband Dynamics, Drum Buss, Vocoder or any plug-in. Naming
+    /// one keys it through AMM Sidechain instead, moving one of its
+    /// parameters on each hit: `param`, and `from`/`to` in that parameter's
+    /// own units (Glue Compressor and Gate default to Threshold, Auto Filter
+    /// to Frequency). The reply says so — its own detector still hears its
+    /// track. Inside a rack, only a Compressor can be keyed.
+    ///
+    /// Every reply reads the routing back from Live. A trigger nobody hears:
+    /// set_track_mixer output "sends_only", and key from post_fx — Post FX
+    /// keys whatever the trigger's fader, mute or output; Post Mixer goes
+    /// silent when the trigger is muted, at -inf, or another track is soloed.
+    /// Live's own undo does not cover routing: `undo: true` puts the previous
+    /// one back. It is kept in the Remote Script's memory: a reload of the
+    /// script keeps it, restarting Live or deleting any track clears it. A
+    /// sidechain cannot be automated over bars (on in some
+    /// sections only, or a source that changes); give the trigger track only
+    /// the hits that should duck. Live does not expose Compressor's gain
+    /// reduction; capture_mix with resolution "16th" measures the duck.
+    #[tool(name = "set_sidechain")]
+    async fn set_sidechain(
+        &self,
+        Parameters(p): Parameters<crate::sidechain::SetSidechainParams>,
+    ) -> CallToolResult {
+        self.run(&SET_SIDECHAIN, p, crate::sidechain::set_sidechain_body)
+            .await
     }
 
     /// (advanced) What this Live has at a path in its object model: the
@@ -10422,7 +11635,10 @@ impl Server {
             .await
     }
 
-    /// Delete a locator (cue point) by its exact name or its beat position.
+    /// Delete a locator (cue point) by its name — get_context lists every
+    /// locator under "Locators", the ones placed by hand included — or by
+    /// its beat position. Case does not count; a name two locators share is
+    /// refused with their beats, so the time can be given instead.
     #[tool(name = "delete_locator")]
     async fn delete_locator(
         &self,
@@ -10493,9 +11709,25 @@ impl Server {
     /// a send ride. Target a device parameter (device_index +
     /// parameter_index from get_device_parameters) or a mixer control
     /// (volume, pan, send). Give points [{time, value}] in clip beats, or one
-    /// ramp {from, to, over}. Values are in the parameter's own range. Live's
-    /// API cannot write into Arrangement clips: automate the Session clip,
-    /// then place it (the envelope travels with it).
+    /// ramp {from, to, over}.
+    ///
+    /// The envelope is absolute automation, not modulation: while the clip
+    /// plays, the parameter takes these values and its own setting is
+    /// ignored. Values are in the parameter's own range; for volume that is
+    /// Live's fader scale, where 0.0 is silence, 0.55 about -12 dB, 0.85 is
+    /// 0 dB and 1.0 is +6 dB, whatever the fader is set to. For volume a
+    /// point may give `db` instead of `value`. The reply reads every point
+    /// back from Live.
+    ///
+    /// Session clips only. Live's API cannot write automation into the
+    /// Arrangement — not a track's automation lane, not an Arrangement clip
+    /// (Live answers "Not a session clip") — so `arrangement: true` is
+    /// refused. A fade over bars, on one appearance of a part: automate a
+    /// Session copy of the clip and place the copy at those bars (arrange
+    /// place). The envelope plays wherever the copy is placed, over the
+    /// track's own Arrangement automation while it plays; Live's API cannot
+    /// read it back from the placed copy, and the track's fader does not
+    /// show it.
     #[tool(name = "set_clip_automation")]
     async fn set_clip_automation(
         &self,
@@ -10506,7 +11738,15 @@ impl Server {
     }
 
     /// Read a clip's automation for one target, sampled every `resolution`
-    /// beats (Live exposes no point list).
+    /// beats (Live exposes no point list). Each sample is the value from
+    /// that beat on — what was written there — in the parameter's own range
+    /// (absolute, as adv_set_clip_automation writes it), with dB for volume.
+    /// Session clips only, in practice: Live's API answers
+    /// `has_envelope: false` for an Arrangement clip (`arrangement: true`,
+    /// clip_index its position in the track's Arrangement list) even when
+    /// the copy plays the envelope it was placed with, and automation on a
+    /// track's Arrangement lane belongs to the track and is not readable at
+    /// all.
     #[tool(name = "get_clip_automation")]
     async fn get_clip_automation(
         &self,
@@ -10548,20 +11788,36 @@ impl Server {
     /// from `start_bar` through a Capture track (made once, input
     /// Resampling, muted), then report peak dBFS, RMS, crest factor, ten
     /// octave bands, the low-to-high ratio and RMS per bar, with a reading
-    /// you can act on. The playhead is confirmed at the starting bar before
-    /// recording begins; a take that starts early is discarded and recorded
-    /// again rather than measured. `start_bar` is a bar number or a
-    /// locator's name. The clip stays on the Capture track so you
-    /// can play it; clear_captures removes the track when you are done.
-    /// Nothing else in the set changes. One capture at a time; 1–64 bars.
+    /// you can act on. Live starts playing a bar before `start_bar` — never
+    /// from bar 1 — and the take is checked against where Live's playhead
+    /// was when it began recording: a take of the wrong bars is discarded
+    /// and recorded again, and one that cannot be placed is an error, never
+    /// a reading. A quiet opening at the right bar (a fade-in, a rest) is
+    /// measured and said. `start_bar` is a bar number or a locator's name.
+    /// A capture records the Arrangement: tracks left on Session clips are
+    /// put back on it first (and named), and every track follows the
+    /// Arrangement afterwards. The clip stays on the Capture track so you
+    /// can play it; when every slot holds a take the oldest is replaced and
+    /// the reply says which. clear_captures removes the track when you are
+    /// done. One capture at a time; 1–64 bars.
     ///
     /// `tracks: ["Kick", "Bass"]` measures those tracks as well as the
-    /// master: each is soloed for a take of its own, up to four, and the
+    /// master, each with its own RMS per bar: each is soloed for a take of its own, up to four, and the
     /// solo you had is put back — including when a take fails. When two of
     /// them live in the same two octaves the reply says so, which is the
     /// usual answer to "it is not punchy". A muted track is not measured and
     /// is named instead: a take of it would be silence, and unmuting it
     /// would change the mix you are asking about.
+    ///
+    /// `resolution: "16th"` or "8th" adds RMS per step for every take and
+    /// the duck: the median dip inside each beat, in dB, and where in the
+    /// beat it bottoms out — how a sidechain is checked, since Live does not
+    /// expose a Compressor's gain reduction. "beat" gives RMS per beat only:
+    /// one step a beat has no inside to see a duck in. `as: "json"` returns
+    /// every number as data (`duck_db`, `duck_steps_db`, `duck_trough_step`,
+    /// `rms_steps_db` per take) instead of the readout. A soloed track whose
+    /// sidechain keys at Post Mixer from another track cannot show that duck
+    /// (the solo silences the source's mixer); the take says so.
     ///
     /// `transients: true` reports, per take, how many hits were found, the
     /// median time each takes to reach its own peak and the median amount it
@@ -10602,7 +11858,9 @@ impl Server {
     }
 
     /// Delete a track, by name or by index. Later tracks move up by one.
-    /// Refused while a performance runs if the track is playing.
+    /// Refused while a performance runs if the track is playing. Deleting a
+    /// sidechain trigger lists every device it keyed: Live leaves each on No
+    /// Input with its sidechain still on, and get_context warns about them.
     #[tool(name = "delete_track")]
     async fn delete_track(&self, Parameters(p): Parameters<TrackParams>) -> CallToolResult {
         self.run(&DELETE_TRACK, p, delete_track_body).await
@@ -10783,14 +12041,116 @@ impl Server {
         self.run(&SET_SCENE, p, set_scene_body).await
     }
 
-    /// Listen without stopping the set: the peak and average level of every
-    /// track, return and the master in dB over the next `bars` bars, from
-    /// the next bar line (the master is flagged within 0.5 dB of clipping).
-    /// capture: true records the bars through the Capture track instead and
-    /// adds RMS per bar and low/mid/high balance. Allowed during a performance.
+    /// Live's meters while the set plays, without stopping it: the peak and
+    /// average level of every track, return and the master in dB over the
+    /// next `bars` bars, from the next bar line (the master is flagged within
+    /// 0.5 dB of clipping). capture: true records the bars through the
+    /// Capture track instead and adds RMS per bar and low/mid/high balance.
+    /// Allowed during a performance. For what the producer already played,
+    /// read `listen`.
+    #[tool(name = "listen_meters")]
+    async fn listen_meters(&self, Parameters(p): Parameters<ListenMetersParams>) -> CallToolResult {
+        self.run(&LISTEN_METERS, p, listen_meters_body).await
+    }
+
+    /// What of this set has been heard, and how current it is: each section
+    /// heard at the current revision, heard before the last change (and what
+    /// changed since), or never heard. Read from the Mac app's memory of
+    /// what the producer played; never starts the transport.
+    #[tool(name = "heard")]
+    async fn heard(
+        &self,
+        Parameters(p): Parameters<crate::listening::HeardParams>,
+    ) -> CallToolResult {
+        self.run(&HEARD, p, crate::listening::heard_body).await
+    }
+
+    /// How a range sounded the last time it was played, measured from
+    /// playback by the Mac app: per section loudness (LUFS), peak and true
+    /// peak, crest, the six ranges, the low end per bar, how far it ducks
+    /// inside the beat, and the chord the chroma reads as ("heard as Am
+    /// (chroma)", never a replacement for what the clips say). section, bars
+    /// ("33-40") or last; revision "current" reads only bars heard since the
+    /// last change; resolution "beat" or "16th" adds the per-step RMS. Every
+    /// reading names its take, when it was played and its revision against
+    /// the set's, and a take from before a change says what it is missing.
+    /// Never starts the transport — except play: true, which plays the range
+    /// and reads it, and only while the producer has switched on "Claude may
+    /// play the set" in the app.
     #[tool(name = "listen")]
-    async fn listen(&self, Parameters(p): Parameters<ListenParams>) -> CallToolResult {
-        self.run(&LISTEN, p, listen_body).await
+    async fn listen(
+        &self,
+        Parameters(p): Parameters<crate::listening::ListenParams>,
+    ) -> CallToolResult {
+        self.run(&LISTEN, p, crate::listening::listen_body).await
+    }
+
+    /// The difference between two takes of the same bars — before and after
+    /// a change (by default the newest take against the newest one at an
+    /// older revision) — or option A against option B (against_section /
+    /// against_bars): energy below 250 Hz, crest, loudness, peak, each
+    /// range's share, the duck, and the bars that moved by 1 LU or more.
+    /// From the listening memory; never starts the transport.
+    #[tool(name = "compare")]
+    async fn compare(
+        &self,
+        Parameters(p): Parameters<crate::listening::CompareParams>,
+    ) -> CallToolResult {
+        self.run(&COMPARE, p, crate::listening::compare_body).await
+    }
+
+    /// A picture of a range as it was heard: a spectrogram (20 Hz–20 kHz), the
+    /// short-term loudness curve and a chroma strip, with section names along
+    /// the top and bar numbers along the bottom. A PNG to look at, with a
+    /// caption naming the take. From the listening memory; never starts the
+    /// transport.
+    #[tool(name = "listen_picture")]
+    async fn listen_picture(
+        &self,
+        Parameters(p): Parameters<crate::picture::ListenPictureParams>,
+    ) -> CallToolResult {
+        self.run_picture(&LISTEN_PICTURE, p, crate::picture::listen_picture_body)
+            .await
+    }
+
+    /// Put a choice in front of the producer in the Mac app's Feedback
+    /// screen: a question and two to ten options, each with a name, one line
+    /// on what it is, and one way to hear it (bars, locator, section, scene
+    /// or clip). Each option is a row with ▶ (the producer's own click plays
+    /// it) and This one, with an optional note. Returns the question's id;
+    /// the pick arrives on get_feedback.
+    #[tool(name = "offer_options")]
+    async fn offer_options(
+        &self,
+        Parameters(p): Parameters<crate::feedback::OfferOptionsParams>,
+    ) -> CallToolResult {
+        self.run(&OFFER_OPTIONS, p, crate::feedback::offer_options_body)
+            .await
+    }
+
+    /// Everything the producer said in the app since a cursor: comments
+    /// pinned to a bar (with the section and the time), picks between your
+    /// options with their notes, the questions still waiting, and whether
+    /// Claude may play the set. Pass back the cursor it returns to read only
+    /// what is new; answer a comment with reply.
+    #[tool(name = "get_feedback")]
+    async fn get_feedback(
+        &self,
+        Parameters(p): Parameters<crate::feedback::GetFeedbackParams>,
+    ) -> CallToolResult {
+        self.run(&GET_FEEDBACK, p, crate::feedback::get_feedback_body)
+            .await
+    }
+
+    /// Answer a comment in its thread in the app's Feedback screen ("pad
+    /// shortened to 8 bars; play from the Break to hear it"). The comment's
+    /// id comes from get_feedback.
+    #[tool(name = "reply")]
+    async fn reply(
+        &self,
+        Parameters(p): Parameters<crate::feedback::ReplyParams>,
+    ) -> CallToolResult {
+        self.run(&REPLY, p, crate::feedback::reply_body).await
     }
 
     /// A variation of an existing clip's notes: fill_last_bar (16th repeats of
@@ -10870,7 +12230,13 @@ impl Server {
     /// Build a whole arrangement from one document: tracks (with an
     /// instrument by URI or search words, level, pan, sends, colour), Session
     /// clips with their notes in any compact form, Arrangement placements
-    /// (times or start/end/step) and locators. `parts` names an idea once and
+    /// (times or start/end/step) and locators. Each track, return
+    /// (`returns`) and the master (`master`) takes `effects` in chain order,
+    /// each with `params` and a `sidechain` keyed from any track in the
+    /// document — wired after every track exists, so the trigger may be
+    /// listed last — and a track takes `output` ("sends_only" for a trigger
+    /// nobody hears). Declare sidechains here rather than with set_sidechain
+    /// afterwards, so a rebuild keeps them. `parts` names an idea once and
     /// any number of clips play it (`part: "break_a"`), each free to `map`
     /// named pitches onto its own kit or `transpose` the lot; a part's swing
     /// and humanise are resolved once, so every clip made from it is
@@ -11157,7 +12523,9 @@ impl Server {
     /// The Arrangement in bars: place a Session clip at a bar (or every N
     /// bars up to a bar), repeat an Arrangement clip after itself, move one
     /// to a bar, delete the clips that start in a bar range, shorten the
-    /// whole arrangement to end at a bar, or list what is there. Tracks and
+    /// whole arrangement to end at a bar, or list what is there. A placed
+    /// clip brings its Session envelopes with it — the way to put a fade on
+    /// one appearance, since Live's API writes no Arrangement automation. Tracks and
     /// clips are named or indexed, and every bar is a number or a locator's
     /// name. One round trip per track, however many clips.
     #[tool(name = "arrange")]
@@ -11525,7 +12893,7 @@ mod tests {
     fn tool_count_and_schema_defaults() {
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 110);
+        assert_eq!(tools.len(), 118);
         let create_clip = tools.iter().find(|t| t.name == "create_clip").unwrap();
         let schema = serde_json::to_value(&create_clip.input_schema).unwrap();
         let required = schema["required"].as_array().cloned().unwrap_or_default();
@@ -11546,7 +12914,7 @@ mod tests {
         // intent. Keeping a performance is part of playing one.
         let router = Server::tool_router();
         let tools = router.list_all();
-        assert_eq!(tools.len(), 110, "the take must not add a tool");
+        assert_eq!(tools.len(), 118, "the take must not add a tool");
         // start_performance is served as adv_start_performance (decision 0006).
         for name in ["adv_start_performance", "play_song"] {
             let tool = tools.iter().find(|t| t.name == name).unwrap();

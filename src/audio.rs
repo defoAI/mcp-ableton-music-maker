@@ -342,6 +342,86 @@ fn dbfs(x: f64) -> f64 {
 
 /// Measure decoded audio; `seconds_per_bar` comes from the set's tempo and
 /// time signature (`60 / tempo × beats per bar`).
+/// RMS in dBFS of each step of `seconds_per_step`, across all channels. A
+/// tail under half a step is the recording running past the take and is not
+/// a step.
+pub fn rms_steps(audio: &Audio, seconds_per_step: f64) -> Vec<f64> {
+    let frames = audio.channels.first().map_or(0, Vec::len);
+    let step = ((seconds_per_step.max(0.001)) * audio.sample_rate as f64).round() as usize;
+    let step = step.max(1);
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    while start < frames {
+        let end = (start + step).min(frames);
+        if end - start < step / 2 && !out.is_empty() {
+            break;
+        }
+        let mut sq = 0.0f64;
+        let mut count = 0usize;
+        for ch in &audio.channels {
+            for &v in &ch[start..end] {
+                sq += (v as f64) * (v as f64);
+                count += 1;
+            }
+        }
+        out.push((dbfs((sq / count.max(1) as f64).sqrt()) * 10.0).round() / 10.0);
+        start = end;
+    }
+    out
+}
+
+/// How far a part dips inside each beat — the measure of a sidechain duck.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Duck {
+    /// The median, over the beats, of the loudest step minus the quietest
+    pub median_db: f64,
+    /// Per step of the beat, the median dB below that beat's loudest step:
+    /// where the trough falls (0.0 is the beat's peak step)
+    pub profile: Vec<f64>,
+    pub steps_per_beat: usize,
+    /// The beats measured: those with any step above -60 dBFS
+    pub beats: usize,
+}
+
+/// The duck in a run of steps, `steps_per_beat` to a beat. A beat that is
+/// silent throughout says nothing about a duck and is left out; None when no
+/// beat is left, or a beat is one step.
+pub fn duck(steps: &[f64], steps_per_beat: usize) -> Option<Duck> {
+    if steps_per_beat < 2 {
+        return None;
+    }
+    let beats: Vec<&[f64]> = steps
+        .chunks(steps_per_beat)
+        .filter(|b| b.len() == steps_per_beat && b.iter().any(|v| *v > -60.0))
+        .collect();
+    if beats.is_empty() {
+        return None;
+    }
+    let drops: Vec<f64> = beats
+        .iter()
+        .map(|b| {
+            let hi = b.iter().cloned().fold(f64::MIN, f64::max);
+            let lo = b.iter().cloned().fold(f64::MAX, f64::min);
+            hi - lo
+        })
+        .collect();
+    let profile: Vec<f64> = (0..steps_per_beat)
+        .map(|j| {
+            let below: Vec<f64> = beats
+                .iter()
+                .map(|b| b[j] - b.iter().cloned().fold(f64::MIN, f64::max))
+                .collect();
+            (median(&below) * 10.0).round() / 10.0
+        })
+        .collect();
+    Some(Duck {
+        median_db: (median(&drops) * 10.0).round() / 10.0,
+        profile,
+        steps_per_beat,
+        beats: beats.len(),
+    })
+}
+
 pub fn measure(audio: &Audio, seconds_per_bar: f64) -> Measurements {
     let frames = audio.frames();
     let n = audio.channels.len();
@@ -370,6 +450,13 @@ pub fn measure(audio: &Audio, seconds_per_bar: f64) -> Measurements {
     let mut start = 0usize;
     while start < frames {
         let end = (start + bar_frames).min(frames);
+        // A tail under half a bar is the recording running a few frames
+        // past the take, not a bar of music: a 2-bar take on Live 12.4.6 came
+        // back with a third "bar" at -92.6 dB and a reading that bars 2–3
+        // were 31 dB quieter (2026-10-15).
+        if end - start < bar_frames / 2 && !rms_per_bar.is_empty() {
+            break;
+        }
         let mut sq = 0.0f64;
         let mut count = 0usize;
         for ch in &audio.channels {
@@ -916,6 +1003,58 @@ mod tests {
     }
 
     #[test]
+    fn a_duck_on_every_beat_is_measured_and_silent_beats_are_left_out() {
+        // Four 16ths a beat: loud on the 4th, dipping 12 dB on the 1st —
+        // what a bass under a kick looks like. Then a silent beat.
+        let steps = vec![
+            -30.0, -26.0, -21.0, -18.0, -30.0, -26.0, -21.0, -18.0, -29.0, -25.0, -21.0, -18.0,
+            -90.0, -90.0, -90.0, -90.0,
+        ];
+        let d = duck(&steps, 4).expect("a duck");
+        assert_eq!(d.beats, 3);
+        assert!((d.median_db - 12.0).abs() < 0.05, "{d:?}");
+        assert_eq!(d.profile, vec![-12.0, -8.0, -3.0, 0.0]);
+        // A flat part has no duck.
+        let flat = duck(&[-17.0; 8], 4).unwrap();
+        assert_eq!(flat.median_db, 0.0);
+        assert!(duck(&[-90.0; 8], 4).is_none());
+        assert!(duck(&[-17.0; 8], 1).is_none());
+    }
+
+    #[test]
+    fn rms_steps_are_per_step_and_drop_a_short_tail() {
+        let rate = 1000u32;
+        // 1 s at 0.5 then 1 s of silence, plus 7 ms of tail.
+        let x: Vec<f32> = (0..2007)
+            .map(|i| if i < 1000 { 0.5 } else { 0.0 })
+            .collect();
+        let audio = Audio {
+            sample_rate: rate,
+            channels: vec![x],
+        };
+        let s = rms_steps(&audio, 0.5);
+        assert_eq!(s.len(), 4, "{s:?}");
+        assert!((s[0] - -6.0).abs() < 0.1, "{s:?}");
+        assert!(s[3] < -60.0, "{s:?}");
+    }
+
+    #[test]
+    fn a_few_frames_past_the_last_bar_are_not_a_bar() {
+        let rate = 1000u32;
+        let frames = 2 * rate as usize + 7; // two 1 s bars and 7 ms of overshoot
+        let tone: Vec<f32> = (0..frames)
+            .map(|i| if i < 2 * rate as usize { 0.5 } else { 0.0 })
+            .collect();
+        let audio = Audio {
+            sample_rate: rate,
+            channels: vec![tone.clone(), tone],
+        };
+        let m = measure(&audio, 1.0);
+        assert_eq!(m.rms_per_bar.len(), 2, "{:?}", m.rms_per_bar);
+        assert!(m.silent_bars.is_empty(), "{:?}", m.silent_bars);
+    }
+
+    #[test]
     fn measurements_match_known_signals() {
         // Two bars of a −20 dBFS sine, then two bars of a full-scale square; 1 s bars.
         let rate = 8000;
@@ -1055,49 +1194,77 @@ pub struct Bands {
     pub high: f64,
 }
 
-/// Energy per octave band, 31 Hz … 16 kHz, from one plain radix-2 FFT pass
-/// over 4096-sample windows of the mono mix. Not normalized — `measure`
-/// turns it into shares, and `band_balance` sums it into three.
-pub fn octave_energy(audio: &Audio) -> [f64; OCTAVE_CENTERS.len()] {
+/// The power spectrum of the mono mix, window by window: 4096-point Hann
+/// windows hopped by a quarter, the first starting three quarters before the
+/// audio. Four windows cover every sample and Σ hann² over four quarter-hops
+/// is 3/2 everywhere, so every sample counts the same: a band's energy does
+/// not depend on where the windows happen to fall. With windows that did not
+/// overlap, a kick on a window's edge all but vanished — so a bar measured on
+/// its own (its first window starting on the downbeat's kick) read 1.6 dB
+/// less below 44 Hz than the same bar inside a longer capture. `f` gets each
+/// window's power per bin (bins 1 … N/2−1) and the bin width in Hz; the
+/// powers are scaled so the total matches what one non-overlapping pass
+/// gave.
+pub(crate) fn for_each_power(audio: &Audio, mut f: impl FnMut(&[f64], f64)) {
     const N: usize = 4096;
-    let mut bands = [0.0f64; OCTAVE_CENTERS.len()];
-    let frames = audio.frames();
-    let chans = audio.channels.len().max(1) as f32;
+    const HOP: usize = N / 4;
+    let frames = audio.frames() as isize;
+    let chans = audio.channels.len().max(1) as f64;
     let bin_hz = audio.sample_rate as f64 / N as f64;
+    let hann: Vec<f64> = (0..N)
+        .map(|i| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / N as f64).cos())
+        .collect();
     let mut re = vec![0.0f64; N];
     let mut im = vec![0.0f64; N];
-    let root2 = std::f64::consts::SQRT_2;
-    let mut start = 0;
-    while start + N <= frames.max(N) && start < frames {
+    let mut power = vec![0.0f64; N / 2];
+    let mut start = -((N - HOP) as isize);
+    while start < frames {
         for i in 0..N {
-            let mut sample = 0.0f32;
-            for ch in &audio.channels {
-                sample += ch.get(start + i).copied().unwrap_or(0.0);
+            let at = start + i as isize;
+            let mut s = 0.0f64;
+            if at >= 0 && at < frames {
+                for ch in &audio.channels {
+                    s += ch[at as usize] as f64;
+                }
             }
-            // Hann window
-            let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / N as f64).cos();
-            re[i] = (sample / chans) as f64 * w;
+            re[i] = s / chans * hann[i];
             im[i] = 0.0;
         }
         fft(&mut re, &mut im);
+        // Four overlapping windows count every sample: a quarter each.
         for k in 1..N / 2 {
-            let e = re[k] * re[k] + im[k] * im[k];
+            power[k] = (re[k] * re[k] + im[k] * im[k]) / 4.0;
+        }
+        f(&power, bin_hz);
+        start += HOP as isize;
+    }
+}
+
+/// Energy per octave band, 31 Hz … 16 kHz, over the mono mix
+/// ([`for_each_power`]). Not normalized — `measure` turns it into shares,
+/// and `band_balance` sums it into three.
+pub fn octave_energy(audio: &Audio) -> [f64; OCTAVE_CENTERS.len()] {
+    let mut bands = [0.0f64; OCTAVE_CENTERS.len()];
+    let root2 = std::f64::consts::SQRT_2;
+    let edges: Vec<(f64, f64)> = OCTAVE_CENTERS
+        .iter()
+        .map(|c| (c / root2, c * root2))
+        .collect();
+    for_each_power(audio, |power, bin_hz| {
+        for (k, e) in power.iter().enumerate().skip(1) {
             let hz = k as f64 * bin_hz;
-            for (b, centre) in OCTAVE_CENTERS.iter().enumerate() {
-                let lo = centre / root2;
-                let hi = centre * root2;
+            for (b, (lo, hi)) in edges.iter().enumerate() {
                 // the lowest band keeps everything under it, the highest
                 // everything over it, so no energy is dropped
-                let below = b == 0 && hz < lo;
-                let above = b == OCTAVE_CENTERS.len() - 1 && hz >= hi;
-                if (hz >= lo && hz < hi) || below || above {
+                let below = b == 0 && hz < *lo;
+                let above = b == OCTAVE_CENTERS.len() - 1 && hz >= *hi;
+                if (hz >= *lo && hz < *hi) || below || above {
                     bands[b] += e;
                     break;
                 }
             }
         }
-        start += N;
-    }
+    });
     bands
 }
 
@@ -1122,7 +1289,7 @@ pub fn band_balance(audio: &Audio) -> Bands {
     }
 }
 
-fn fft(re: &mut [f64], im: &mut [f64]) {
+pub(crate) fn fft(re: &mut [f64], im: &mut [f64]) {
     let n = re.len();
     let mut j = 0;
     for i in 1..n {

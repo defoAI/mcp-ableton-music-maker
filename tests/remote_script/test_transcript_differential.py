@@ -48,6 +48,28 @@ FIXTURES = os.path.join(ROOT, "tests", "fixtures")
 # itself the moment the script moves again — and the entry is deleted when
 # `scripts/live-transcript.sh` has run.
 PENDING = {
+    ("live-transcript-12.4.6.json", "1.41.0"):
+        "sidechains (set_sidechain, get_sidechain, list_sidechains, set_track_output, "
+        "ensure_effects, param_fraction; sidechain blocks, outputs and warnings in "
+        "get_context; delete_track's unkeyed list), on top of 1.39.0's and 1.40.0's "
+        "changes. Owed for the same reason: live-transcript.sh builds into the open "
+        "set. Re-record against a scratch Live 12.4.6 set and delete this entry.",
+    ("live-transcript-12.4.6.json", "1.40.0"):
+        "1.39.0's transport and capture fixes, and 1.40.0's replace_clip_notes "
+        "(a clip's notes and its Arrangement copies, one undo step), locators "
+        "and slot counts in get_context, get_clip_notes on Arrangement clips, "
+        "locators deleted by name without case, and a fade that ends on its "
+        "target. Owed because the only Live available had a producer's record "
+        "open, and live-transcript.sh builds into the open set. Re-record "
+        "against a scratch Live 12.4.6 set and delete this entry.",
+    ("live-transcript-12.4.6.json", "1.39.0"):
+        "the transport and capture fixes (start_playback and play_from start "
+        "where they are asked and say where Live is; start_capture rotates "
+        "slots and keeps tracks on the Arrangement; capture_status reports "
+        "song_time and off_arrangement; clip envelopes read the value from a "
+        "time on). Owed because the only Live available had a producer's "
+        "record open, and live-transcript.sh builds into the open set. "
+        "Re-record against a scratch Live 12.4.6 set and delete this entry.",
     ("live-transcript-12.4.6.json", "1.36.0"):
         "the loader/body split (decision 0011). The wire is unchanged except "
         "get_script_info, which now also reports loader_version and a reload "

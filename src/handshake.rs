@@ -60,6 +60,10 @@ pub enum Staleness {
     BodyBehind,
     /// The loader is behind. Live only reads it when it starts.
     LoaderBehind,
+    /// Live runs a newer body than this binary embeds: this server is the
+    /// stale half (it started before an update), and writing its body would
+    /// undo the update. Nothing is written; the client restarts the server.
+    BodyAhead,
     /// The script did not answer, or is old enough not to report a loader.
     Unknown,
 }
@@ -67,6 +71,7 @@ pub enum Staleness {
 impl Staleness {
     /// True when a `reload_body` can fix this without Live being restarted.
     pub fn recoverable_in_place(self) -> bool {
+        // BodyAhead is not: the fix is a newer server, not an older body.
         self == Staleness::BodyBehind
     }
 
@@ -76,6 +81,9 @@ impl Staleness {
             Staleness::UpToDate => None,
             Staleness::BodyBehind => Some(
                 "Live's Remote Script was a version behind and has been updated in place. Nothing to restart.",
+            ),
+            Staleness::BodyAhead => Some(
+                "Live is running a newer Remote Script than this server was built for: this server started before an update. Nothing was written to Live. Restart the MCP client session (or its server) so it runs the matching server.",
             ),
             Staleness::LoaderBehind => Some(
                 "The Remote Script's loader changed, which is the one part Live only reads when it starts. Run `ableton-music-maker-install-script`, then restart Live or re-select AbletonMusicMaker under Settings → Link, Tempo & MIDI. The handlers update on their own; the loader does not.",
@@ -118,6 +126,51 @@ pub struct ScriptInfo {
     pub extra: serde_json::Map<String, Value>,
 }
 
+/// `a` is a later version than `b`, compared number by number ("1.40.0" >
+/// "1.39.2"). A part that is not a number compares as 0.
+pub fn version_newer(a: &str, b: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> {
+        v.trim()
+            .split('.')
+            .map(|p| p.trim().parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+    let (a, b) = (parts(a), parts(b));
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (
+            a.get(i).copied().unwrap_or(0),
+            b.get(i).copied().unwrap_or(0),
+        );
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
+/// The line a tool reply carries while Live's Remote Script is not the one
+/// this server embeds — so a session that outlived an update says so on the
+/// call it makes, instead of quietly running handlers it was not built
+/// against. None when they match, or when the script has not answered.
+pub fn version_drift_line(info: &ScriptInfo) -> Option<String> {
+    let live = info.script_version.as_deref()?;
+    let ours = expected_remote_script_version();
+    if live == ours {
+        return None;
+    }
+    Some(if version_newer(live, ours) {
+        format!(
+            "Note: Live is running Remote Script v{live}, and this server (v{}) was built for v{ours} — it started before an update. Restart this MCP session (or the client) so it runs the new server; until then, newer features are missing and fixes may not apply.",
+            crate::MCP_VERSION
+        )
+    } else {
+        format!(
+            "Note: Live is running Remote Script v{live}, older than the v{ours} this server (v{}) embeds. Run `ableton-music-maker-install-script --reload` to update it in place.",
+            crate::MCP_VERSION
+        )
+    })
+}
+
 impl ScriptInfo {
     fn unreached(error: Option<String>) -> Self {
         Self {
@@ -152,6 +205,9 @@ impl ScriptInfo {
             }
             Some(loader) if loader != expected_loader_version() => Staleness::LoaderBehind,
             Some(_) if script == expected_remote_script_version() => Staleness::UpToDate,
+            Some(_) if version_newer(script, expected_remote_script_version()) => {
+                Staleness::BodyAhead
+            }
             Some(_) => Staleness::BodyBehind,
         }
     }
@@ -226,8 +282,22 @@ impl ScriptInfoCache {
 
     /// Query Live for script info and cache the answer.
     pub fn handshake(&self, bridge: &dyn LiveBridge) -> ScriptInfo {
+        let info = self.info_from(bridge.send_command("get_script_info", None));
+        self.adopt(info)
+    }
+
+    /// Take a `get_script_info` reply already in hand as what Live runs:
+    /// the same parsing and caching as `handshake`, without asking again.
+    /// The version watch uses it, so a second ask that failed could never
+    /// leave the cache saying the script is unreachable.
+    pub fn adopt_reply(&self, reply: Value) -> ScriptInfo {
+        let info = self.info_from(Ok(reply));
+        self.adopt(info)
+    }
+
+    fn info_from(&self, reply: crate::connection::LiveResult<Value>) -> ScriptInfo {
         let expected = expected_remote_script_version();
-        let info = match bridge.send_command("get_script_info", None) {
+        match reply {
             Ok(Value::Object(result)) => {
                 let mut parsed: ScriptInfo = serde_json::from_value(Value::Object(result.clone()))
                     .unwrap_or_else(|_| {
@@ -270,8 +340,11 @@ impl ScriptInfoCache {
                 tracing::warn!("Remote Script handshake failed: {}", e);
                 ScriptInfo::unreached(Some(e.to_string()))
             }
-        };
+        }
+    }
 
+    fn adopt(&self, info: ScriptInfo) -> ScriptInfo {
+        let expected = expected_remote_script_version();
         if info.up_to_date {
             tracing::info!(
                 "Remote Script handshake OK (v{}, {} capabilities)",
@@ -291,7 +364,7 @@ impl ScriptInfoCache {
                     info.loader_version.as_deref().unwrap_or("none"),
                     expected,
                     expected_loader_version(),
-                    Staleness::LoaderBehind.message().unwrap_or_default()
+                    info.staleness().message().unwrap_or_default()
                 ),
             }
         }
@@ -322,6 +395,8 @@ impl ScriptInfoCache {
             .unwrap_or(Staleness::Unknown);
         let advice = match how {
             Staleness::BodyBehind => "Live's Remote Script body is behind and can be updated in place: run `ableton-music-maker-install-script --reload`.",
+            // Installing from this server would put its older script back.
+            Staleness::BodyAhead => "Live's Remote Script is newer than this server, which started before an update: restart the MCP client session so it runs the new server. Do not reinstall from this one — that would put the older script back.",
             _ => "Run `ableton-music-maker-install-script`, then restart Ableton Live.",
         };
         Some(format!(

@@ -16,6 +16,8 @@ The server presents **the artist's set** — 39 tools, verified 2026-09-30 again
 | *play the song. go. bring it down. again from the drop.* | Fires the first section and cues the counted jumps; then steer. A transition can ramp the tempo, retime, crossfade, fill, drop or sweep. | `play_song` `go` `jump_to` `back` `hold_section` `next_section` `previous_section` |
 | *click on, count-in, record 8 bars of keys from bar 17* | The producer playing, into a Session clip on the next bar; the script names it and disarms the track. | `record_clip` |
 | *how loud is it? is the drop too busy?* | Eight bars of the master measured. The Capture track stays until you clear it. | `capture_mix` `clear_captures` `end_performance` |
+| *how does the drop sound now? what haven't you heard since the last change?* | Read from what you last played, by section — loudness, peaks, the six ranges, the low end per bar, the duck — with the take's time and whether it predates a change. Claude never starts the transport for it. | `heard` `listen` `compare` `listen_picture` |
+| *give me three breakdowns to choose from* | The options appear in the app's Feedback screen, each with ▶ and This one; your pick (and a note) comes back to Claude. | `offer_options` `get_feedback` `reply` |
 | *remember that the sitar is the lead; park these three hooks and let me try them against the drop* | Notes about the song that come back next session, a role written into the track's name, and a `Stash:` row for candidates you fire before you commit one. | `remember` `stash` |
 | *keep a copy of this set* | The whole set as a rebuildable document, written only when asked. | `export_set` `import_set` |
 
@@ -37,6 +39,12 @@ Behind the artist's set are 110 tools in all: scenes and clips by index, cues wi
 <img src="../.github/readme/capture.png" alt="Asked how loud it is: peak −3.8 dBFS, no clipping, bars 5 to 8 are 5.3 dB louder than bars 1 to 4, with RMS per bar as a chart." width="100%">
 
 `capture_mix` records eight bars of the master through Live's own Resampling and reports what a mastering engineer would: peak, RMS per bar, silence, clipping, stereo correlation. A performance is kept as a take in the Arrangement, after what is already there, never over it unless you say so.
+
+## It remembers what you played
+
+With **Remember what Live plays** on in the Mac app, every time you press play the app measures what Live puts out — per bar, per 16th, and a spectrum thirty times a second — stamped with the bar, the section and the set's revision. Measurements, never audio. Claude reads them with `heard` (what is current, what is stale, what was never played), `listen` (how a section sounded the last time you played it), `compare` (before and after a change, or option A against B) and `listen_picture` (a spectrogram, loudness and chroma it can look at). A reading always says when it was played and whether a change came after it.
+
+In the app's **Feedback** screen you comment on a bar by clicking it (or press M while it plays), pick between Claude's options with two clicks, and switch on **Claude may play the set** when you step away: only then may Claude play the song to measure it, and it stops the moment you press play.
 
 ## Then play it like an instrument
 

@@ -44,6 +44,21 @@ pub fn devices_dir() -> PathBuf {
     state_dir().join("devices")
 }
 
+/// One folder per song: the takes the Mac app remembered while Live played
+/// (measurements, never audio) and the change log their revisions count;
+/// see [`crate::listening`]. Written only while **Remember what Live plays**
+/// is on in the app.
+pub fn listening_dir() -> PathBuf {
+    state_dir().join("listening")
+}
+
+/// One folder per song: the producer's comments and picks (written by the
+/// app), Claude's options and replies (written by the server), and the away
+/// switch; see [`crate::feedback`].
+pub fn feedback_dir() -> PathBuf {
+    state_dir().join("feedback")
+}
+
 /// One `<song-key>.json` per song: the overview and the notes; see
 /// [`crate::memory`]. Off with `ABLETON_MCP_SONG_MEMORY=false`.
 pub fn songs_dir() -> PathBuf {

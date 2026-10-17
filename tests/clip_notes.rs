@@ -35,7 +35,10 @@ async fn read(server: &Server, track: i64, slot: i64) -> rmcp::model::CallToolRe
     server
         .run(
             &tools::GET_CLIP_NOTES,
-            clip(track, slot),
+            tools::GetClipNotesParams {
+                clip: clip(track, slot),
+                arrangement: false,
+            },
             tools::get_clip_notes_body,
         )
         .await

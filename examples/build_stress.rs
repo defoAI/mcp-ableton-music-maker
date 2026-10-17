@@ -25,6 +25,9 @@ fn document(round: usize, tracks: usize) -> BuildSongParams {
     for i in 0..tracks {
         let midi = i % 4 != 3; // three MIDI with a device, then one audio
         t.push(SongTrack {
+            effects: Vec::new(),
+            sidechain: None,
+            output: None,
             name: format!("R{round}-{i}"),
             kind: if midi { "midi".into() } else { "audio".into() },
             instrument: None,
@@ -77,6 +80,8 @@ fn document(round: usize, tracks: usize) -> BuildSongParams {
         });
     }
     BuildSongParams {
+        returns: Vec::new(),
+        master: None,
         parts: Default::default(),
         tempo: Some(86.0),
         key: None,
@@ -86,6 +91,7 @@ fn document(round: usize, tracks: usize) -> BuildSongParams {
         placements,
         locators: vec![],
         on_existing: "converge".into(),
+        replace_placements: true,
         dry_run: false,
         snapshot: false,
     }

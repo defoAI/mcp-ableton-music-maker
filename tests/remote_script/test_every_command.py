@@ -134,7 +134,11 @@ case("get_library_status", {},
 case("get_performance_state", {},
      lambda t, r, s: t.assertEqual(len(r["tracks"]), len(s.tracks)))
 case("get_grooves", {}, lambda t, r, s: t.assertIn("can_add", r))
-case("get_context", {}, lambda t, r, s: t.assertIn("tracks", r))
+def _context_names_the_locators_and_the_slots(t, r, s):
+    t.assertEqual([(l["name"], l["time"]) for l in r["locators"]],
+                  [(c.name, c.time) for c in s.cue_points])
+    t.assertEqual([x["slots"] for x in r["tracks"]], [len(x.clip_slots) for x in s.tracks])
+case("get_context", {}, _context_names_the_locators_and_the_slots)
 case("get_drum_rack_pads", {"track_index": 1},
      lambda t, r, s: t.assertEqual(
          [p["pad_name"] for p in r["pads"]][:4], ["Kick", "Snare", "Hat Closed", "Hat Open"]))
@@ -250,6 +254,41 @@ case("set_clip_loop", {"track_index": 0, "clip_index": 0, "loop_end": 8.0},
      lambda t, r, s: t.assertAlmostEqual(s.tracks[0].clip_slots[0].clip.loop_end, 8.0))
 case("set_clip_launch", {"track_index": 0, "clip_index": 0, "launch_mode": "gate"},
      lambda t, r, s: t.assertEqual(s.tracks[0].clip_slots[0].clip.launch_mode, 1))
+def _notes_replaced_in_the_clip_and_its_copy(t, r, s):
+    track = s.tracks[0]
+    pitches = lambda clip: sorted(n.pitch for n in clip.get_notes_extended(0, 128, 0.0, 64.0))
+    t.assertEqual(pitches(track.clip_slots[0].clip), [72, 76])
+    t.assertEqual(pitches(track.arrangement_clips[0]), [72, 76])
+    t.assertEqual(pitches(track.clip_slots[1].clip), [], "another clip is not touched")
+case("replace_clip_notes",
+     {"clips": [{"track_index": 0, "clip_index": 0, "arrangement": True,
+                 "notes": [{"pitch": 72, "start_time": 0.0, "duration": 1.0},
+                           {"pitch": 76, "start_time": 2.0, "duration": 1.0}]}]},
+     _notes_replaced_in_the_clip_and_its_copy)
+# Sidechains: Vox (track 2, audio) gets a Compressor first (see KEYED below).
+KEYED = ("set_sidechain", "get_sidechain", "list_sidechains", "param_fraction")
+
+
+def _vox_compressor(s):
+    return [d for d in s.tracks[2].devices if d.class_name == "Compressor2"][0]
+case("ensure_effects",
+     {"kind": "track", "index": 3, "on_existing": "converge",
+      "effects": [{"uri": "query:AudioFx#Compressor", "name": "Compressor"}]},
+     lambda t, r, s: t.assertEqual([d.class_name for d in s.tracks[3].devices], ["Compressor2"]))
+case("set_sidechain",
+     {"path": "song.tracks[2].devices[0]", "source": {"kind": "track", "index": 0}, "tap": "pre_fx",
+      "params": {"on": 1.0}, "displays": {"gain": "6 dB"}},
+     lambda t, r, s: (t.assertIs(_vox_compressor(s).input_routing_type.attached_object, s.tracks[0]),
+                      t.assertEqual(_vox_compressor(s).input_routing_channel.display_name, "Pre FX"),
+                      t.assertEqual(_vox_compressor(s)._find_parameter("S/C On").value, 1.0)))
+case("get_sidechain", {"path": "song.tracks[2].devices[0]"},
+     lambda t, r, s: t.assertEqual((r["class"], r["sidechain"]["source"]), ("Compressor2", None)))
+case("list_sidechains", {"kind": "track", "index": 2},
+     lambda t, r, s: t.assertEqual([e["path"] for e in r["sidechains"]], ["song.tracks[2].devices[0]"]))
+case("param_fraction", {"path": "song.tracks[2].devices[0].parameters[1]", "displays": ["-inf dB"]},
+     lambda t, r, s: t.assertAlmostEqual(r["fractions"][0]["pct"], 0.0, places=3))
+case("set_track_output", {"track_index": 2, "to": "sends_only"},
+     lambda t, r, s: t.assertEqual(s.tracks[2].output_routing_type.display_name, "Sends Only"))
 case("set_clip_automation",
      {"track_index": 0, "clip_index": 0, "target": {"mixer": "volume"},
       "points": [{"time": 0.0, "value": 0.0}, {"time": 4.0, "value": 1.0}]},
@@ -311,8 +350,8 @@ case("delete_arrangement_clips", {"track_index": 0, "all": True},
      lambda t, r, s: t.assertEqual(len(s.tracks[0].arrangement_clips), 0))
 case("duplicate_arrangement_clip", {"track_index": 0, "clip_index": 0, "times": [16.0]},
      lambda t, r, s: t.assertEqual(len(s.tracks[0].arrangement_clips), 2))
-case("create_return_track", {"name": "C Delay"},
-     lambda t, r, s: t.assertEqual(s.return_tracks[-1].name, "C Delay"))
+case("create_return_track", {"name": "Long Delay"},
+     lambda t, r, s: t.assertEqual(s.return_tracks[-1].name, "C-Long Delay"))
 case("create_tracks",
      {"tracks": [{"name": "Pad", "kind": "midi", "instrument_uri": "query:Synths#Operator"},
                  {"name": "FX", "kind": "audio"}]},
@@ -384,7 +423,7 @@ class EveryCommand(unittest.TestCase):
     # does not go through the executor's `finish()` and so carries no
     # `main_ms`. Recorded here as what the script does today rather than
     # asserted away; the server treats `main_ms` as optional.
-    NO_MAIN_MS = ("create_locator", "delete_locator", "play_from", "start_capture")
+    NO_MAIN_MS = ("create_locator", "delete_locator")
 
     def run_command(self, name, params, limit=400):
         """One command the whole way a socket request goes: `_run_on_main`,
@@ -435,6 +474,10 @@ class EveryCommand(unittest.TestCase):
                     self.song.start_playing()
                 if name == "restore_mix":
                     self.run_command("snapshot_mix", {})
+                if name in KEYED:
+                    self.run_command("ensure_effects", {
+                        "kind": "track", "index": 2,
+                        "effects": [{"uri": "query:AudioFx#Compressor", "name": "Compressor"}]})
                 if name == "cancel_cue":
                     self.run_command("schedule_cue", {"steps": [
                         {"beat": 8.0, "action": "set", "target": "tempo", "value": 130.0}]})

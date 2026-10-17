@@ -1020,7 +1020,7 @@ async fn the_readouts_show_sections_and_the_song_and_the_level_line_rides_under_
         .await;
     assert!(!is_error(&r), "{}", text_of(&r));
     let t = text_of(&r);
-    assert!(t.contains("Sections (scenes): 0 Intro · 8 (2) · 1 Groove · 8 (3) · 2 Groove+Pad · 8 (4) · 3 Break · 16 (2) · 4 Drop · 8 (5) · 5 Peak · 8 (5) · 6 empty\n"), "{t}");
+    assert!(t.contains("Sections (scenes): 0 Intro · 8 (2) · 1 Groove · 8 (3) · 2 Groove+Pad · 8 (4) · 3 Break · 16 (2) · 4 Drop · 8 (5) · 5 Peak · 8 (5) · 6 empty — 8 rows in all\n"), "{t}");
     assert!(t.contains("Song: Intro×2 → Groove → Groove+Pad → Break → Drop → Groove (from the 'Setlist:' scene; play_song, or jump_to a section)\n"), "{t}");
     assert!(!t.contains('⏱'), "{t}");
 }

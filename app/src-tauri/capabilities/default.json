@@ -4,7 +4,8 @@
   "description": "The app's windows may call its own commands.",
   "windows": [
     "main",
-    "listen-float"
+    "listen-float",
+    "feedback-float"
   ],
   "permissions": [
     "core:default"

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Note on this bar</title>
+<style>
+  /* Sits over Live, like the spectrum float: always the scope's dark. */
+  :root {
+    --scope: #0E0D0B;
+    --scope-grid: #26251F;
+    --scope-ink: #8A877F;
+    --ink: #EDEBE6;
+    --band: #EBA83A;
+    --mono: "SF Mono", Menlo, Consolas, monospace;
+    --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--scope); color: var(--scope-ink); font: 12px/1.4 var(--ui); display: grid; grid-template-rows: auto 1fr; }
+  header { display: flex; gap: 8px; align-items: center; padding: 5px 9px; border-bottom: 1px solid var(--scope-grid); font-family: var(--mono); font-size: 11px; }
+  header b { color: var(--ink); font-weight: 500; }
+  .led { width: 7px; height: 7px; border-radius: 50%; background: var(--scope-grid); }
+  .led.on { background: var(--band); }
+  .spacer { flex: 1; }
+  form { display: flex; gap: 6px; padding: 8px 9px; align-items: center; }
+  input { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--scope-grid); background: #1A1916; color: var(--ink); font: inherit; }
+  button { padding: 5px 10px; border-radius: 6px; border: 0; background: var(--band); color: #1A1300; font: 600 12px var(--ui); }
+  #said { color: var(--band); }
+</style>
+</head>
+<body>
+<header data-tauri-drag-region>
+  <span class="led" id="led"></span>
+  <span data-tauri-drag-region>Note on bar <b id="bar">—</b> <span id="section"></span></span>
+  <span class="spacer" data-tauri-drag-region></span>
+  <span id="said"></span>
+</header>
+<form id="f">
+  <input id="t" placeholder="Type while it plays; the bar is stamped when you start" autocomplete="off">
+  <button type="submit">Send</button>
+</form>
+<script>
+(function () {
+  const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args || {});
+  const $ = (s) => document.querySelector(s);
+  let pos = null;
+  // The bar the note is about is the one playing when you began to type.
+  let stamped = null;
+
+  async function poll() {
+    try {
+      const d = await invoke('feedback_state');
+      pos = d.position || null;
+    } catch (e) { pos = null; }
+    if (stamped == null) show(pos);
+  }
+
+  function show(p) {
+    $('#bar').textContent = p ? p.bar : '—';
+    $('#section').textContent = p && p.section ? '· ' + p.section : '';
+    $('#led').className = 'led' + (p && p.playing ? ' on' : '');
+  }
+
+  $('#t').addEventListener('input', () => {
+    if (stamped == null && pos) { stamped = pos; show(stamped); }
+    if (!$('#t').value) { stamped = null; }
+  });
+
+  $('#f').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = $('#t').value.trim();
+    if (!text) return;
+    const bar = stamped ? stamped.bar : (pos ? pos.bar : null);
+    try {
+      await invoke('feedback_comment', { text, bar });
+      $('#said').textContent = bar != null ? `noted on bar ${bar}` : 'noted';
+      $('#t').value = '';
+      stamped = null;
+      setTimeout(() => { $('#said').textContent = ''; }, 2500);
+    } catch (err) {
+      $('#said').textContent = String(err);
+    }
+    poll();
+  });
+
+  poll();
+  setInterval(poll, 1000);
+  $('#t').focus();
+})();
+</script>
+</body>
+</html>

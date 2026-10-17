@@ -29,16 +29,29 @@ another address in a `bind_host.txt` file beside it.
 | **Heartbeat** — that a server is running, which client started it, and the versions involved | `~/.ableton-music-maker/sessions/<pid>.json` | On | Removed automatically when the server exits |
 | **Sample folders** — the paths you told Claude to look in for samples (not Live's own folders, which need no telling) | `~/.ableton-music-maker/sample_folders.json` | **Only when you ask** (`adv_sample_folders add`) | Delete the file, or "Delete all local data" |
 | **Set exports** — a whole set as a document: your track and clip names, every MIDI note, mixer values, sections and setlist | `~/.ableton-music-maker/sets/<name>.json` | **Only when you ask** (`export_set`, or `build_song` with `snapshot: true`). The same document can also be *returned to you in a reply* (`get_context {"as": "document"}`), which writes nothing at all | Delete the file or the folder, or "Delete all local data" |
+| **Listening memory** — while **Remember what Live plays** is on in the Mac app: measurements of what Live played, per bar (peak, true peak, RMS, loudness, crest, the six ranges and the octave bands, correlation, clipping, silence), per 16th (RMS) and about thirty times a second (a spectrum and a twelve-note profile), each stamped with the bar, the section and the set's revision. **Never audio.** About 3 KB a second of playback | `~/.ableton-music-maker/listening/<song>/takes/` | **Off** until you turn it on in the app | Turn the switch off; takes are deleted after 30 days (a setting), or with "Delete all local data" |
+| **Change log** — one line per change to a set (by a tool call, or seen in Live while the app remembers): when, and the tool or the property, so a reading can say whether it predates a change | `~/.ableton-music-maker/listening/<song>/changes.jsonl` | On | Delete the file, or "Delete all local data" |
+| **Feedback** — your comments on a bar, your picks between Claude's options and their notes, Claude's questions and replies, and the "Claude may play the set" switch | `~/.ableton-music-maker/feedback/` | Written only when you or Claude use the Feedback screen | "Delete all local data" |
 
 Error text can contain a name you typed (a track called "Nick's bass", say). That is why the
 log is yours to delete.
 
 In the Docker image every path above sits under `/state`, the only writable volume.
 
-## The one file written outside that folder
+## The two files written outside that folder
 
-There is exactly one: **the Remote Script's handlers, inside Live's own User Library**
-(`…/Ableton/User Library/Remote Scripts/AbletonMusicMaker/body.py`).
+There are exactly two, both inside Live's own User Library and both copies of files this
+software ships with:
+
+- **the Remote Script's handlers** (`…/Ableton/User Library/Remote Scripts/AbletonMusicMaker/body.py`), below;
+- **AMM Sidechain** (`…/Ableton/User Library/AbletonMusicMaker Devices/AMM Sidechain.amxd`), a
+  Max for Live device. Live's API can route a sidechain into its own Compressor and into a Max
+  device, and into nothing else, so this device is how a track is ducked, gated, or made to move
+  another device's parameter (a Glue Compressor's threshold, a plug-in's knob) on a trigger's
+  hits. The installer puts it there; the server writes it only when `set_sidechain` or a
+  `build_song` sidechain needs it and Live's browser does not list it yet, and only its own
+  bundled copy. Delete the folder to remove it; a set that uses it then shows the device as
+  missing.
 
 The Remote Script is two files. One of them, `__init__.py`, Live reads only when it starts.
 The other, `body.py`, holds the handlers, and Live can be told to re-read it while it runs.
@@ -73,9 +86,22 @@ process tap of Live alone: not the microphone, not other apps, not the system. m
 you once whether the app may record audio from other apps, and you can take that back any
 time under System Settings › Privacy & Security › Screen & System Audio Recording. The
 audio is analysed in memory about thirty times a second — a spectrum, the master level, six
-range levels and a short waveform — and thrown away. It is never written to disk, never
-sent anywhere, and it stops the moment no window is showing it. The only thing stored is
-where you left the small float window.
+range levels and a short waveform — and thrown away. Without **Remember what Live plays**
+nothing of it is written, and it stops the moment no window is showing it.
+
+**Remember what Live plays** is off until you turn it on. While it is on, the app keeps
+listening whenever it is open and Live plays, with or without a window, and the tray icon
+shows a dot. It keeps **measurements, never audio**: a bar's samples are held in memory
+until the bar ends, measured the same way a capture is, and dropped. Only while the
+transport runs — a sample previewed in the browser has no bar and is not kept. What is
+written (about 3 KB a second of playback) is listed in the table above, kept per set for
+30 days unless you change that, and read by Claude through `heard`, `listen`, `compare`
+and `listen_picture`. None of those tools starts the transport.
+
+**Claude may play the set** is a switch in the app's Feedback screen, off until you turn it
+on. Only while it is on may Claude play the set to measure it (`listen {play: true}`,
+`capture_mix {whole_song: true}`); it turns itself off when you press play or stop in Live,
+or after the time limit you chose (20 minutes by default).
 
 ## What the server hears from Live
 
@@ -179,7 +205,9 @@ which removes the exports along with the library index.
 ## Deleting it
 
 Delete the `~/.ableton-music-maker` folder, or use **Delete all local data** in the Mac
-app. The app also discards activity files older than seven days by default. Nothing needs
+app, which removes the listening memory, the change logs and the feedback with the rest.
+The app also discards activity files older than seven days and listening takes older than
+thirty by default. Nothing needs
 to be requested from anyone, because nobody else has a copy.
 
 ## Changes

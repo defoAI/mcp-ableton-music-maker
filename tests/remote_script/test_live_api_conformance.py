@@ -96,6 +96,11 @@ class Conformance(unittest.TestCase):
     def classes_for(self, name):
         if name == "View":
             return VIEW_CLASSES
+        if name == "Device":
+            # A member only some devices have -- Compressor's sidechain input,
+            # a Max device's audio inputs -- is on those classes, as in Live,
+            # and the script reaches it behind hasattr.
+            return (CLASSES[name], fake_live.CompressorDevice, fake_live.MaxDevice)
         return (CLASSES[name],)
 
     def test_every_member_the_script_touches_is_on_the_model(self):

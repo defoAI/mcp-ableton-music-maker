@@ -23,7 +23,8 @@ Rust MCP server that lets Claude drive Ableton Live. Two processes:
 ## Commands
 
 ```bash
-cargo test                                   # 21 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, prompts, device-vocabulary, song-memory, fake-live-wire, stdio
+cargo test                                   # 23 suites: unit, clip-notes, arrangement, mixer, orchestration, capture, performance, song, feel, sound, sets, artist, library, samples, local-only, activity, prompts, device-vocabulary, song-memory, fake-live-wire, sidechain, listening, stdio
+python3 scripts/build-sidechain-device.py    # AbletonMusicMaker_Devices/AMM Sidechain.amxd from its source (AMM_DEBUG=1 adds read-outs)
 python3 scripts/check-script-helpers.py      # the Remote Script's pure helpers, against a stub Live
 scripts/test-remote-script.sh                # the Remote Script's own suite: tick, duplex, sockets, ops, streams, cues, every command, the fake Live
 scripts/render-readme-images.sh              # the README images: .github/readme/src/*.html → .github/readme/*.png
@@ -38,8 +39,11 @@ scripts/live-reload-probe.py                 # against a running Live: does the 
 ableton-music-maker-install-script --reload  # write whichever half changed, and hand a running Live its new handlers
 scripts/live-lom-sweep.py                    # against a running Live: describe + read every member, in scope against out of scope
 scripts/live-lom-sweep.py --record-fixture   # …and keep it, so the in-scope check runs with no Live
+cargo run --release --example listen_cost    # what remembering costs: % of one core and bytes a second, on this machine
+cargo run --example clock_probe -- --drive   # against a running Live: the clock side of the ±50 ms bar stamp (moves the transport)
+cd app/src-tauri && cargo run --example listen_probe -- 20 --stamp   # the tap side: how far Live's audio trails its clock (clock_offset_ms)
 ABLETON_TARGET=live cargo test -- --test-threads=1   # the whole suite against a real Live (builds in the open set)
-cd app/src && node --test *.test.mjs         # the Mac app's UI: Listen, the visual, the Prompts screen
+cd app/src && node --test *.test.mjs         # the Mac app's UI: Listen, Feedback, the visual, the Prompts screen
 cd app && npm run dev                        # the Mac app against this checkout (Tauri 2)
 cargo clippy --all-targets -- -D warnings    # CI runs this
 cargo fmt --all
@@ -59,15 +63,20 @@ No Rust toolchain on the machine? Build inside `rust:1-slim-bookworm` with the r
 src/connection.rs      LiveBridge trait, AbletonConnection (TCP), RealBridge (reconnecting), LiveError
 src/handshake.rs       get_script_info handshake, ScriptInfoCache, per-command capability check, Staleness (body behind = reload, loader behind = restart)
 src/lom.rs             the Live Object Model in Rust: Path (typed, validated), Op, Batch, describe cache — how a capability is written without touching the script
-src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 110 tool bodies and their #[tool] bindings, run() wrapper
+src/tools.rs           Server, ToolSpec, CORE_TOOLS, the 118 tool bodies and their #[tool] bindings, run() and run_picture() wrappers, the change log hook (note_change)
 src/activity.rs        the local activity log: one JSON line per tool call, payloads off by default
-src/state.rs           state_dir / activity_dir / sessions_dir / devices_dir / songs_dir — the only places the server writes
+src/state.rs           state_dir / activity_dir / sessions_dir / devices_dir / songs_dir / listening_dir / feedback_dir — the only places the server writes
 src/install.rs         installer logic (Library.cfg discovery, both files with a .bak each, --reload)
 src/app.rs             startup handshake, heartbeat, stdio serve, shutdown, --status, --check
-app/                   the Mac companion app (Tauri 2): src-tauri/ links this crate, src/ is the UI; src-tauri/src/listen/ is the process tap of Live (Objective-C + Rust, decision 0008)
+app/                   the Mac companion app (Tauri 2): src-tauri/ links this crate, src/ is the UI; src-tauri/src/listen/ is the process tap of Live (Objective-C + Rust, decision 0008), listen/remember.rs keeps it running headless while Remember is on; src-tauri/src/feedback.rs and src/feedback.js are the Feedback screen
 prompts/               the four prompts a producer copies into Claude — markdown, no tool; app/src-tauri/src/prompts.rs embeds them, tests/prompts.rs holds them against the tool list
 src/notes.rs           compact note forms (csv, step strings, patterns, tiling) → plain Note objects
-src/audio.rs           WAV/AIFF reader and the capture measurements (peak, RMS per bar, crest, octave bands, leading silence, clipping)
+src/audio.rs           WAV/AIFF reader and the capture measurements (peak, RMS per bar, crest, octave bands, leading silence, clipping); for_each_power, the quarter-hop spectrum both paths share
+src/meter.rs           LUFS (BS.1770 K-weighting), true peak, the six ranges, the 72-band spectrum and chroma, the chord a chroma reads as — pure, shared by captures, takes and the app's Listen screen
+src/recorder.rs        Claude listens, the app's half: ClockTrack (clock events → a playhead; jumps, loops, tempo), Stamper, Recorder (bars, 16ths, frames — never audio), Remembering, Feed; sim::Playhead is a Live that is not Live for the tests
+src/listening.rs       Claude listens, the server's half: the take store, the change log (revision), the app heartbeat, heard / listen / compare and the get_context 🎧 line
+src/feedback.rs        the producer answers: comments, offer_options / picks, replies, the away switch, and Part D's play_to_listen — files under state_dir()/feedback, one writer per file
+src/picture.rs         listen_picture: spectrogram + loudness + chroma as an indexed PNG (its own deflate, no image crate)
 src/performance.rs     performance state, bar arithmetic, cue resolution (bars → beats, silence check), readout text
 src/context.rs         get_context readout and the MCP instructions every client receives at initialize
 src/library.rs         the server's copy of Live's browser: paged from the script, on disk under state_dir, searched locally; plugins and Max for Live walked from here through run, since the script's categories have neither
@@ -82,13 +91,16 @@ src/sound.rs           the sound vocabulary: words → rack macros, the per-inst
 src/rack.rs            inside a rack: the chain, drum pad or nested device a producer names, resolved against the walk get_device_parameters already sends — pure
 src/sets.rs            export_set / import_set: a rebuildable document under state_dir()/sets, written only on request; the same document read back (placements, locators, notes in compact form) and the SetCache — the Session clips' notes in memory, proved fresh by get_context + drain_passive_events before they are used
 src/arrange.rs         the artist-facing tools: arrange (bars), feel (one tool, one undo), set_key, create_return, clear_captures
+src/sidechain.rs       set_sidechain: Compressor keyed natively; everything else through AMM Sidechain (duck, gate, or moving another device's parameter); exact source names; warnings and the unkeyed list
+src/effects.rs         build_song's effects, returns, master and sidechains: validated first, loaded after every track, wired after every effect
+AbletonMusicMaker_Devices/  AMM Sidechain.amxd, the Max for Live device whose key input Live's API can route — generated by scripts/build-sidechain-device.py, installed beside the Remote Script
 tests/remote_script/   the Remote Script's suite (Python, no Live): fake_live.py is the Live Object Model, harness.py runs the loader and loads the body through it, FakeSurface.tick() drives schedule_message; test_reload.py is the swap, the refusals and what is kept
 scripts/fake-live.py   the model + the real script on the script's own socket, on Live's 100 ms tick — what the Rust suites run against
 scripts/live-api-surface.py  every Live API member the script touches, read out of it by AST — the scope the model is held to
 scripts/live-differential.py the same commands to a real Live and to the fake, every field compared
 scripts/live-lom-sweep.py    describe + read every member on both, split into what the script uses and what it does not
 tests/fixtures/        a real Live's replies, recorded: live-transcript-<version>.json and live-lom-<version>.json
-tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, samples.rs, local_only.rs, activity.rs, prompts.rs, device_vocabulary.rs, song_memory.rs, fake_live_wire.rs, stdio_integration.rs, common/
+tests/                 clip_notes.rs, arrangement.rs, mixer.rs, orchestration.rs, capture.rs, performance.rs, song.rs, feel.rs, sound.rs, sets.rs, artist.rs, library.rs, samples.rs, local_only.rs, activity.rs, prompts.rs, device_vocabulary.rs, song_memory.rs, fake_live_wire.rs, sidechain.rs, listening.rs, stdio_integration.rs, common/
 docker/                verify-image.sh, Claude Desktop example config
 .github/workflows/ci.yml   fmt, clippy, test; the Mac app and its .dmg — both jobs on macOS, nothing on Linux
 ```
@@ -216,7 +228,9 @@ The server presents **the artist's set** and keeps the raw layer served but mark
   `set_send`, `create_return`), Arrange (`update_song`, `set_song`, `add_to_song`, `remove_from_song`,
   `arrange`, `create_locator`), Play (`play_song`, `go`, `jump_to`, `back`, `hold_section`,
   `next_section`, `previous_section`, `record_clip`, `capture_mix`, `clear_captures`,
-  `end_performance`), plus `delete_track`, `delete_clip`, `export_set`, `import_set`, `batch`.
+  `end_performance`), Listen (`heard`, `listen`, `compare`, `listen_picture` — read from the
+  app's memory of playback, never starting the transport), the producer answers
+  (`offer_options`, `get_feedback`, `reply`), plus `delete_track`, `delete_clip`, `export_set`, `import_set`, `batch`.
   Every other tool is served as `adv_<name>` (`adv_fire_scene`, `adv_cue`) — never hidden,
   never gated by an environment variable (that was tried and rejected: the person at the
   client decides). The prefix keeps the two sets from competing in a client's list and in a

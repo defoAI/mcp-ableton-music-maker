@@ -813,3 +813,243 @@ async fn a_sustained_take_says_there_is_no_onset_rather_than_a_median_of_nothing
     assert!(text.contains("No onsets found"), "{text}");
     assert!(!text.contains("median attack"), "{text}");
 }
+
+// ── Where Live was, not what the audio sounds like ─────────────────────────
+//
+// A studio report (2026-10-15): a capture of a soloed Lead from bar 49 failed
+// twice with "both takes began before the playhead reached it" — 0.92 s and
+// 0.92 s of silence. The Lead fades in from silence at bar 49, so the silence
+// was the music, and the identical numbers said so. A script from 1.39.0 on
+// says where the playhead was while the slot recorded; that is what decides.
+
+fn mid_record_start() -> serde_json::Value {
+    json!({"slot": 0, "record_length": 8.0, "preroll_beats": 4.0, "tempo": 120.0,
+           "confirmed_at": 188.2, "begin_beat": 188.0, "launch_quantization": "q_bar",
+           "returned_to_arrangement": []})
+}
+
+fn mid_record_capture(bridge: &FakeBridge, bars: i64) -> CaptureMixParams {
+    let _ = bridge;
+    CaptureMixParams {
+        start_bar: Some(json!(49.0)),
+        start: None,
+        bars,
+        name: "fadetest".into(),
+        ..Default::default()
+    }
+}
+
+fn status_recording(at: f64, off: serde_json::Value) -> serde_json::Value {
+    json!({"slot": 0, "has_clip": true, "is_recording": true, "song_time": at, "off_arrangement": off})
+}
+
+fn status_done(file: &Path) -> serde_json::Value {
+    json!({"slot": 0, "has_clip": true, "is_recording": false, "length": 8.0,
+           "file_path": file.to_str().unwrap(), "song_time": 200.0, "off_arrangement": []})
+}
+
+#[tokio::test]
+async fn a_quiet_opening_at_the_right_bar_is_measured_not_discarded() {
+    let dir = tempfile::tempdir().unwrap();
+    let fade = dir.path().join("fade.wav");
+    write_wav_with_silent_head(&fade, 4.0, 0.92);
+    let bridge = capture_bridge(&fade);
+    bridge.script("start_capture", vec![mid_record_start()]);
+    bridge.script(
+        "capture_status",
+        vec![status_recording(192.4, json!([])), status_done(&fade)],
+    );
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::CAPTURE_MIX,
+            mid_record_capture(&bridge, 2),
+            tools::capture_mix_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    let cmds = bridge.commands();
+    assert_eq!(
+        cmds.iter().filter(|c| *c == "start_capture").count(),
+        1,
+        "{cmds:?}"
+    );
+    assert!(!cmds.contains(&"delete_clip".to_string()), "{cmds:?}");
+    assert!(t.contains("The first 0.92 s are silent"), "{t}");
+    assert!(t.contains("a fade-in or a rest"), "{t}");
+    assert!(t.contains("RMS per bar"), "{t}");
+}
+
+#[tokio::test]
+async fn a_take_recorded_at_the_wrong_bar_is_discarded_and_recorded_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("take.wav");
+    write_wav(&file, 4.0, 0.3, 0.3);
+    let bridge = capture_bridge(&file);
+    bridge.script("start_capture", vec![mid_record_start()]);
+    // The first take records while Live plays the intro; the second, bar 49.
+    bridge.script(
+        "capture_status",
+        vec![
+            status_recording(0.4, json!([])),
+            status_done(&file),
+            status_recording(192.3, json!([])),
+            status_done(&file),
+        ],
+    );
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::CAPTURE_MIX,
+            mid_record_capture(&bridge, 2),
+            tools::capture_mix_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    let cmds = bridge.commands();
+    assert_eq!(cmds.iter().filter(|c| *c == "start_capture").count(), 2);
+    assert_eq!(cmds.iter().filter(|c| *c == "delete_clip").count(), 1);
+    assert!(
+        t.contains("The first take began recording at bar 1.10 — not bar 49"),
+        "{t}"
+    );
+}
+
+#[tokio::test]
+async fn two_takes_at_the_wrong_bar_are_an_error_that_says_where_live_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("take.wav");
+    write_wav(&file, 4.0, 0.3, 0.3);
+    let bridge = capture_bridge(&file);
+    bridge.script("start_capture", vec![mid_record_start()]);
+    bridge.script(
+        "capture_status",
+        vec![
+            status_recording(0.4, json!([])),
+            status_done(&file),
+            status_recording(0.4, json!([])),
+            status_done(&file),
+        ],
+    );
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::CAPTURE_MIX,
+            mid_record_capture(&bridge, 2),
+            tools::capture_mix_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(is_error(&r), "{t}");
+    assert!(t.contains("Live was playing bar 1.10 and bar 1.10"), "{t}");
+    assert!(
+        !t.contains("peak"),
+        "no reading for a take of the wrong bars: {t}"
+    );
+}
+
+#[tokio::test]
+async fn session_clips_under_a_take_make_it_an_error_not_a_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("take.wav");
+    write_wav(&file, 4.0, 0.3, 0.3);
+    let bridge = capture_bridge(&file);
+    bridge.script("start_capture", vec![mid_record_start()]);
+    bridge.script(
+        "capture_status",
+        vec![status_recording(192.4, json!(["Kick"])), status_done(&file)],
+    );
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::CAPTURE_MIX,
+            mid_record_capture(&bridge, 2),
+            tools::capture_mix_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(is_error(&r), "{t}");
+    assert!(t.contains("Kick left the Arrangement"), "{t}");
+    assert!(bridge.commands().contains(&"delete_clip".to_string()));
+}
+
+#[tokio::test]
+async fn a_rotated_slot_and_tracks_put_back_on_the_arrangement_are_said() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("take.wav");
+    write_wav(&file, 4.0, 0.3, 0.3);
+    let bridge = capture_bridge(&file);
+    let mut started = mid_record_start();
+    started["rotated"] = json!({"slot": 0, "name": "drop @ 128 | -9.1 dBFS"});
+    started["returned_to_arrangement"] = json!(["Kick", "Bass"]);
+    bridge.script("start_capture", vec![started]);
+    bridge.script(
+        "capture_status",
+        vec![status_recording(192.4, json!([])), status_done(&file)],
+    );
+    let server = server_with(bridge.clone());
+    let r = server
+        .run(
+            &tools::CAPTURE_MIX,
+            mid_record_capture(&bridge, 2),
+            tools::capture_mix_body,
+        )
+        .await;
+    let t = text_of(&r);
+    assert!(!is_error(&r), "{t}");
+    assert!(
+        t.contains("The Capture track was full: replaced its oldest take, 'drop @ 128 | -9.1 dBFS' (slot 0)."),
+        "{t}"
+    );
+    assert!(
+        t.contains("Kick, Bass were following Session clips; put back on the Arrangement"),
+        "{t}"
+    );
+}
+
+/// The report's long render: after 8–9 takes the next one produced nothing
+/// and said nothing. Twenty one-bar captures in a row each come back as a
+/// reading or an error, never as nothing — here with the slots rotating.
+#[tokio::test]
+async fn twenty_one_bar_captures_each_return_a_reading_or_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("take.wav");
+    write_wav(&file, 2.0, 0.3, 0.3);
+    let bridge = capture_bridge(&file);
+    let starts: Vec<serde_json::Value> = (0..20)
+        .map(|i| {
+            let mut s = mid_record_start();
+            s["slot"] = json!(i % 8);
+            s["record_length"] = json!(4.0);
+            if i >= 8 {
+                s["rotated"] = json!({"slot": i % 8, "name": format!("take {}", i - 8)});
+            }
+            s
+        })
+        .collect();
+    bridge.script("start_capture", starts);
+    let mut statuses = Vec::new();
+    for _ in 0..20 {
+        statuses.push(status_recording(192.2, json!([])));
+        statuses.push(status_done(&file));
+    }
+    bridge.script("capture_status", statuses);
+    let server = server_with(bridge.clone());
+    for i in 0..20 {
+        let r = server
+            .run(
+                &tools::CAPTURE_MIX,
+                mid_record_capture(&bridge, 1),
+                tools::capture_mix_body,
+            )
+            .await;
+        let t = text_of(&r);
+        assert!(!is_error(&r), "take {i}: {t}");
+        assert!(t.contains("RMS per bar"), "take {i} has a reading: {t}");
+        if i >= 8 {
+            assert!(t.contains("replaced its oldest take"), "take {i}: {t}");
+        }
+    }
+}

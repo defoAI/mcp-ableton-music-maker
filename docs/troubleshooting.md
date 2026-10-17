@@ -15,3 +15,25 @@ Diagnostics go to stderr; `RUST_LOG=debug` traces every command. `ableton-music-
 ---
 
 [← README](../README.md)
+
+## Known issue: `capture_mix` records Session loops instead of the Arrangement (2026-10-12)
+
+Seen on a 9-track set built by voidmusic (`Bb86_Polaroid`, Live 12.4.6, script 1.38.0): every
+`capture_mix` take recorded the tracks' Session clips rather than the Arrangement. Bars 1–8 (no drums
+or bass in the Arrangement) came back with the Break and Bass Session loops; soloed per-track takes
+showed Break/Bass playing and Crackle (whose only clips are in the Arrangement) silent. The capture
+reply itself says "The tracks are following Session clips". Calling `adv_back_to_arrangement`
+immediately before each take did not change it; after a few takes every track came back silent.
+`_start_capture` only fires the Capture track's slot (`slot.fire(record_length=…)`), so the
+switch-over seems to come from firing a Session slot while tracks hold Session clips — worth testing
+`song.back_to_arranger = False` after the fire, or recording into the Arrangement instead.
+Workaround used: Live's File → Export Audio/Video of the Arrangement.
+
+**Fixed in Remote Script 1.39.0 (2026-10-15).** Measured on Live 12.4.6: firing the Capture track's
+slot takes that track off the Arrangement and lights Back to Arrangement for the whole set, and a
+seek made while the transport is stopped is ignored by `continue_playing()`, so takes could start
+from wherever Live last stopped. A capture now starts the transport exactly where it is asked, puts
+any track left on Session clips back on the Arrangement before recording (and names it), refuses a
+take recorded while a track was off the Arrangement or at the wrong bar, and puts the Capture track
+back on the Arrangement afterwards. A server that embeds an older body writes it back over 1.39.0
+when it starts, so update the server (and the Mac app, which bundles one) as well as the script.

@@ -47,6 +47,11 @@ pub struct Frame {
     pub clip: bool,
     pub ranges: [f32; 6],
     pub silent: bool,
+    /// Short-term loudness (the newest 3 s), LUFS, from the crate's meter —
+    /// the same one a remembered take is measured with.
+    pub lufs: f32,
+    /// The twelve pitch classes' share of 55 Hz – 5 kHz, strongest = 1.
+    pub chroma: [f32; 12],
 }
 
 /// dB from a linear amplitude, floored like every other level in the product.
@@ -156,6 +161,7 @@ pub struct Analyzer {
     clip_until: f64,
     last_frame_at: f64,
     silent_since: Option<f64>,
+    loudness: mcp_ableton_music_maker::meter::Loudness,
 }
 
 impl Analyzer {
@@ -219,6 +225,7 @@ impl Analyzer {
             clip_until: f64::NEG_INFINITY,
             last_frame_at: 0.0,
             silent_since: None,
+            loudness: mcp_ableton_music_maker::meter::Loudness::new(rate),
         }
     }
 
@@ -231,6 +238,7 @@ impl Analyzer {
     /// Add samples. `l` and `r` must be the same length.
     pub fn push(&mut self, l: &[f32], r: &[f32], now_ms: f64) {
         let n = l.len().min(r.len());
+        self.loudness.push(&l[..n], &r[..n]);
         for i in 0..n {
             let (a, b) = (l[i], r[i]);
             self.win_l[self.pos] = a;
@@ -381,7 +389,10 @@ impl Analyzer {
             self.silent_since = None;
         }
 
+        let chroma = mcp_ableton_music_maker::meter::chroma(&power, bin_hz);
         let frame = Frame {
+            lufs: self.loudness.short_term() as f32,
+            chroma,
             bands,
             hold: self.hold.clone(),
             peak,
@@ -582,6 +593,37 @@ mod tests {
         a.push(&quiet, &quiet, 500.0);
         let f = a.frame(1000.0);
         assert!((f.peak_hold + 12.0).abs() < 0.5, "peak hold {}", f.peak_hold);
+    }
+
+    #[test]
+    fn a_frame_carries_loudness_and_chroma() {
+        // A 440 Hz tone at −20 dBFS: an A, and −20.7 LUFS once three seconds
+        // have been heard (K-weighting is 0.7 dB lower at 440 Hz than at the
+        // 1 kHz where a −20 dBFS sine reads −20 LUFS).
+        let mut a = Analyzer::new(48_000.0);
+        let s = sine(440.0, 0.1, 48_000.0, 48_000 * 3);
+        a.push(&s, &s, 0.0);
+        let f = a.frame(3000.0);
+        assert_eq!(f.chroma[9], 1.0, "{:?}", f.chroma);
+        assert!((f.lufs - -20.7).abs() < 0.2, "{}", f.lufs);
+        let q = vec![0.0f32; FFT_SIZE];
+        let silent = measure(&q, &q, 48_000.0);
+        assert_eq!(silent.lufs, mcp_ableton_music_maker::meter::LUFS_FLOOR as f32);
+        assert_eq!(silent.chroma, [0.0; 12]);
+    }
+
+    /// The remembered spectrum and this screen must split the spectrum the
+    /// same way, or a spectrogram would disagree with what was on screen.
+    #[test]
+    fn the_bands_are_the_listening_memorys_bands() {
+        use mcp_ableton_music_maker::meter as m;
+        assert_eq!(BANDS, m::BANDS);
+        assert_eq!(FFT_SIZE, m::FFT_SIZE);
+        assert_eq!(FMIN, m::FMIN);
+        assert_eq!(FMAX, m::FMAX);
+        for (a, b) in RANGES.iter().zip(m::RANGES.iter()) {
+            assert_eq!(a, b);
+        }
     }
 
     #[test]

@@ -408,6 +408,9 @@ const MODIFYING_COMMANDS: &[&str] = &[
     "set_device_parameters",
     "create_tracks",
     "write_clips",
+    "replace_clip_notes",
+    "set_sidechain",
+    "set_track_output",
     "place_sample",
 ];
 // get_context, get_browser_index and list_sample_folders are reads: the
@@ -424,6 +427,9 @@ pub fn command_timeout(command_type: &str) -> Duration {
         "create_tracks" => Duration::from_secs(190),
         // Many clips with their notes, one round trip.
         "write_clips" => Duration::from_secs(65),
+        // One device load per effect, each a rebuild of Live's audio graph;
+        // the script's own budget for it is 60 s.
+        "ensure_effects" => Duration::from_secs(65),
         // Walks Live's browser; the script stops itself after its own budget.
         "search_browser" => Duration::from_secs(25),
         // A batch may wait for Live's own frames (`wait_tick`, capped at 32
@@ -579,6 +585,48 @@ impl AbletonConnection {
     pub fn take_events(&self) -> Vec<Value> {
         let mut inbox = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         inbox.events.drain(..).collect()
+    }
+
+    /// Wait up to `timeout` for events the script pushes on this socket,
+    /// sending nothing: how a subscriber that only listens (the Mac app's
+    /// clock feed) reads them. Returns every event held or arrived — possibly
+    /// none. A socket the script closed is an error, and the next command
+    /// reconnects.
+    pub fn wait_events(&self, timeout: Duration) -> LiveResult<Vec<Value>> {
+        let mut guard = self.lock();
+        let Some(stream) = guard.as_mut() else {
+            return Err(LiveError::Lost("not connected".into()));
+        };
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if pending.events.is_empty() {
+            let mut buf = vec![0u8; 16_384];
+            stream
+                .set_read_timeout(Some(timeout.max(Duration::from_millis(1))))
+                .map_err(|e| LiveError::Lost(e.to_string()))?;
+            match stream.read(&mut buf) {
+                Ok(0) => {
+                    *guard = None;
+                    pending.clear();
+                    return Err(LiveError::Lost("the script closed the connection".into()));
+                }
+                Ok(n) => pending.bytes.extend_from_slice(&buf[..n]),
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(e) => {
+                    *guard = None;
+                    pending.clear();
+                    return Err(LiveError::Lost(e.to_string()));
+                }
+            }
+            let docs = pop_documents(&mut pending.bytes);
+            for doc in docs {
+                if doc.get("event").is_some() {
+                    pending.note_event(doc);
+                } else {
+                    pending.docs.push_back(doc);
+                }
+            }
+        }
+        Ok(pending.events.drain(..).collect())
     }
 
     /// Ask the script to push these channels on this socket.
